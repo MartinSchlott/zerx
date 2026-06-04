@@ -18,6 +18,7 @@
 ## Provides to
 
 - `schema-core`: `ZerxError` (structured validation failure returned by the parse flow)
+- `value-model`: `ZerxError` (serialisation failure surfaced by the serde-in bridge)
 
 ## External Contracts
 

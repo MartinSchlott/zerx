@@ -14,6 +14,10 @@
 - This concern does NOT own the import policy pipeline for external sources — see `policy`.
 - This concern does NOT define the types it serialises — see `types`.
 
+## Consumes from
+
+- `schema-core`: `Schema` (schema value that export reads and import reconstructs)
+
 ## Related Decisions
 
 - (none yet — roundtrip behaviour is settled within the JSON Schema plans)

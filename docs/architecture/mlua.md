@@ -15,6 +15,10 @@
 - This concern does NOT participate in the serde roundtrip — host-opaque values never serialise.
 - This concern does NOT exist in the default build — it is feature-gated.
 
+## Consumes from
+
+- `value-model`: `ZerxValue::HostOpaque` variant (the gated slot `mlua` realises with a concrete handle type)
+
 ## Related Decisions
 
 - Pending migration. This concern is governed by candidate decision C3

@@ -14,6 +14,11 @@
 - This concern does NOT define the core `Schema` representation or parse flow — see `schema-core`.
 - This concern does NOT own the host-opaque `function`/`tvalue` types — see `mlua`.
 
+## Consumes from
+
+- `schema-core`: `Schema` (core representation that type variants extend by adding `SchemaKind` variants)
+- `schema-core`: `Validator` (trait contract that concrete type validators implement)
+
 ## Related Decisions
 
 - Pending migration. This concern is governed by candidate decisions C4, C2

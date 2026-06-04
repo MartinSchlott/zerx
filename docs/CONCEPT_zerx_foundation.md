@@ -50,6 +50,20 @@ typed-builder front gives the compile-time guarantee the vision demands —
   forcing modifiers to be cheap to clone.
 - Whether the blanket trait is hand-written or macro-generated is an
   implementation detail for `PLAN_F2_schema_core`, not a concept decision.
+- `SchemaKind` is a closed enum owned by `schema-core` as a *container*; each
+  type variant (its tag + payload) is owned and added by the type plan that
+  introduces it. `PLAN_F2_schema_core` seeds only the variants it owns;
+  `PLAN_T1_basic_types` / `PLAN_T2_complex_types` / `PLAN_T4_special_types`
+  extend the enum with their variants. `schema-core` exposes a single per-kind
+  dispatch seam in the parse flow so a new variant adds one delegating arm, never
+  new parse-flow control logic. No plan may leave `todo!()` dispatch arms — every
+  plan leaves a coherent state.
+- The `Validator` trait contract (its signature plus the carrier's
+  `Vec<Box<dyn Validator>>` storage field) is defined in `schema-core` by
+  `PLAN_F2_schema_core`, because the carrier must name the trait to store it. The
+  validator *system* and every concrete validator are owned by `types`
+  (`PLAN_T1_basic_types`). At closeout, `schema-core.md` records the validator
+  storage contract and `types.md` the validator system and concretes.
 
 Illustrative shape (not normative):
 
@@ -257,13 +271,21 @@ Update step.
 - `PLAN_F2_schema_core` — the `Schema` representation (enum core + carrier +
   typed builders + blanket modifier trait), the parse flow (depth/cycle guard,
   default/optional/nullable ordering), `lazy` with reentrance guard, `Clone`
-  immutability. Fills `schema-core.md`. Deps: F3, F1.
+  immutability, the `Validator` trait contract + carrier storage field (concretes
+  in T1). Seeds `SchemaKind` with `lazy` and `any` (the carrier-only proof type)
+  and proves the chaining/guard mechanism with those two; the negative
+  compile-guarantee and type-specific-method composition land in T1. Fills
+  `schema-core.md`. Deps: F3, F1.
+  **Done.**
 
 **Phase 2 — Type catalogue** (deps: Phase 1)
 
-- `PLAN_T1_basic_types` — `string`, `number`, `boolean`, `enumerate`, `null`,
-  `any`; their builders and inherent validators (`min`, `max`, `regex`, `int`,
-  `multiline`, `email`, `uuid`) as a `Validator` plugin trait. Deps: F2.
+- `PLAN_T1_basic_types` — `string`, `number`, `boolean`, `enumerate`, `null`
+  (`any` is already seeded by F2); their builders and inherent validators (`min`,
+  `max`, `regex`, `int`, `multiline`, `email`, `uuid`) as concrete implementations
+  of the `Validator` trait F2 defines. Lands the negative compile-guarantee
+  (`.min()` unrepresentable on `bool`) and the type-specific-method composition.
+  Extends `SchemaKind` with its variants and their dispatch arms. Deps: F2.
 - `PLAN_T2_complex_types` — `object`, `array`, `record`, `tuple`, `union`,
   `discriminated_union` (O(1) variant lookup), `literal`; object modes
   (strict/passthrough/strip). Deps: T1.
@@ -331,6 +353,15 @@ non-slug candidate notes (e.g. "candidate C8"); the `D-<slug>` lines are added a
 Closeout when the entries go Active. This keeps the permanent docs consistent
 with the `permanent-doc-consistency-check` M3 invariant (concern slug references
 MUST point to Active entries) throughout the concept, not just at the end.
+
+**Cross-concern edge discipline during the lifecycle.** Whenever a plan's Doc
+Update adds a `Consumes from` or `Provides to` edge to one concern file, the same
+Doc Update MUST add the dual endpoint to the counterpart concern file — even when
+that counterpart is still an unfilled skeleton or belongs to a later plan.
+Adding the dual is mechanical mirroring (no design), it does not pre-empt the
+counterpart plan's Constraints, and it keeps the
+`permanent-doc-consistency-check` M2 duality invariant green at every plan's
+pre-review. A one-sided edge is drift, not a finding to defer.
 - `docs/definition.md` — revisited if feature detail outgrows the single file
   (extract to `docs/features/<feature>.md` only if needed — YAGNI).
 - `docs/backlog.kanban.md` — deferred scope (e.g. OpenAPI policy) captured as cards.
