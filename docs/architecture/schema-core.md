@@ -14,6 +14,10 @@
 - This concern does NOT own JSON Schema export/import — see `json-schema`.
 - This concern does NOT define the dynamic value it produces — see `value-model`.
 
+## Consumes from
+
+- `errors`: `ZerxError` (structured validation failure returned by the parse flow)
+
 ## Related Decisions
 
 - Pending migration. This concern is governed by candidate decisions C1, C7, C4

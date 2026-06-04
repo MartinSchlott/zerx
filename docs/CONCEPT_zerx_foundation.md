@@ -253,6 +253,7 @@ Update step.
   serde bridge (`Serialize` in, serialise out); gated host-opaque placeholder
   variant; no `serde_bytes` dependency (bytes via native `serialize_bytes`,
   per C2). Fills `value-model.md`. Deps: none.
+  **Done.**
 - `PLAN_F2_schema_core` — the `Schema` representation (enum core + carrier +
   typed builders + blanket modifier trait), the parse flow (depth/cycle guard,
   default/optional/nullable ordering), `lazy` with reentrance guard, `Clone`
