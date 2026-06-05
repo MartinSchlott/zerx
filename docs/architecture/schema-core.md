@@ -12,7 +12,6 @@
 - This concern does NOT define the individual types or concrete validators — see `types`.
 - This concern does NOT own JSON Schema export/import — see `json-schema`.
 - This concern does NOT define the dynamic value it produces — see `value-model`.
-- This concern does NOT implement data-value cycle detection — see `mlua` (`PLAN_M1`).
 
 ## Consumes from
 
@@ -26,6 +25,7 @@
 - `types`: `Validator` (trait contract that concrete type validators implement; storage field owned here, implementations in `types`)
 - `json-schema`: `Schema` (schema value that export reads and import reconstructs)
 - `policy`: `Schema` (the value the pipeline produces and type transforms receive)
+- `lua`: `Schema` + parse flow (`validate_lua` feeds `parse_present` after the transform pass)
 
 ## External Contracts
 
@@ -58,7 +58,6 @@ None.
 - The depth guard counts recursion frames, not concrete-node levels; a `lazy` frame MUST consume one depth level in the same way as any other kind frame.
 - A `lazy` schema MUST memoise its resolved inner `Schema`; the thunk MUST be called at most once, and the cached result MUST be shared across all clones of the same `lazy` schema instance.
 - A `lazy` schema MUST detect synchronous self-resolution reentrance and MUST return `Err(LAZY_REENTRANCE)` instead of recursing.
-- Data-value cycle detection is deferred to `PLAN_M1`; `ParseContext` is the designated seam for attaching a visited-set without signature changes.
 - `Schema` MUST NOT be `Send` or `Sync`; shared pieces (validators, refinement predicates, `lazy` thunk and resolution cache) MUST be held via single-threaded reference-counted smart pointers.
 - Error codes introduced by this concern (`PARSE_DEPTH_EXCEEDED`, `REQUIRED`, `REFINEMENT_FAILED`, `LAZY_REENTRANCE`) MUST be declared as associated constants in a separate `impl ErrorCode` block in `src/schema.rs`; no edit to `src/error.rs` is permitted.
 
@@ -71,7 +70,7 @@ None.
 - Descending into a `union` or `discriminated_union` kind during `parse_delta` navigation MUST be rejected with `UNION_PATH_REQUIRES_INSTANCE`; variant selection requires an instance and is not schema-navigable alone.
 - `replace` MUST NOT create absent positions: an object-key segment absent from the instance MUST be rejected with `MISSING_PARENT` at every traversal depth, including the final segment, regardless of whether the schema declares the key optional.
 - `replace` does not support deletion; it always sets a position. Deletion is out of scope (candidate C7 forbids a second API shape for the same operation family).
-- Host-opaque descent errors for trees containing host-opaque leaves are deferred to `PLAN_M1_host_opaque` (candidate C3); the public `replace` signature's `Serialize` bound permanently excludes host-opaque instances from its argument domain.
+- `replace` operates only on serde-bridgeable trees; Lua values (`LuaValue`) are not `Serialize` and cannot be passed as the `new` argument.
 - Error codes introduced by this sub-concern (`INVALID_POINTER`, `INVALID_PATH`, `INDEX_OUT_OF_RANGE`, `UNION_PATH_REQUIRES_INSTANCE`, `MISSING_PARENT`) MUST be declared in an `impl ErrorCode` block in `src/delta.rs`; no edit to `src/error.rs` is permitted.
 
 ## Related Decisions

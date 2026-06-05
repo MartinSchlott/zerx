@@ -41,8 +41,6 @@ pub(crate) fn type_tag(value: &ZerxValue) -> &'static str {
         ZerxValue::Bytes(_) => "bytes",
         ZerxValue::Array(_) => "array",
         ZerxValue::Object(_) => "object",
-        #[cfg(feature = "mlua")]
-        ZerxValue::HostOpaque(_) => "host_opaque",
     }
 }
 
@@ -736,7 +734,7 @@ pub(crate) fn check_literal(value: &ZerxValue, constant: &ZerxValue) -> Result<(
 // T2 structural parse delegates
 // ---------------------------------------------------------------------------
 
-fn effective_prestrip(body: &ObjectBody) -> Vec<String> {
+pub(crate) fn effective_prestrip(body: &ObjectBody) -> Vec<String> {
     let mut keys = body.prestrip_keys.clone();
     if body.prestrip_read_only {
         for (k, fs) in &body.shape {
@@ -1493,25 +1491,11 @@ pub(crate) fn check_url(value: &ZerxValue) -> Result<(), ZerxError> {
     }
 }
 
-pub(crate) fn check_json(value: &ZerxValue) -> Result<(), ZerxError> {
-    #[cfg(feature = "mlua")]
-    if let ZerxValue::HostOpaque(_) = value {
-        return Err(ZerxError::new(ErrorCode::TYPE_MISMATCH, "expected json")
-            .expected("json")
-            .received(type_tag(value)));
-    }
-    let _ = value;
+pub(crate) fn check_json(_value: &ZerxValue) -> Result<(), ZerxError> {
     Ok(())
 }
 
-pub(crate) fn check_jsonschema(value: &ZerxValue) -> Result<(), ZerxError> {
-    #[cfg(feature = "mlua")]
-    if let ZerxValue::HostOpaque(_) = value {
-        return Err(ZerxError::new(ErrorCode::TYPE_MISMATCH, "expected jsonschema")
-            .expected("jsonschema")
-            .received(type_tag(value)));
-    }
-    let _ = value;
+pub(crate) fn check_jsonschema(_value: &ZerxValue) -> Result<(), ZerxError> {
     Ok(())
 }
 

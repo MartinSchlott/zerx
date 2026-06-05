@@ -233,10 +233,6 @@ fn set_at(
             "cannot descend into a non-container value",
         )
         .at(path_with_seg)),
-        // Uninhabited placeholder: statically unreachable in D1. When M1 realises
-        // this variant with a real mlua type it MUST supply the descend-into-leaf error (C3).
-        #[cfg(feature = "mlua")]
-        ZerxValue::HostOpaque(h) => match *h {},
     }
 }
 

@@ -80,16 +80,6 @@ impl FromIterator<(String, ZerxValue)> for Map {
 }
 
 // ---------------------------------------------------------------------------
-// Host-opaque placeholder (feature-gated, uninhabited)
-// ---------------------------------------------------------------------------
-
-/// Uninhabited placeholder for the host-opaque variant. Replaced by
-/// `PLAN_M1_host_opaque` with the real mlua-backed type.
-#[cfg(feature = "mlua")]
-#[derive(Debug, Clone, PartialEq)]
-pub enum HostOpaque {}
-
-// ---------------------------------------------------------------------------
 // ZerxValue
 // ---------------------------------------------------------------------------
 
@@ -107,9 +97,6 @@ pub enum ZerxValue {
     Bytes(Vec<u8>),
     Array(Vec<ZerxValue>),
     Object(Map),
-    /// Uninhabited host-opaque placeholder (C3). Realised by `PLAN_M1_host_opaque`.
-    #[cfg(feature = "mlua")]
-    HostOpaque(HostOpaque),
 }
 
 // ---------------------------------------------------------------------------
@@ -278,11 +265,6 @@ impl Serialize for ZerxValue {
                 }
                 m.end()
             }
-            // Uninhabited placeholder: statically unreachable in F1. When M1 realises
-            // this variant with a real mlua type it MUST produce a serialisation error
-            // rather than a silent roundtrip (C3/C5).
-            #[cfg(feature = "mlua")]
-            ZerxValue::HostOpaque(h) => match *h {},
         }
     }
 }

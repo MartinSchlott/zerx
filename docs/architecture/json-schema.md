@@ -10,7 +10,6 @@
 
 - This concern does NOT own the import policy pipeline for external sources — see `policy`.
 - This concern does NOT define the types it serialises — see `types`.
-- The host-opaque format markers (`function`, `tvalue`) belong to `PLAN_M1_host_opaque`, not to this concern.
 
 ## Consumes from
 

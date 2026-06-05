@@ -10,7 +10,6 @@
 ## Non-Goals
 
 - This concern does NOT define the core `Schema` representation or parse flow — see `schema-core`.
-- This concern does NOT own the host-opaque `function`/`tvalue` types — see `mlua`.
 - This concern does NOT own JSON Schema export/import — see `json-schema`.
 
 ## Consumes from
@@ -45,7 +44,7 @@ None.
 - `boolean()` MUST accept only `ZerxValue::Bool`; any other kind MUST yield `Err(TYPE_MISMATCH)` with `expected = "boolean"`.
 - `enumerate(values)` MUST accept only a `ZerxValue::String` whose value is in the allowed set; a string not in the set MUST yield `Err(INVALID_ENUM_VALUE)` with `expected` listing the allowed values and `received = type_tag(value)`; a non-string MUST yield `Err(TYPE_MISMATCH)`.
 - `null()` MUST accept only `ZerxValue::Null`; any other kind MUST yield `Err(TYPE_MISMATCH)` with `expected = "null"`.
-- `type_tag(value)` MUST return a compact static descriptor for each `ZerxValue` variant (`"null"`, `"boolean"`, `"number"`, `"string"`, `"bytes"`, `"array"`, `"object"`; `"host_opaque"` under the `mlua` feature).
+- `type_tag(value)` MUST return a compact static descriptor for each `ZerxValue` variant (`"null"`, `"boolean"`, `"number"`, `"string"`, `"bytes"`, `"array"`, `"object"`).
 - All `received` and `expected` fields on errors raised by this concern MUST be descriptor strings — never raw values.
 
 ### Negative compile-guarantee (PLAN_T1 — candidate C1)
@@ -177,7 +176,6 @@ None.
 #### `json` / `jsonschema` (PLAN_T4)
 
 - `json()` and `jsonschema()` MUST accept any serde-bridgeable `ZerxValue` variant with identity parse (`parse_inner` returns `Ok(value.clone())`).
-- Under the `mlua` feature both MUST reject `ZerxValue::HostOpaque` with `Err(TYPE_MISMATCH)` (candidate C5); in the default build the arm is forward-correct but non-exercisable until `PLAN_M1_host_opaque`.
 - `json()` and `jsonschema()` differ only in their `SchemaKind` variant; that variant is the export marker read by `J1`; no structural JSON Schema document validation is performed (v1 accept-all).
 - Neither `json()` nor `jsonschema()` exposes any inherent validator methods.
 

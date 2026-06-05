@@ -21,6 +21,7 @@
 - `value-model`: `ZerxError` (serialisation failure surfaced by the serde-in bridge)
 - `json-schema`: `ZerxError` (structured import failure)
 - `policy`: `ZerxError` (structured pipeline failure)
+- `lua`: `ZerxError` (structured validation failure returned by `validate_lua`)
 
 ## External Contracts
 

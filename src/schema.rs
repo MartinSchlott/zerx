@@ -236,7 +236,7 @@ impl ParseContext {
         ParseContext { depth: 0 }
     }
 
-    fn enter(&mut self) -> Result<(), ZerxError> {
+    pub(crate) fn enter(&mut self) -> Result<(), ZerxError> {
         self.depth += 1;
         if self.depth > MAX_PARSE_DEPTH {
             self.depth -= 1; // restore so ctx stays balanced; exit() is not called on this path
@@ -249,7 +249,7 @@ impl ParseContext {
         }
     }
 
-    fn exit(&mut self) {
+    pub(crate) fn exit(&mut self) {
         self.depth -= 1;
     }
 }

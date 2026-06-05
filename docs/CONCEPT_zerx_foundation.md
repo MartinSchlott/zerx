@@ -101,30 +101,31 @@ on their own types) — a documented caller-side contract surfaced in the README
 and the `value-model` concern, not a zerx dependency. A `buffer` exports as
 `format: "buffer"` with `contentMediaType` for MIME.
 
-### C3 — Host-opaque values are borrowed handles, feature-gated (`D-host-opaque-handle`)
+### C3 — Schema-directed Lua validation, zerx-owned value type (`D-lua-schema-directed`)
 
-**Decision.** `ZerxValue`'s host-opaque variant holds an `mlua` value as a
-borrowed handle scoped to the validation call, validated via a dedicated
-`validate_lua` path; it is **not** an owned/cloned value and never enters the
-serde roundtrip. The variant is behind the optional `mlua` feature and absent
-from the default build.
+**Decision.** zerx validates Lua data through a **schema-directed** path: given a
+`Schema` and a raw Lua value, `validate_lua` walks both together and the schema
+resolves every Lua ambiguity — table → array vs object/record, byte string →
+string vs buffer — producing a disambiguated `ZerxValue`. zerx **owns** the Lua
+input type (`zerx::lua::LuaValue` + `LuaTable { array, hash }`) behind a `lua`
+feature. We do **not** depend on `mlua` or any external Lua crate, and `ZerxValue`
+does **not** carry a host-opaque variant.
 
-**Rationale.** `mlua` values are bound to the Lua state lifetime and are not
-`Serialize`; owning or copying them across the state boundary is not viable.
-Validation only needs to inspect kind, not retain the value.
+**Rationale.** The Lua sibling runtime (endymion) exposes only data at its host
+boundary — `nil`/`bool`/`int`/`float`/`bytes`/`table`; functions, coroutines, and
+userdata are not representable there. A blind `LuaValue → ZerxValue` map would
+have to guess array-vs-object and string-vs-buffer; the schema already carries
+that information, so validation and disambiguation are a single pass. Owning the
+Lua value type in zerx (rather than mirroring it per consumer) gives users of both
+zerx and the runtime one shared type with no conversion.
 
-**Consequence.** Host-opaque values are treated as leaves by the cycle guard and
-appear in JSON Schema only as format markers (`function`, `tvalue`). The
-`replace()` contract is fixed here, not deferred: the replacement value is
-`T: Serialize` and therefore can never itself be host-opaque; a JSON Pointer path
-MUST NOT descend *into* a host-opaque leaf (such a path errors with a dedicated
-code); host-opaque leaves elsewhere in the tree are revalidated by kind during
-full root revalidation. In the default build no host-opaque values exist, so
-`replace()` is fully defined by `PLAN_D1_delta_replace`; `PLAN_M1_host_opaque`
-adds only the gated leaf-kind revalidation and the descend-into-leaf error.
-Because the variant is feature-gated, the precise handle lifetime mechanism does
-not block the foundation plans — `PLAN_F1_value_model` defines the gated variant
-as an opaque placeholder.
+**Consequence.** `ZerxValue` stays purely serde-bridgeable — no host-opaque layer,
+no `function`/`tvalue` types, no `mlua` feature. `zerx::lua::LuaValue` is an owned,
+acyclic Rust tree, so `validate_lua` needs no data-value cycle guard (the depth
+guard still applies; the producer delivers acyclic data). The `lua` feature adds
+no external dependency. Consumers (e.g. endymion) own the Lua *runtime* types (VM,
+host commands, CBOR serialisation) and adopt `zerx::lua::LuaValue` as their data
+boundary; the dependency runs consumer → zerx, never the reverse.
 
 ### C4 — Strict by default (`D-strict-by-default`)
 
@@ -143,15 +144,16 @@ roundtrip footgun recorded in Zex's `bug.kanban.md`).
 ### C5 — `ZerxValue` spans the full serde data model (`D-serde-value-model`)
 
 **Decision.** `ZerxValue` is a serde value over serde's *full* data model
-(including bytes) plus a host-opaque layer. We do **not** model on
-`serde_json::Value` (which is serde minus bytes).
+(including bytes). We do **not** model on `serde_json::Value` (which is serde
+minus bytes), and we do **not** add a host-opaque layer.
 
 **Rationale.** The "bastard" is exactly what serde models but JSON throws away;
 buffers must be first-class without first being made JSON-clean.
 
-**Consequence.** Two layers exist: serde-bridgeable (full roundtrip through any
-serde format) and host-opaque (validatable, not serde-roundtrip-capable). This
-decision is the umbrella over C2 (bytes) and C3 (host-opaque).
+**Consequence.** `ZerxValue` is a single serde-bridgeable layer with full
+roundtrip through any serde format; it is the umbrella over C2 (bytes). The Lua
+input type (C3) is a separate, feature-gated value type, not a `ZerxValue` layer;
+`validate_lua` produces an ordinary serde-bridgeable `ZerxValue`.
 
 ### C6 — No type inference, no type generation, no derive macro (`D-no-type-inference`)
 
@@ -190,21 +192,22 @@ boundaries; i18n adds cost without serving the consumer.
 failures aggregate per-variant errors into a combined error. The `received` and
 `expected` fields are plain serialisable descriptor strings — `expected`
 describes the schema's requirement, `received` a compact description (a type tag,
-not the raw value) of what arrived. They do **not** embed a `ZerxValue`: a
-`ZerxValue` may hold a host-opaque value that is not `Serialize` (C3), which would
-break `ZerxError`'s own serialisability and couple the error model to
-`value-model`. This payload shape keeps `PLAN_F3_error_model` self-contained with
-no dependency on `PLAN_F1_value_model`.
+not the raw value) of what arrived. They do **not** embed a `ZerxValue`: keeping
+the payload as descriptor strings avoids coupling the error model to `value-model`
+and keeps `PLAN_F3_error_model` self-contained with no dependency on
+`PLAN_F1_value_model`.
 
 ### C9 — Built on serde, lean beyond it (`D-serde-foundation`)
 
 **Decision.** Zerx is built on `serde` + `serde_json` + `regex` (full `regex`
-crate, 1.x) as core dependencies, with `mlua` as an optional feature. We do
-**not** pursue Zex's zero-runtime-dependency posture, and we add no convenience
-crates without need — in particular zerx does **not** depend on `serde_bytes`;
-buffer fidelity rides on serde's native `serialize_bytes` (see C2). `regex` is
-scoped to the `regex`/`pattern` validator only; `regex-lite` was rejected in
-favour of the full crate's performance and feature set (Product-Owner decision).
+crate, 1.x) as core dependencies. We do **not** pursue Zex's
+zero-runtime-dependency posture, and we add no convenience crates without need —
+in particular zerx does **not** depend on `serde_bytes` (buffer fidelity rides on
+serde's native `serialize_bytes`, see C2) nor on `mlua` or any external Lua crate
+(the `lua` feature adds only a zerx-owned value type and the `validate_lua` path,
+see C3). `regex` is scoped to the `regex`/`pattern` validator only; `regex-lite`
+was rejected in favour of the full crate's performance and feature set
+(Product-Owner decision).
 
 **Rationale.** The serde data model *is* the premise of the library; reusing it
 is the whole point.
@@ -224,11 +227,14 @@ during implementation.
   cycles.
 - Delta/Replace (JSON Pointer based).
 - The policy pipeline with the built-in `sql` policy.
-- The optional `mlua` host-opaque feature.
+- Schema-directed Lua validation (`validate_lua`) with a zerx-owned Lua value type
+  behind a `lua` feature (C3).
 
 **Out of scope (deferred or ceded):**
 
 - Type generation / compile-time inference / derive macros (ceded — C6).
+- Live Lua handles (functions, coroutines, userdata) — not representable at the
+  Lua data boundary; owned by the runtime, not zerx (C3). No `mlua` dependency.
 - Async validation, streaming validation, and non-serde wire formats beyond what
   serde already provides.
 - Additional built-in policies beyond `sql` (e.g. OpenAPI) — captured as backlog
@@ -239,13 +245,13 @@ during implementation.
 ## Architecture (illustrative)
 
 The concern topology is fixed in `docs/architecture/_overview.md`: `value-model`,
-`schema-core`, `types`, `json-schema`, `policy`, `errors`, `mlua`.
+`schema-core`, `types`, `json-schema`, `policy`, `errors`, `lua`.
 
 The spine is C1: `schema-core` defines the erased `Schema` value and the
 typed-builder front; `types` adds variants and validators on top; `value-model`
 defines what validation produces; `json-schema` reads/reconstructs `Schema`;
-`policy` wraps the import walk; `errors` is produced by the parse flow; `mlua`
-realises the gated host-opaque variant.
+`policy` wraps the import walk; `errors` is produced by the parse flow; `lua`
+provides the zerx-owned Lua value type and the schema-directed `validate_lua` path.
 
 Parse flow (ported from Zex, faithful ordering): circular-reference check →
 depth limit (`MAX_PARSE_DEPTH = 100`) → default application → optional/nullable
@@ -267,8 +273,9 @@ Update step.
   **Done.**
 - `PLAN_F1_value_model` — `ZerxValue` over the full serde data model incl. bytes;
   serde bridge (`Serialize` in, serialise out); gated host-opaque placeholder
-  variant; no `serde_bytes` dependency (bytes via native `serialize_bytes`,
-  per C2). Fills `value-model.md`. Deps: none.
+  variant (later removed by `PLAN_L1_lua_validate` — C3 revised); no `serde_bytes`
+  dependency (bytes via native `serialize_bytes`, per C2). Fills `value-model.md`.
+  Deps: none.
   **Done.**
 - `PLAN_F2_schema_core` — the `Schema` representation (enum core + carrier +
   typed builders + blanket modifier trait), the parse flow (depth/cycle guard,
@@ -316,19 +323,29 @@ Update step.
 **Phase 4 — Delta/Replace + Policy**
 
 - `PLAN_D1_delta_replace` — `parse_delta(path, value)` and `replace(instance,
-  path, value)` with full root revalidation incl. `refine`. The host-opaque
-  interaction is contract-fixed in C3 and absent from the default build, so this
-  plan is complete on its own. Deps: Phase 2. **Done.**
+  path, value)` with full root revalidation incl. `refine`. `replace()` operates
+  on the serde-bridgeable `ZerxValue` tree. Deps: Phase 2. **Done.**
 - `PLAN_P1_policy_pipeline` — `register_policy`, schema transforms (pre-parse) and
   type transforms (post-parse), built-in `sql` policy, deref hook. Fills
   `policy.md`. Deps: J2. **Done.**
 
-**Phase 5 — Host-opaque (optional, feature-gated)**
+**Phase 5 — Lua validation (optional, `lua` feature)**
 
-- `PLAN_M1_host_opaque` — the `mlua` feature: `validate_lua`, `function` and
-  `tvalue` types, realisation of the host-opaque `ZerxValue` variant (C3),
-  cycle-guard leaf handling, and the `replace()` restriction. Fills `mlua.md`.
-  Deps: Phase 2, F1 (gated variant).
+- `PLAN_L1_lua_validate` — the `lua` feature: the zerx-owned `lua::LuaValue` +
+  `LuaTable { array, hash }` input types and `validate_lua(&lua::LuaValue) ->
+  Result<ZerxValue, ZerxError>`, a schema-directed validate+parse where the schema
+  node resolves each Lua ambiguity (table → array vs object/record; byte string →
+  string vs buffer; non-string hash keys rejected under `object`/`record`).
+  Removes the obsolete `mlua` feature and the uninhabited `HostOpaque` placeholder
+  from `src/value.rs` and `Cargo.toml`. Creates a new `lua.md` concern and, at its
+  Doc Update, reconciles the now-archived permanent docs that referenced
+  host-opaque/mlua: `value-model.md` (drop the `HostOpaque` variant and its edge to
+  `mlua`), `types.md` (drop the `function`/`tvalue` non-goal and the `host_opaque`
+  type tag), `json-schema.md` (drop the `function`/`tvalue` format markers),
+  `schema-core.md` (drop the "data-value cycle detection deferred to M1" note — the
+  Lua input is acyclic by construction), `_overview.md` (`mlua` → `lua`), and
+  `definition.md` (host-opaque/mlua wording → schema-directed Lua validation).
+  Deps: Phase 2. **Done.**
 
 ## Risks
 
@@ -340,9 +357,11 @@ Update step.
   emitting `serialize_bytes`; a plain `Vec<u8>` arrives as a number array.
   Mitigation: document prominently and add tests asserting the failure mode is
   legible.
-- **Host-opaque lifetimes (C3).** `mlua` handle lifetimes interacting with the
-  cycle guard and `replace()` are the riskiest area. Mitigation: feature-gated and
-  deferred to Phase 5; foundation does not depend on the mechanism.
+- **Lua mapping ambiguity (C3).** The schema-directed mapping must resolve
+  byte-string → string vs buffer and table → array vs object/record, and reject
+  non-string hash keys under `object`/`record`. Mitigation: drive every mapping
+  branch from the schema node in `PLAN_L1_lua_validate`, error at the exact path,
+  and port Zex's Lua-interop tests.
 - **Roundtrip fidelity.** Discriminated unions nested in arrays and the
   `additionalProperties` four-shape handling were Zex bug sources. Mitigation:
   port Zex's regression tests in Phase 3.
@@ -350,8 +369,16 @@ Update step.
 ## Affected docs (at Concept Closeout)
 
 - `docs/decisions.md` — candidates C1–C9 migrate as slug-ID'd active entries.
-- `docs/architecture/*.md` — all seven concern files gain their permanent
+- `docs/architecture/*.md` — the seven concern files (`value-model`, `schema-core`,
+  `types`, `json-schema`, `policy`, `errors`, `lua`) gain their permanent
   constraints (filled incrementally per plan; reconciled at closeout).
+- **host-opaque → Lua reconciliation (in `PLAN_L1_lua_validate`'s Doc Update).**
+  The mlua/host-opaque design was dropped mid-concept (C3 revised). L1 removes the
+  obsolete code (`mlua` feature, `HostOpaque` placeholder) and, atomically in its
+  Doc Update, reconciles the archived permanent docs that referenced it
+  (`value-model.md`, `types.md`, `json-schema.md`, `schema-core.md`, `_overview.md`,
+  `definition.md`) and replaces the `mlua.md` concern with `lua.md`. The check
+  stays green because code and docs change together in one reviewed plan.
 
 **Decision-reference discipline during the lifecycle.** Candidates C1–C9 stay in
 this concept and do **not** appear as `D-<slug>` references in any permanent doc

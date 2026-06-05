@@ -7,6 +7,8 @@ mod types;
 mod json_schema;
 mod delta;
 mod policy;
+#[cfg(feature = "lua")]
+pub mod lua;
 
 pub use error::{ErrorCode, ZerxError};
 pub use value::{Map, ZerxValue};
@@ -17,3 +19,5 @@ pub use types::{buffer, uri, url, json, jsonschema, BufferSchema, UriSchema, Url
 pub use json_schema::{ExportOptions, DRAFT_2020_12, from_json_schema};
 pub use policy::{register_policy, from_json_schema_with, apply_type_transforms,
     Policy, ImportOptions, SchemaTransform, TypeTransform, RefResolver};
+#[cfg(feature = "lua")]
+pub use lua::{LuaValue, LuaTable};
