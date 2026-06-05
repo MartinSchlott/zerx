@@ -771,5 +771,10 @@ mod tests {
             ok.get("profile").and_then(|p| p.get("city")),
             Some(&ZerxValue::String("Berlin".to_string()))
         );
+
+        // Replacing a scalar leaf with a value of the wrong type → TYPE_MISMATCH at the leaf path
+        let err2 = schema.replace(&instance, "/profile/city", &42i32).unwrap_err();
+        assert_eq!(err2.code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(err2.path, vec!["profile", "city"]);
     }
 }
