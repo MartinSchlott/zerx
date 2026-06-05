@@ -572,6 +572,647 @@ impl NumberSchema {
 }
 
 // ---------------------------------------------------------------------------
+// T2 error-code catalogue (no edit to error.rs)
+// ---------------------------------------------------------------------------
+
+impl ErrorCode {
+    pub const UNKNOWN_PROPERTY: ErrorCode            = ErrorCode::new("unknown_property");
+    pub const ARRAY_TOO_SHORT: ErrorCode             = ErrorCode::new("array_too_short");
+    pub const ARRAY_TOO_LONG: ErrorCode              = ErrorCode::new("array_too_long");
+    pub const TUPLE_LENGTH_MISMATCH: ErrorCode       = ErrorCode::new("tuple_length_mismatch");
+    pub const INVALID_LITERAL: ErrorCode             = ErrorCode::new("invalid_literal");
+    pub const INVALID_DISCRIMINANT: ErrorCode        = ErrorCode::new("invalid_discriminant");
+    pub const INVALID_DISCRIMINATED_UNION: ErrorCode = ErrorCode::new("invalid_discriminated_union");
+}
+
+// ---------------------------------------------------------------------------
+// Supporting types
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, PartialEq)]
+pub(crate) enum ObjectMode {
+    Strict,
+    Passthrough,
+    Strip,
+}
+
+#[derive(Clone)]
+pub(crate) struct ObjectBody {
+    pub(crate) shape: Vec<(String, Schema)>,
+    pub(crate) mode: ObjectMode,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) enum DiscriminantKey {
+    Bool(bool),
+    Int(i128),
+    Str(String),
+}
+
+#[derive(Clone)]
+pub(crate) enum DiscriminatorState {
+    Ok {
+        map: std::collections::HashMap<DiscriminantKey, usize>,
+        allowed: Vec<String>,
+    },
+    Invalid(String),
+}
+
+#[derive(Clone)]
+pub(crate) struct DiscriminatedUnionBody {
+    pub(crate) key: String,
+    pub(crate) variants: Vec<Schema>,
+    pub(crate) state: DiscriminatorState,
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn discriminant_key(value: &ZerxValue) -> Option<DiscriminantKey> {
+    match value {
+        ZerxValue::Bool(b) => Some(DiscriminantKey::Bool(*b)),
+        ZerxValue::String(s) => Some(DiscriminantKey::Str(s.clone())),
+        ZerxValue::I64(n) => Some(DiscriminantKey::Int(*n as i128)),
+        ZerxValue::U64(n) => Some(DiscriminantKey::Int(i128::from(*n))),
+        ZerxValue::I128(n) => Some(DiscriminantKey::Int(*n)),
+        ZerxValue::U128(n) => i128::try_from(*n).ok().map(DiscriminantKey::Int),
+        _ => None,
+    }
+}
+
+fn literal_descriptor(value: &ZerxValue) -> String {
+    match value {
+        ZerxValue::Bool(b) => b.to_string(),
+        ZerxValue::String(s) => format!("\"{}\"", s),
+        ZerxValue::I64(n) => n.to_string(),
+        ZerxValue::U64(n) => n.to_string(),
+        ZerxValue::I128(n) => n.to_string(),
+        ZerxValue::U128(n) => n.to_string(),
+        ZerxValue::F64(n) => n.to_string(),
+        _ => type_tag(value).to_string(),
+    }
+}
+
+fn prefix_path(mut e: ZerxError, segment: impl Into<String>) -> ZerxError {
+    e.path.insert(0, segment.into());
+    e
+}
+
+// ---------------------------------------------------------------------------
+// T2 type-check delegates
+// ---------------------------------------------------------------------------
+
+pub(crate) fn check_object(value: &ZerxValue) -> Result<(), ZerxError> {
+    match value {
+        ZerxValue::Object(_) => Ok(()),
+        _ => Err(ZerxError::new(ErrorCode::TYPE_MISMATCH, "expected object")
+            .expected("object")
+            .received(type_tag(value))),
+    }
+}
+
+pub(crate) fn check_array(value: &ZerxValue) -> Result<(), ZerxError> {
+    match value {
+        ZerxValue::Array(_) => Ok(()),
+        _ => Err(ZerxError::new(ErrorCode::TYPE_MISMATCH, "expected array")
+            .expected("array")
+            .received(type_tag(value))),
+    }
+}
+
+pub(crate) fn check_record(value: &ZerxValue) -> Result<(), ZerxError> {
+    match value {
+        ZerxValue::Object(_) => Ok(()),
+        _ => Err(ZerxError::new(ErrorCode::TYPE_MISMATCH, "expected object")
+            .expected("object")
+            .received(type_tag(value))),
+    }
+}
+
+pub(crate) fn check_tuple(value: &ZerxValue) -> Result<(), ZerxError> {
+    match value {
+        ZerxValue::Array(_) => Ok(()),
+        _ => Err(ZerxError::new(ErrorCode::TYPE_MISMATCH, "expected array")
+            .expected("array")
+            .received(type_tag(value))),
+    }
+}
+
+pub(crate) fn check_union() -> Result<(), ZerxError> {
+    Ok(())
+}
+
+pub(crate) fn check_discriminated_union(
+    value: &ZerxValue,
+    body: &DiscriminatedUnionBody,
+) -> Result<(), ZerxError> {
+    if let DiscriminatorState::Invalid(msg) = &body.state {
+        return Err(ZerxError::new(ErrorCode::INVALID_DISCRIMINATED_UNION, msg.clone()));
+    }
+    match value {
+        ZerxValue::Object(_) => Ok(()),
+        _ => Err(ZerxError::new(ErrorCode::TYPE_MISMATCH, "expected object")
+            .expected("object")
+            .received(type_tag(value))),
+    }
+}
+
+pub(crate) fn check_literal(value: &ZerxValue, constant: &ZerxValue) -> Result<(), ZerxError> {
+    if value == constant {
+        Ok(())
+    } else {
+        Err(ZerxError::new(ErrorCode::INVALID_LITERAL, "value does not match literal constant")
+            .expected(literal_descriptor(constant))
+            .received(type_tag(value)))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T2 structural parse delegates
+// ---------------------------------------------------------------------------
+
+pub(crate) fn parse_object(
+    body: &ObjectBody,
+    value: &ZerxValue,
+    ctx: &mut crate::schema::ParseContext,
+) -> Result<ZerxValue, ZerxError> {
+    let input = match value.as_object() {
+        Some(m) => m,
+        None => return Ok(value.clone()),
+    };
+
+    if body.mode == ObjectMode::Strict {
+        for (key, val) in input.iter() {
+            if !body.shape.iter().any(|(k, _)| k == key) {
+                return Err(prefix_path(
+                    ZerxError::new(
+                        ErrorCode::UNKNOWN_PROPERTY,
+                        format!("unknown property '{key}'"),
+                    )
+                    .expected("property not in schema")
+                    .received(type_tag(val)),
+                    key.clone(),
+                ));
+            }
+        }
+    }
+
+    let mut output = crate::Map::new();
+
+    for (key, field_schema) in &body.shape {
+        match field_schema.parse_field(input.get(key), ctx) {
+            Ok(Some(v)) => output.insert(key.clone(), v),
+            Ok(None) => {}
+            Err(e) => return Err(prefix_path(e, key.clone())),
+        }
+    }
+
+    if body.mode == ObjectMode::Passthrough {
+        for (key, val) in input.iter() {
+            if !body.shape.iter().any(|(k, _)| k == key) {
+                output.insert(key.clone(), val.clone());
+            }
+        }
+    }
+
+    Ok(ZerxValue::Object(output))
+}
+
+pub(crate) fn parse_array(
+    item: &Schema,
+    value: &ZerxValue,
+    ctx: &mut crate::schema::ParseContext,
+) -> Result<ZerxValue, ZerxError> {
+    let arr = match value.as_array() {
+        Some(a) => a,
+        None => return Ok(value.clone()),
+    };
+
+    let mut out = Vec::with_capacity(arr.len());
+    for (index, elem) in arr.iter().enumerate() {
+        match item.parse_present(elem, ctx) {
+            Ok(v) => out.push(v),
+            Err(e) => return Err(prefix_path(e, index.to_string())),
+        }
+    }
+    Ok(ZerxValue::Array(out))
+}
+
+pub(crate) fn parse_record(
+    value_schema: &Schema,
+    value: &ZerxValue,
+    ctx: &mut crate::schema::ParseContext,
+) -> Result<ZerxValue, ZerxError> {
+    let input = match value.as_object() {
+        Some(m) => m,
+        None => return Ok(value.clone()),
+    };
+
+    let mut output = crate::Map::new();
+    for (key, val) in input.iter() {
+        match value_schema.parse_present(val, ctx) {
+            Ok(v) => output.insert(key.clone(), v),
+            Err(e) => return Err(prefix_path(e, key.clone())),
+        }
+    }
+    Ok(ZerxValue::Object(output))
+}
+
+pub(crate) fn parse_tuple(
+    items: &[Schema],
+    value: &ZerxValue,
+    ctx: &mut crate::schema::ParseContext,
+) -> Result<ZerxValue, ZerxError> {
+    let arr = match value.as_array() {
+        Some(a) => a,
+        None => return Ok(value.clone()),
+    };
+
+    if arr.len() != items.len() {
+        return Err(ZerxError::new(
+            ErrorCode::TUPLE_LENGTH_MISMATCH,
+            format!("expected array of length {}, got {}", items.len(), arr.len()),
+        )
+        .expected(format!("array of length {}", items.len()))
+        .received(format!("array of length {}", arr.len())));
+    }
+
+    let mut out = Vec::with_capacity(items.len());
+    for (i, (schema, elem)) in items.iter().zip(arr.iter()).enumerate() {
+        match schema.parse_present(elem, ctx) {
+            Ok(v) => out.push(v),
+            Err(e) => return Err(prefix_path(e, i.to_string())),
+        }
+    }
+    Ok(ZerxValue::Array(out))
+}
+
+pub(crate) fn parse_union(
+    variants: &[Schema],
+    value: &ZerxValue,
+    ctx: &mut crate::schema::ParseContext,
+) -> Result<ZerxValue, ZerxError> {
+    let mut inner_errors = Vec::with_capacity(variants.len());
+    for variant in variants {
+        match variant.parse_present(value, ctx) {
+            Ok(v) => return Ok(v),
+            Err(e) => inner_errors.push(e),
+        }
+    }
+    Err(ZerxError::union(Vec::new(), inner_errors))
+}
+
+pub(crate) fn parse_discriminated_union(
+    body: &DiscriminatedUnionBody,
+    value: &ZerxValue,
+    ctx: &mut crate::schema::ParseContext,
+) -> Result<ZerxValue, ZerxError> {
+    let (map, allowed) = match &body.state {
+        DiscriminatorState::Ok { map, allowed } => (map, allowed),
+        DiscriminatorState::Invalid(msg) => {
+            return Err(ZerxError::new(ErrorCode::INVALID_DISCRIMINATED_UNION, msg.clone()));
+        }
+    };
+
+    let input = match value.as_object() {
+        Some(m) => m,
+        None => return Ok(value.clone()),
+    };
+
+    let disc_value = match input.get(&body.key) {
+        Some(v) => v,
+        None => {
+            return Err(ZerxError::new(
+                ErrorCode::INVALID_DISCRIMINANT,
+                format!("discriminator field '{}' is missing", body.key),
+            )
+            .expected(allowed.join(", ")));
+        }
+    };
+
+    let disc_key = match discriminant_key(disc_value) {
+        Some(k) => k,
+        None => {
+            return Err(ZerxError::new(
+                ErrorCode::INVALID_DISCRIMINANT,
+                format!("discriminator field '{}' has a non-keyable value", body.key),
+            )
+            .expected(allowed.join(", "))
+            .received(type_tag(disc_value)));
+        }
+    };
+
+    let index = match map.get(&disc_key) {
+        Some(&i) => i,
+        None => {
+            return Err(ZerxError::new(
+                ErrorCode::INVALID_DISCRIMINANT,
+                format!("no variant matched discriminator '{}'", body.key),
+            )
+            .expected(allowed.join(", "))
+            .received(type_tag(disc_value)));
+        }
+    };
+
+    body.variants[index].parse_present(value, ctx)
+}
+
+// ---------------------------------------------------------------------------
+// Array-length validators
+// ---------------------------------------------------------------------------
+
+pub(crate) struct ArrayMinLength(pub usize);
+pub(crate) struct ArrayMaxLength(pub usize);
+
+impl Validator for ArrayMinLength {
+    fn validate(&self, value: &ZerxValue) -> Result<(), ZerxError> {
+        if let ZerxValue::Array(a) = value {
+            if a.len() < self.0 {
+                return Err(ZerxError::new(
+                    ErrorCode::ARRAY_TOO_SHORT,
+                    format!("array length {} is less than minimum {}", a.len(), self.0),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn json_schema(&self) -> serde_json::Map<String, serde_json::Value> {
+        let mut m = serde_json::Map::new();
+        m.insert("minItems".to_owned(), serde_json::Value::Number(self.0.into()));
+        m
+    }
+}
+
+impl Validator for ArrayMaxLength {
+    fn validate(&self, value: &ZerxValue) -> Result<(), ZerxError> {
+        if let ZerxValue::Array(a) = value {
+            if a.len() > self.0 {
+                return Err(ZerxError::new(
+                    ErrorCode::ARRAY_TOO_LONG,
+                    format!("array length {} exceeds maximum {}", a.len(), self.0),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn json_schema(&self) -> serde_json::Map<String, serde_json::Value> {
+        let mut m = serde_json::Map::new();
+        m.insert("maxItems".to_owned(), serde_json::Value::Number(self.0.into()));
+        m
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T2 builder newtypes
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+pub struct ObjectSchema(Schema);
+
+#[derive(Clone)]
+pub struct ArraySchema(Schema);
+
+#[derive(Clone)]
+pub struct RecordSchema(Schema);
+
+#[derive(Clone)]
+pub struct TupleSchema(Schema);
+
+#[derive(Clone)]
+pub struct UnionSchema(Schema);
+
+#[derive(Clone)]
+pub struct DiscriminatedUnionSchema(Schema);
+
+#[derive(Clone)]
+pub struct LiteralSchema(Schema);
+
+impl BuilderInner for ObjectSchema {
+    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+}
+impl BuilderInner for ArraySchema {
+    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+}
+impl BuilderInner for RecordSchema {
+    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+}
+impl BuilderInner for TupleSchema {
+    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+}
+impl BuilderInner for UnionSchema {
+    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+}
+impl BuilderInner for DiscriminatedUnionSchema {
+    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+}
+impl BuilderInner for LiteralSchema {
+    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+}
+
+impl From<ObjectSchema> for Schema {
+    fn from(b: ObjectSchema) -> Schema { b.0 }
+}
+impl From<ArraySchema> for Schema {
+    fn from(b: ArraySchema) -> Schema { b.0 }
+}
+impl From<RecordSchema> for Schema {
+    fn from(b: RecordSchema) -> Schema { b.0 }
+}
+impl From<TupleSchema> for Schema {
+    fn from(b: TupleSchema) -> Schema { b.0 }
+}
+impl From<UnionSchema> for Schema {
+    fn from(b: UnionSchema) -> Schema { b.0 }
+}
+impl From<DiscriminatedUnionSchema> for Schema {
+    fn from(b: DiscriminatedUnionSchema) -> Schema { b.0 }
+}
+impl From<LiteralSchema> for Schema {
+    fn from(b: LiteralSchema) -> Schema { b.0 }
+}
+
+// ---------------------------------------------------------------------------
+// T2 inherent methods
+// ---------------------------------------------------------------------------
+
+impl ObjectSchema {
+    pub fn strict(mut self) -> Self {
+        if let SchemaKind::Object(ref mut body) = self.0.kind {
+            body.mode = ObjectMode::Strict;
+        }
+        self
+    }
+
+    pub fn passthrough(mut self) -> Self {
+        if let SchemaKind::Object(ref mut body) = self.0.kind {
+            body.mode = ObjectMode::Passthrough;
+        }
+        self
+    }
+
+    pub fn strip(mut self) -> Self {
+        if let SchemaKind::Object(ref mut body) = self.0.kind {
+            body.mode = ObjectMode::Strip;
+        }
+        self
+    }
+}
+
+impl ArraySchema {
+    pub fn min(mut self, n: usize) -> Self {
+        self.0.validators.push(Rc::new(ArrayMinLength(n)));
+        self
+    }
+
+    pub fn max(mut self, n: usize) -> Self {
+        self.0.validators.push(Rc::new(ArrayMaxLength(n)));
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T2 constructors
+// ---------------------------------------------------------------------------
+
+pub fn object<I, K>(fields: I) -> ObjectSchema
+where
+    I: IntoIterator<Item = (K, Schema)>,
+    K: Into<String>,
+{
+    let mut shape: Vec<(String, Schema)> = Vec::new();
+    for (k, v) in fields.into_iter().map(|(k, v)| (k.into(), v)) {
+        if let Some(entry) = shape.iter_mut().find(|(key, _)| key == &k) {
+            entry.1 = v;
+        } else {
+            shape.push((k, v));
+        }
+    }
+    let body = ObjectBody { shape, mode: ObjectMode::Strict };
+    ObjectSchema(Schema::new(SchemaKind::Object(body)))
+}
+
+pub fn array(item: impl Into<Schema>) -> ArraySchema {
+    ArraySchema(Schema::new(SchemaKind::Array(Box::new(item.into()))))
+}
+
+pub fn record(value: impl Into<Schema>) -> RecordSchema {
+    RecordSchema(Schema::new(SchemaKind::Record(Box::new(value.into()))))
+}
+
+pub fn tuple<I>(items: I) -> TupleSchema
+where
+    I: IntoIterator<Item = Schema>,
+{
+    TupleSchema(Schema::new(SchemaKind::Tuple(items.into_iter().collect())))
+}
+
+pub fn union<I>(variants: I) -> UnionSchema
+where
+    I: IntoIterator<Item = Schema>,
+{
+    UnionSchema(Schema::new(SchemaKind::Union(variants.into_iter().collect())))
+}
+
+pub fn discriminated_union<K, I>(key: K, variants: I) -> DiscriminatedUnionSchema
+where
+    K: Into<String>,
+    I: IntoIterator<Item = Schema>,
+{
+    let key: String = key.into();
+    let variants: Vec<Schema> = variants.into_iter().collect();
+    let state = build_discriminator_state(&key, &variants);
+    let body = DiscriminatedUnionBody { key, variants, state };
+    DiscriminatedUnionSchema(Schema::new(SchemaKind::DiscriminatedUnion(body)))
+}
+
+fn build_discriminator_state(key: &str, variants: &[Schema]) -> DiscriminatorState {
+    let mut map = std::collections::HashMap::new();
+    let mut allowed = Vec::new();
+
+    for (index, variant) in variants.iter().enumerate() {
+        let body = match &variant.kind {
+            SchemaKind::Object(b) => b,
+            _ => {
+                return DiscriminatorState::Invalid(format!(
+                    "variant {} is not an object schema",
+                    index
+                ));
+            }
+        };
+
+        let field_schema = match body.shape.iter().find(|(k, _)| k == key) {
+            Some((_, s)) => s,
+            None => {
+                return DiscriminatorState::Invalid(format!(
+                    "variant {} is missing discriminator field '{}'",
+                    index, key
+                ));
+            }
+        };
+
+        let constant = match &field_schema.kind {
+            SchemaKind::Literal(c) => c,
+            _ => {
+                return DiscriminatorState::Invalid(format!(
+                    "variant {}: discriminator field '{}' is not a literal",
+                    index, key
+                ));
+            }
+        };
+
+        if field_schema.modifiers.optional {
+            return DiscriminatorState::Invalid(format!(
+                "variant {}: discriminator field '{}' must not be optional",
+                index, key
+            ));
+        }
+        if field_schema.modifiers.default.is_some() {
+            return DiscriminatorState::Invalid(format!(
+                "variant {}: discriminator field '{}' must not have a default",
+                index, key
+            ));
+        }
+        if field_schema.modifiers.nullable {
+            return DiscriminatorState::Invalid(format!(
+                "variant {}: discriminator field '{}' must not be nullable",
+                index, key
+            ));
+        }
+
+        let disc_key = match discriminant_key(constant) {
+            Some(k) => k,
+            None => {
+                return DiscriminatorState::Invalid(format!(
+                    "variant {}: discriminator literal is not a keyable type",
+                    index
+                ));
+            }
+        };
+
+        let display = literal_descriptor(constant);
+
+        if map.contains_key(&disc_key) {
+            return DiscriminatorState::Invalid(format!(
+                "duplicate discriminator value '{}' in variant {}",
+                display, index
+            ));
+        }
+
+        map.insert(disc_key, index);
+        allowed.push(display);
+    }
+
+    DiscriminatorState::Ok { map, allowed }
+}
+
+pub fn literal(value: impl Into<ZerxValue>) -> LiteralSchema {
+    LiteralSchema(Schema::new(SchemaKind::Literal(value.into())))
+}
+
+// ---------------------------------------------------------------------------
 // Constructors
 // ---------------------------------------------------------------------------
 
@@ -890,5 +1531,422 @@ mod tests {
                 "expected kind {expected} in debug output: {debug}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // T2 tests
+    // -----------------------------------------------------------------------
+
+    // T2-1: object type check
+    #[test]
+    fn object_type_check() {
+        let o = object([("a", number().into())]);
+        let err = val(o.clone(), &7i32).unwrap_err();
+        assert_eq!(err.code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(err.expected.as_deref(), Some("object"));
+
+        assert_eq!(val(o.clone(), "hi").unwrap_err().code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(val(o, &true).unwrap_err().code, ErrorCode::TYPE_MISMATCH);
+    }
+
+    // T2-2a: object constructor duplicate-key semantics (last-write-wins, first-occurrence order)
+    #[test]
+    fn object_duplicate_key_semantics() {
+        // Duplicate key: second entry's schema replaces first, but key stays at first position.
+        // The second schema is number(), so "a" must be validated as a number.
+        let o: Schema = object([
+            ("a", string().into()),
+            ("b", number().into()),
+            ("a", number().into()),  // replaces the string() at first-occurrence position
+        ]).into();
+
+        // Valid: a=1 (number), b=2 — the string() schema was replaced
+        assert!(o.validate(&serde_json::json!({"a": 1, "b": 2})).is_ok());
+
+        // Key order: "a" at first-occurrence position (0), "b" at position 1
+        let ok = o.validate(&serde_json::json!({"a": 1, "b": 2})).unwrap();
+        let keys: Vec<&str> = ok.as_object().unwrap().iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["a", "b"]);
+
+        // Shape has only two entries (the duplicate was merged)
+        if let crate::schema::SchemaKind::Object(ref body) = o.kind {
+            assert_eq!(body.shape.len(), 2);
+        }
+    }
+
+    // T2-2: object strict (default)
+    #[test]
+    fn object_strict_default() {
+        #[derive(serde::Serialize)]
+        struct WithExtra { a: i64, extra: i64 }
+        #[derive(serde::Serialize)]
+        struct JustA { a: i64 }
+
+        let o = object([("a", number().into())]);
+        let err = val(o.clone(), &WithExtra { a: 1, extra: 2 }).unwrap_err();
+        assert_eq!(err.code, ErrorCode::UNKNOWN_PROPERTY);
+        assert!(!err.path.is_empty());
+
+        let ok = val(o, &JustA { a: 1 }).unwrap();
+        let map = ok.as_object().unwrap();
+        assert_eq!(map.get("a"), Some(&ZerxValue::I64(1)));
+        assert_eq!(map.len(), 1);
+    }
+
+    // T2-3: object passthrough
+    #[test]
+    fn object_passthrough() {
+        use serde_json::json;
+
+        #[derive(serde::Serialize)]
+        struct Input { a: i64, extra: &'static str }
+
+        let o = object([("a", number().into())]).passthrough();
+        let ok = val(o, &Input { a: 1, extra: "x" }).unwrap();
+        let map = ok.as_object().unwrap();
+        assert!(map.get("a").is_some());
+        assert!(map.get("extra").is_some());
+        // Key order: shape first, then passthrough
+        let keys: Vec<&str> = map.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["a", "extra"]);
+        // Extra field preserved verbatim
+        assert_eq!(map.get("extra"), Some(&ZerxValue::from_serialize(&json!("x")).unwrap()));
+    }
+
+    // T2-4: object strip
+    #[test]
+    fn object_strip() {
+        #[derive(serde::Serialize)]
+        struct Input { a: i64, extra: &'static str }
+
+        let o = object([("a", number().into())]).strip();
+        let ok = val(o, &Input { a: 1, extra: "x" }).unwrap();
+        let map = ok.as_object().unwrap();
+        assert!(map.get("a").is_some());
+        assert!(map.get("extra").is_none());
+    }
+
+    // T2-5: object field errors carry path
+    #[test]
+    fn object_field_error_path() {
+        #[derive(serde::Serialize)]
+        struct AgeInput { age: &'static str }
+
+        let o = object([("age", number().into())]);
+        let err = val(o, &AgeInput { age: "x" }).unwrap_err();
+        assert_eq!(err.code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(err.path, vec!["age"]);
+
+        // Nested
+        #[derive(serde::Serialize)]
+        struct Nested { user: AgeInput }
+        let nested = object([("user", object([("age", number().into())]).into())]);
+        let err2 = val(nested, &Nested { user: AgeInput { age: "x" } }).unwrap_err();
+        assert_eq!(err2.path, vec!["user", "age"]);
+    }
+
+    // T2-6: object optional / default / required
+    #[test]
+    fn object_optional_default_required() {
+        use serde_json::json;
+
+        // {a: optional, b: default(5), c: required}
+        let schema = object([
+            ("a", number().optional().into()),
+            ("b", number().default(5i64).into()),
+            ("c", number().into()),
+        ]);
+
+        #[derive(serde::Serialize)]
+        struct JustC { c: i64 }
+
+        let ok = val(schema.clone(), &JustC { c: 1 }).unwrap();
+        let map = ok.as_object().unwrap();
+        assert!(map.get("a").is_none(), "optional absent field should be omitted");
+        assert_eq!(map.get("b"), Some(&ZerxValue::I64(5)));
+        assert_eq!(map.get("c"), Some(&ZerxValue::I64(1)));
+
+        // Missing required field
+        let schema2 = object([
+            ("a", number().optional().into()),
+            ("b", number().default(5i64).into()),
+            ("c", number().into()),
+        ]);
+        let err = val(schema2, &json!({})).unwrap_err();
+        assert_eq!(err.code, ErrorCode::REQUIRED);
+        assert_eq!(err.path, vec!["c"]);
+    }
+
+    // T2-7: array
+    #[test]
+    fn array_type_and_element() {
+        let a = array(number());
+        assert!(val(a.clone(), &vec![1i64, 2, 3]).is_ok());
+
+        let err = val(a.clone(), &7i32).unwrap_err();
+        assert_eq!(err.code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(err.expected.as_deref(), Some("array"));
+
+        // Element error with path
+        let mixed: Vec<serde_json::Value> = vec![
+            serde_json::json!(1),
+            serde_json::json!("x"),
+            serde_json::json!(3),
+        ];
+        let err2 = val(array(number()), &mixed).unwrap_err();
+        assert_eq!(err2.code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(err2.path, vec!["1"]);
+    }
+
+    // T2-8: array min/max and json_schema fragments
+    #[test]
+    fn array_min_max() {
+        assert!(val(array(number()).min(2), &vec![1i64, 2]).is_ok());
+        let err = val(array(number()).min(2), &vec![1i64]).unwrap_err();
+        assert_eq!(err.code, ErrorCode::ARRAY_TOO_SHORT);
+
+        assert!(val(array(number()).max(2), &vec![1i64, 2]).is_ok());
+        let err2 = val(array(number()).max(2), &vec![1i64, 2, 3]).unwrap_err();
+        assert_eq!(err2.code, ErrorCode::ARRAY_TOO_LONG);
+
+        assert_eq!(ArrayMinLength(2).json_schema()["minItems"], serde_json::json!(2));
+        assert_eq!(ArrayMaxLength(2).json_schema()["maxItems"], serde_json::json!(2));
+    }
+
+    // T2-9: record
+    #[test]
+    fn record_type_and_values() {
+        use serde_json::json;
+
+        let r = record(number());
+        let ok = val(r.clone(), &json!({"x": 1, "y": 2})).unwrap();
+        let map = ok.as_object().unwrap();
+        assert!(map.get("x").is_some());
+        assert!(map.get("y").is_some());
+
+        let err = val(record(number()), &7i32).unwrap_err();
+        assert_eq!(err.code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(err.expected.as_deref(), Some("object"));
+
+        let mixed = json!({"x": 1, "y": "z"});
+        let err2 = val(record(number()), &mixed).unwrap_err();
+        assert_eq!(err2.code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(err2.path, vec!["y"]);
+    }
+
+    // T2-10: tuple
+    #[test]
+    fn tuple_validation() {
+        let t = tuple([string().into(), number().into()]);
+        let ok_input: (&str, i64) = ("a", 1);
+        assert!(val(t.clone(), &ok_input).is_ok());
+
+        // Wrong length
+        let err = val(tuple([string().into(), number().into()]), &vec![serde_json::json!("a")]).unwrap_err();
+        assert_eq!(err.code, ErrorCode::TUPLE_LENGTH_MISMATCH);
+
+        // Element type error
+        let bad: (&str, &str) = ("a", "b");
+        let err2 = val(tuple([string().into(), number().into()]), &bad).unwrap_err();
+        assert_eq!(err2.code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(err2.path, vec!["1"]);
+
+        // Non-array
+        let err3 = val(tuple([string().into()]), &7i32).unwrap_err();
+        assert_eq!(err3.code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(err3.expected.as_deref(), Some("array"));
+    }
+
+    // T2-11: union
+    #[test]
+    fn union_matching() {
+        let u = union([number().into(), string().into()]);
+        assert!(val(u.clone(), &1i64).is_ok());
+        assert!(val(u.clone(), "x").is_ok());
+
+        let err = val(u, &true).unwrap_err();
+        assert_eq!(err.code, ErrorCode::UNION_MISMATCH);
+        assert_eq!(err.inner_errors.len(), 2);
+    }
+
+    // T2-12: literal
+    #[test]
+    fn literal_matching() {
+        assert!(val(literal("human"), "human").is_ok());
+        assert_eq!(val(literal("human"), "tool").unwrap_err().code, ErrorCode::INVALID_LITERAL);
+        assert_eq!(val(literal("human"), &7i32).unwrap_err().code, ErrorCode::INVALID_LITERAL);
+
+        assert!(val(literal(true), &true).is_ok());
+        assert_eq!(val(literal(true), &false).unwrap_err().code, ErrorCode::INVALID_LITERAL);
+
+        // Numeric exact-match: literal(5i64) matches I64(5) but not U64(5)
+        let v_i64 = ZerxValue::from_serialize(&5i64).unwrap();
+        let s: Schema = literal(5i64).into();
+        assert!(s.parse_present(&v_i64, &mut ParseContext::new()).is_ok());
+    }
+
+    // T2-13: discriminated_union happy path
+    #[test]
+    fn discriminated_union_happy_path() {
+        let du = discriminated_union("kind", [
+            object([("kind", literal("human").into()), ("session", string().into())]).into(),
+            object([("kind", literal("tool").into()), ("tool", string().into())]).into(),
+        ]);
+
+        use serde_json::json;
+        assert!(val(du.clone(), &json!({"kind": "human", "session": "s"})).is_ok());
+        assert!(val(du.clone(), &json!({"kind": "tool", "tool": "t"})).is_ok());
+
+        let err = val(du.clone(), &json!({"kind": "other"})).unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_DISCRIMINANT);
+
+        let err2 = val(du.clone(), &json!({"session": "s"})).unwrap_err();
+        assert_eq!(err2.code, ErrorCode::INVALID_DISCRIMINANT);
+
+        let err3 = val(du.clone(), &7i32).unwrap_err();
+        assert_eq!(err3.code, ErrorCode::TYPE_MISMATCH);
+
+        // Field error inside matched variant propagates with path
+        let err4 = val(du, &json!({"kind": "human", "session": 7})).unwrap_err();
+        assert_eq!(err4.code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(err4.path, vec!["session"]);
+    }
+
+    // T2-14: discriminated_union config error (deferred, C7)
+    #[test]
+    fn discriminated_union_config_errors() {
+        // (a) variant not an object
+        let du_a = discriminated_union("kind", [number().into()]);
+        assert_eq!(val(du_a.clone(), &7i32).unwrap_err().code, ErrorCode::INVALID_DISCRIMINATED_UNION);
+        assert_eq!(
+            val(du_a, &serde_json::json!({"kind": "x"})).unwrap_err().code,
+            ErrorCode::INVALID_DISCRIMINATED_UNION
+        );
+
+        // (b) discriminator field not a literal
+        let du_b = discriminated_union("kind", [
+            object([("kind", string().into())]).into(),
+        ]);
+        assert_eq!(val(du_b, &serde_json::json!({"kind": "x"})).unwrap_err().code, ErrorCode::INVALID_DISCRIMINATED_UNION);
+
+        // (c) discriminator optional
+        let du_c = discriminated_union("kind", [
+            object([("kind", literal("human").optional().into())]).into(),
+        ]);
+        assert_eq!(val(du_c, &serde_json::json!({"kind": "human"})).unwrap_err().code, ErrorCode::INVALID_DISCRIMINATED_UNION);
+
+        // (c2) discriminator with default
+        let du_c2 = discriminated_union("kind", [
+            object([("kind", literal("human").default("human").into())]).into(),
+        ]);
+        assert_eq!(val(du_c2, &serde_json::json!({"kind": "human"})).unwrap_err().code, ErrorCode::INVALID_DISCRIMINATED_UNION);
+
+        // (c3) discriminator nullable
+        let du_c3 = discriminated_union("kind", [
+            object([("kind", literal("human").nullable().into())]).into(),
+        ]);
+        assert_eq!(val(du_c3, &serde_json::json!({"kind": "human"})).unwrap_err().code, ErrorCode::INVALID_DISCRIMINATED_UNION);
+
+        // (d) duplicate discriminator value
+        let du_d = discriminated_union("kind", [
+            object([("kind", literal("human").into())]).into(),
+            object([("kind", literal("human").into())]).into(),
+        ]);
+        assert_eq!(val(du_d, &serde_json::json!({"kind": "human"})).unwrap_err().code, ErrorCode::INVALID_DISCRIMINATED_UNION);
+
+        // Non-object input against mis-configured DU → INVALID_DISCRIMINATED_UNION, not TYPE_MISMATCH
+        let du_e = discriminated_union("kind", [number().into()]);
+        assert_eq!(val(du_e, &7i32).unwrap_err().code, ErrorCode::INVALID_DISCRIMINATED_UNION);
+    }
+
+    // T2-15: nesting and composition with deep path
+    #[test]
+    fn nesting_and_composition() {
+        use serde_json::json;
+
+        let schema = object([
+            ("tags", array(string()).max(2).into()),
+            ("pair", tuple([number().into(), number().into()]).into()),
+            ("meta", record(number()).into()),
+        ]).strip();
+
+        let ok = val(schema.clone(), &json!({
+            "tags": ["a", "b"],
+            "pair": [1, 2],
+            "meta": {"x": 1},
+            "extra": "dropped"
+        })).unwrap();
+        assert!(ok.as_object().unwrap().get("extra").is_none());
+
+        // Deep error path: pair[1] is wrong type
+        let err = val(schema, &json!({
+            "tags": ["a", "b"],
+            "pair": [1, "x"],
+            "meta": {"x": 1}
+        })).unwrap_err();
+        assert_eq!(err.path, vec!["pair", "1"]);
+    }
+
+    // T2-16: SchemaKind dispatch + Debug for new variants
+    #[test]
+    fn schema_kind_debug_t2() {
+        let cases: &[(&str, Schema)] = &[
+            ("Object", object([("a", number().into())]).into()),
+            ("Array", array(number()).into()),
+            ("Record", record(number()).into()),
+            ("Tuple", tuple([number().into()]).into()),
+            ("Union", union([number().into()]).into()),
+            ("DiscriminatedUnion", discriminated_union("k", [
+                object([("k", literal("v").into())]).into()
+            ]).into()),
+            ("Literal", literal("x").into()),
+        ];
+        for (expected, s) in cases {
+            let debug = format!("{:?}", s);
+            assert!(debug.contains(expected), "expected {expected} in: {debug}");
+        }
+    }
+
+    // T2-17: depth guard composes with containers
+    #[test]
+    fn depth_guard_with_containers() {
+        use crate::schema::{ParseContext, MAX_PARSE_DEPTH};
+
+        // array(array(array(...))) 101 deep exceeds limit
+        let mut s: Schema = array(number()).into();
+        for _ in 0..MAX_PARSE_DEPTH {
+            let prev = s.clone();
+            s = array(prev).into();
+        }
+        // Build a deeply nested array value
+        let mut v = serde_json::json!([]);
+        for _ in 0..MAX_PARSE_DEPTH {
+            v = serde_json::json!([v]);
+        }
+        let err = s.validate(&v).unwrap_err();
+        assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+
+        // Same context not poisoned
+        let mut ctx = ParseContext::new();
+        let shallow: Schema = array(number()).into();
+        assert!(shallow.parse_present(&ZerxValue::Array(vec![ZerxValue::I64(1)]), &mut ctx).is_ok());
+    }
+
+    // T2-18: clone immutability with object modes
+    #[test]
+    fn clone_immutability_object_mode() {
+        let base = object([("a", number().into())]);
+        let passthrough: Schema = base.clone().passthrough().into();
+        let strict: Schema = Schema::from(base);
+
+        // passthrough accepts unknown keys
+        #[derive(serde::Serialize)]
+        struct WithExtra { a: i64, x: i64 }
+        assert!(passthrough.validate(&WithExtra { a: 1, x: 2 }).is_ok());
+        // strict rejects them
+        assert_eq!(
+            strict.validate(&WithExtra { a: 1, x: 2 }).unwrap_err().code,
+            ErrorCode::UNKNOWN_PROPERTY
+        );
     }
 }

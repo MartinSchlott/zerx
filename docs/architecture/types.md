@@ -90,8 +90,67 @@ None.
 - Error codes introduced by this concern MUST be declared as associated constants in a separate `impl ErrorCode` block in `src/types.rs`; no edit to `src/error.rs` is permitted.
 - Codes introduced by PLAN_T1: `STRING_TOO_SHORT`, `STRING_TOO_LONG`, `PATTERN_MISMATCH`, `PATTERN_INVALID`, `INVALID_EMAIL`, `INVALID_UUID`, `NUMBER_TOO_SMALL`, `NUMBER_TOO_LARGE`, `NOT_INTEGER`, `INVALID_ENUM_VALUE`.
 
+### Complex types (PLAN_T2)
+
+- The seven complex-type variants (`Object`, `Array`, `Record`, `Tuple`, `Union`, `DiscriminatedUnion`, `Literal`) MUST each add exactly one delegating arm to `check_type`, `parse_inner`, and the `Debug` match; no new parse-flow control logic MAY be introduced per variant.
+- Container `parse_*` delegates MUST prepend their path segment to every child error via `e.path.insert(0, segment)` as the stack unwinds; object/record delegates MUST prepend the field key; array/tuple delegates MUST prepend the decimal-string element index.
+
+#### `object` (PLAN_T2 — candidate C4)
+
+- `check_object` MUST accept `ZerxValue::Object`; any other kind MUST yield `Err(TYPE_MISMATCH)` with `expected = "object"`.
+- The `object(fields)` constructor MUST canonicalize duplicate keys using last-write-wins / first-occurrence-order semantics: a repeated key overwrites the schema in place without moving its position.
+- Object validation operates in one of three modes: `Strict` (default), `Passthrough`, or `Strip`.
+- In `Strict` mode, the first input key absent from `shape` MUST yield `Err(UNKNOWN_PROPERTY)` with that key prepended to `path`; field validation MUST NOT proceed after the first unknown-key error.
+- In `Passthrough` mode, unknown keys MUST be appended verbatim to the output after all shape-defined fields; output key order MUST be shape order first, then passthrough keys in input order.
+- In `Strip` mode, unknown keys MUST be silently dropped.
+- Per-field delegation MUST invoke `Schema::parse_field` for each `(key, field_schema)` pair in `shape` order; a missing required field MUST yield `Err(REQUIRED)` with the key prepended to `path`; any field error MUST have the field key prepended to `path`.
+
+#### `array` (PLAN_T2)
+
+- `check_array` MUST accept `ZerxValue::Array`; any other kind MUST yield `Err(TYPE_MISMATCH)` with `expected = "array"`.
+- Each element MUST be validated with `item.parse_present`; an element error MUST have its decimal-string index prepended to `path`.
+- `ArraySchema::min(n)` MUST push an `ArrayMinLength(n)` validator; an array whose length is less than `n` MUST yield `Err(ARRAY_TOO_SHORT)`; the JSON Schema fragment MUST be `{"minItems": n}`.
+- `ArraySchema::max(n)` MUST push an `ArrayMaxLength(n)` validator; an array whose length exceeds `n` MUST yield `Err(ARRAY_TOO_LONG)`; the JSON Schema fragment MUST be `{"maxItems": n}`.
+- Array-length validators run in the `validators` step, before element descent in `parse_inner`.
+
+#### `record` (PLAN_T2)
+
+- `check_record` MUST accept `ZerxValue::Object`; any other kind MUST yield `Err(TYPE_MISMATCH)` with `expected = "object"`.
+- Every value in the input map MUST be validated against the single `value_schema` via `parse_present`; a value error MUST have its key prepended to `path`; the output map MUST preserve input key order.
+
+#### `tuple` (PLAN_T2)
+
+- `check_tuple` MUST accept `ZerxValue::Array`; any other kind MUST yield `Err(TYPE_MISMATCH)` with `expected = "array"`.
+- If the input array length differs from `items.len()`, `parse_tuple` MUST yield `Err(TUPLE_LENGTH_MISMATCH)` with `expected = "array of length <n>"` and `received = "array of length <m>"`.
+- Each position `i` MUST be validated with `items[i].parse_present`; a position error MUST have `i.to_string()` prepended to `path`.
+
+#### `union` (PLAN_T2)
+
+- `check_union` MUST always return `Ok(())`; variant matching is deferred to `parse_union`.
+- `parse_union` MUST attempt each variant via `parse_present` in declaration order and return the first `Ok`.
+- If all variants fail, `parse_union` MUST return `Err(ZerxError::union([], inner_errors))` with per-variant errors as `inner_errors`.
+
+#### `discriminated_union` (PLAN_T2)
+
+- A variant is well-formed for `discriminated_union` only if: its kind is `Object`; the `shape` contains the discriminator key; the discriminator field's kind is `Literal`; the discriminator field is required, non-defaulted, and non-nullable (`optional == false`, `default.is_none()`, `nullable == false`); the literal const is keyable (`Bool`, `i128`-range integer, or `String`); and the discriminant key is unique across all variants.
+- `discriminated_union(key, variants)` MUST be infallible; any structural defect MUST be recorded as `DiscriminatorState::Invalid(message)` and raised as `Err(INVALID_DISCRIMINATED_UNION)` in `check_discriminated_union` — the first step of the parse flow — so the schema-defect error wins over `TYPE_MISMATCH` for any input.
+- `DiscriminantKey` MUST represent `Bool`, `i128`-range integers (all integer `ZerxValue` variants via lossless widening), and `String`; any other literal kind (float, null, array, object, bytes) MUST be treated as non-keyable and yield `DiscriminatorState::Invalid`.
+- An input object whose discriminator field is absent or non-keyable MUST yield `Err(INVALID_DISCRIMINANT)` with `expected` listing allowed discriminant values.
+- A discriminator value present but not in the lookup map MUST yield `Err(INVALID_DISCRIMINANT)` with `expected` listing allowed values and `received = type_tag(discriminator_value)`.
+- When a variant is matched, `parse_present` MUST be called on the whole input object; no path segment is added at the discriminated-union level.
+
+#### `literal` (PLAN_T2)
+
+- `check_literal` MUST accept input only when `value == constant` using `ZerxValue` `PartialEq`; any non-matching value MUST yield `Err(INVALID_LITERAL)` with `expected = literal_descriptor(constant)` and `received = type_tag(value)`.
+- `literal_descriptor` MUST NOT embed a raw `ZerxValue` in any error field; it MUST return a compact string form of the constant.
+- Numeric literals use exact variant equality: `literal(5i64)` stores `I64(5)` and MUST NOT match `U64(5)`. This cross-variant caveat is accepted for v1.
+
+### Error codes (PLAN_T2)
+
+- Codes introduced by PLAN_T2: `UNKNOWN_PROPERTY`, `ARRAY_TOO_SHORT`, `ARRAY_TOO_LONG`, `TUPLE_LENGTH_MISMATCH`, `INVALID_LITERAL`, `INVALID_DISCRIMINANT`, `INVALID_DISCRIMINATED_UNION`.
+
 ## Related Decisions
 
-- Pending migration. This concern is governed by candidate decisions C1, C7, C8, C9
+- Pending migration. This concern is governed by candidate decisions C1, C4, C7, C8, C9
   in `docs/CONCEPT_zerx_foundation.md`; their `D-` slug IDs are added here at
   Concept Closeout, once promoted to `docs/decisions.md`.

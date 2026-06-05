@@ -143,6 +143,13 @@ pub(crate) enum SchemaKind {
     Boolean,
     Enum(Vec<std::string::String>),
     Null,
+    Object(crate::types::ObjectBody),
+    Array(Box<Schema>),
+    Record(Box<Schema>),
+    Tuple(Vec<Schema>),
+    Union(Vec<Schema>),
+    DiscriminatedUnion(crate::types::DiscriminatedUnionBody),
+    Literal(ZerxValue),
 }
 
 impl SchemaKind {
@@ -160,6 +167,13 @@ impl SchemaKind {
             SchemaKind::Boolean => crate::types::check_boolean(value),
             SchemaKind::Enum(set) => crate::types::check_enum(value, set),
             SchemaKind::Null => crate::types::check_null(value),
+            SchemaKind::Object(_) => crate::types::check_object(value),
+            SchemaKind::Array(_) => crate::types::check_array(value),
+            SchemaKind::Record(_) => crate::types::check_record(value),
+            SchemaKind::Tuple(_) => crate::types::check_tuple(value),
+            SchemaKind::Union(_) => crate::types::check_union(),
+            SchemaKind::DiscriminatedUnion(body) => crate::types::check_discriminated_union(value, body),
+            SchemaKind::Literal(c) => crate::types::check_literal(value, c),
         }
     }
 
@@ -167,7 +181,7 @@ impl SchemaKind {
     pub(crate) fn parse_inner(
         &self,
         value: &ZerxValue,
-        _ctx: &mut ParseContext,
+        ctx: &mut ParseContext,
     ) -> Result<ZerxValue, ZerxError> {
         match self {
             SchemaKind::Any
@@ -177,6 +191,13 @@ impl SchemaKind {
             | SchemaKind::Enum(_)
             | SchemaKind::Null => Ok(value.clone()),
             SchemaKind::Lazy(_) => unreachable!("Lazy is intercepted before parse_inner"),
+            SchemaKind::Object(body) => crate::types::parse_object(body, value, ctx),
+            SchemaKind::Array(item) => crate::types::parse_array(item, value, ctx),
+            SchemaKind::Record(vs) => crate::types::parse_record(vs, value, ctx),
+            SchemaKind::Tuple(items) => crate::types::parse_tuple(items, value, ctx),
+            SchemaKind::Union(variants) => crate::types::parse_union(variants, value, ctx),
+            SchemaKind::DiscriminatedUnion(body) => crate::types::parse_discriminated_union(body, value, ctx),
+            SchemaKind::Literal(_) => Ok(value.clone()),
         }
     }
 }
@@ -242,6 +263,13 @@ impl std::fmt::Debug for Schema {
             SchemaKind::Boolean => "Boolean",
             SchemaKind::Enum(_) => "Enum",
             SchemaKind::Null => "Null",
+            SchemaKind::Object(_) => "Object",
+            SchemaKind::Array(_) => "Array",
+            SchemaKind::Record(_) => "Record",
+            SchemaKind::Tuple(_) => "Tuple",
+            SchemaKind::Union(_) => "Union",
+            SchemaKind::DiscriminatedUnion(_) => "DiscriminatedUnion",
+            SchemaKind::Literal(_) => "Literal",
         };
         f.debug_struct("Schema")
             .field("kind", &kind_str)

@@ -292,6 +292,7 @@ Update step.
 - `PLAN_T2_complex_types` — `object`, `array`, `record`, `tuple`, `union`,
   `discriminated_union` (O(1) variant lookup), `literal`; object modes
   (strict/passthrough/strip). Deps: T1.
+  **Done.**
 - `PLAN_T3_object_utilities` — `partial`, `extend`, `omit`,
   `omit_read_only`/`omit_write_only` (shape changes) and `strip_only`,
   `strip_read_only`/`strip_write_only` (runtime-only). Deps: T2.
