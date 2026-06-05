@@ -318,7 +318,7 @@ Update step.
 - `PLAN_D1_delta_replace` — `parse_delta(path, value)` and `replace(instance,
   path, value)` with full root revalidation incl. `refine`. The host-opaque
   interaction is contract-fixed in C3 and absent from the default build, so this
-  plan is complete on its own. Deps: Phase 2.
+  plan is complete on its own. Deps: Phase 2. **Done.**
 - `PLAN_P1_policy_pipeline` — `register_policy`, schema transforms (pre-parse) and
   type transforms (post-parse), built-in `sql` policy, deref hook. Fills
   `policy.md`. Deps: J2.
