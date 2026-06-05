@@ -12,4 +12,4 @@ pub use schema::{Schema, Modify, Validator, AnySchema, LazySchema, any, lazy, MA
 pub use types::{string, number, boolean, enumerate, null, StringSchema, NumberSchema, BooleanSchema, EnumSchema, NullSchema};
 pub use types::{object, array, record, tuple, union, discriminated_union, literal, ObjectSchema, ArraySchema, RecordSchema, TupleSchema, UnionSchema, DiscriminatedUnionSchema, LiteralSchema};
 pub use types::{buffer, uri, url, json, jsonschema, BufferSchema, UriSchema, UrlSchema, JsonSchema, JsonschemaSchema};
-pub use json_schema::{ExportOptions, DRAFT_2020_12};
+pub use json_schema::{ExportOptions, DRAFT_2020_12, from_json_schema};

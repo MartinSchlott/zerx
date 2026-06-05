@@ -21,6 +21,7 @@
 ## Provides to
 
 - `json-schema`: validator `json_schema()` fragment contributions (per-validator JSON Schema keyword map; established at `PLAN_J1_export`)
+- `json-schema`: type constructors (the builder/constructor surface import reconstructs)
 
 ## External Contracts
 
