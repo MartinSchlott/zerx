@@ -311,6 +311,7 @@ Update step.
   lazy placeholders, all four `additionalProperties` shapes, `oneOf`→union with
   `x-oneOf`, `allOf`/`not` raise clear errors, default application on import.
   Completes `json-schema.md`. Deps: J1.
+  **Done.**
 
 **Phase 4 — Delta/Replace + Policy**
 
