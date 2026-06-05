@@ -1,12 +1,12 @@
 # Zerx
 
-**A Rust schema validator for data that isn't JSON-clean — buffers, Lua values from `mlua`, PostgreSQL JSONBs. Strict by default, serde-native, bidirectional JSON Schema. Schemas you assemble at runtime, not derive from types.**
+**A Rust schema validator for data that isn't JSON-clean — buffers, Lua values, PostgreSQL JSONBs. Strict by default, serde-native, bidirectional JSON Schema. Schemas you assemble at runtime, not derive from types.**
 
-> **Status:** vision stage — design is settled, implementation has not started. See [`docs/vision.md`](docs/vision.md) for the committed scope and the open architectural decisions. This README describes the target library.
+> **Status:** v1.0.0 — implemented and tested. The What/Why lives in [`docs/definition.md`](docs/definition.md), the binding design decisions in [`docs/decisions.md`](docs/decisions.md), the structure in [`docs/architecture/`](docs/architecture/).
 
-In Rust the type system and `serde` take *types* seriously, and that's where validation usually stops: derive a struct, parse into it, done. But plenty of real data never fits a clean struct — a binary buffer, a Lua table coming back from `mlua`, a PostgreSQL JSONB, a schema you only know at runtime. Zerx steps back: schema validation is useful even when the data isn't JSON-clean and the shape isn't known at compile time. A `zerx::buffer()` is a first-class citizen, and the schema itself is a **value** you build, clone, slice, and extend at runtime — not a type a macro derives. JSON Schema roundtrip still works, through format markers (`format: "buffer"`, `"record"`, `"json"`, `"function"`) that pure-JSON tools can ignore.
+In Rust the type system and `serde` take *types* seriously, and that's where validation usually stops: derive a struct, parse into it, done. But plenty of real data never fits a clean struct — a binary buffer, a Lua table coming back from a sandboxed runtime, a PostgreSQL JSONB, a schema you only know at runtime. Zerx steps back: schema validation is useful even when the data isn't JSON-clean and the shape isn't known at compile time. A `zerx::buffer()` is a first-class citizen, and the schema itself is a **value** you build, clone, slice, and extend at runtime — not a type a macro derives. JSON Schema roundtrip still works, through format markers (`format: "buffer"`, `"record"`, `"json"`) that pure-JSON tools can ignore.
 
-If you derive schemas from Rust types, take [`schemars`](https://github.com/GREsau/schemars). If you want derive-macro field validation, take [`garde`](https://github.com/jprochazk/garde). If you push buffers, `mlua` tables, or PostgreSQL JSONBs through a runtime-built validator and need JSON Schema both ways, take Zerx.
+If you derive schemas from Rust types, take [`schemars`](https://github.com/GREsau/schemars). If you want derive-macro field validation, take [`garde`](https://github.com/jprochazk/garde). If you push buffers, Lua tables, or PostgreSQL JSONBs through a runtime-built validator and need JSON Schema both ways, take Zerx.
 
 ```rust
 use zerx::{self, ZerxError};
@@ -32,11 +32,11 @@ let recreated   = zerx::from_json_schema(&json_schema)?;
 
 ```bash
 cargo add zerx
-# with Lua interop (host-opaque values: functions, coroutines, userdata)
-cargo add zerx --features mlua
+# with schema-directed Lua-value validation (zerx-owned LuaValue input type)
+cargo add zerx --features lua
 ```
 
-Built on `serde` + `serde_json`. The `mlua` layer is an opt-in feature.
+Built on `serde` + `serde_json` + `regex`. The `lua` feature is opt-in and adds no further dependency — only a zerx-owned `LuaValue` input type and the `validate_lua` entry point.
 
 ## What it does
 
@@ -44,19 +44,26 @@ Built on `serde` + `serde_json`. The `mlua` layer is an opt-in feature.
 
 **serde in, serde out.** `validate::<T: Serialize>(&T)` accepts any serde-serializable value directly — no manual conversion step. `ZerxValue` is a serde value over the *full* serde data model, **including bytes**, so it serializes back out to any serde format (json, msgpack, bincode). `serde_json::Value` is serde minus bytes; `ZerxValue` is serde plus validation plus JSON Schema roundtrip.
 
-**First-class non-JSON types.** `zerx::buffer().mime(_)` carries bytes natively and roundtrips through JSON Schema as `format: "buffer"`. `zerx::function()` and `zerx::tvalue()` (the `mlua` feature) validate Lua functions/coroutines and arbitrarily nested userdata returned by `mlua` — host-opaque values conventional validators have to reject or silently coerce. `zerx::json()` validates "anything JSON-serializable" while still rejecting binary data, and roundtrips via `format: "json"`.
+**First-class non-JSON types.** `zerx::buffer().mime(_)` carries bytes natively and roundtrips through JSON Schema as `format: "buffer"`. `zerx::json()` validates "anything serde-serializable" while still rejecting nothing structurally, and roundtrips via `format: "json"`; `zerx::record(_)` validates open string-keyed maps and roundtrips via `format: "record"`. Buffers are produced only by serde's `serialize_bytes` path — a number array is not silently coerced into bytes.
+
+**Schema-directed Lua validation.** Under the `lua` feature, `validate_lua(&zerx::LuaValue)` validates a Lua data value (`nil`/`bool`/`int`/`float`/`bytes`/`table`) and disambiguates it **using the schema**: at an `array()` node a table reads its array part, at `object()`/`record()` its hash part; at `string()` a byte string decodes as UTF-8, at `buffer()` it stays raw bytes. zerx owns the `LuaValue` input type — a sandboxed Lua runtime (e.g. a sibling crate) maps its boundary values into it; the dependency runs runtime → zerx. There is no live-handle interop and no `mlua` dependency.
 
 **Programmatic assembly.** The schema is a value, not a type. Build it from runtime data, `clone()` it, slice it (`omit`, `partial`), `extend` it — the opposite of derive-based `schemars`. No macro, no compile-time type; the schema exists at runtime and bends to runtime facts (a DB column list, a tenant config, an LLM tool spec).
 
-**mlua normalization.** `validate_lua(&mlua::Value)` normalizes Lua data before validation: 1-based numeric tables become arrays, byte-encoded strings decode to UTF-8, nested tables walk into the right schema variant. Critically, unions run transform-and-validate **per variant**, not "transform once with the first variant's rules" — Lua data shaped for variant B doesn't fail because variant A's transform mangled it.
-
 **Delta and Replace.** Validate sub-tree updates by JSON Pointer without re-sending the whole object. `parse_delta(path, &value)` validates a value against the schema at that path, no instance required. `replace(&instance, path, &value)` returns a new value with the sub-tree replaced and the **whole root** revalidated — `.refine()` cross-field constraints fire correctly.
 
-**Policy-driven JSON Schema import.** `zerx::from_json_schema(&schema, opts.policy("sql"))` runs a composable pre-parse `SchemaTransform` pass over the input and a post-parse `TypeTransform` pass over the resulting types. The built-in `sql` policy maps `int64 → string` (configurable), `jsonb → zerx::json()`, `bytea → zerx::buffer()`, normalizes `anyOf` of `T | null` to `T.nullable()`, and applies SQL-specific format mappings. Register your own with `zerx::register_policy(name, …)`.
+**Policy-driven JSON Schema import.** `from_json_schema_with(&schema, &opts)` runs a composable pre-parse `SchemaTransform` pass over the input and a post-parse `TypeTransform` pass over the resulting types. The built-in `sql` policy (PostgreSQL-focused) maps `int64 → string`, `jsonb → zerx::json()`, `bytea → zerx::buffer()`, normalizes `anyOf` of `T | null` to `T.nullable()`, and applies SQL format mappings (e.g. `timestamp* → date-time`). Register your own with `zerx::register_policy(name, …)`.
 
-**Bidirectional JSON Schema.** `to_json_schema` and `from_json_schema` are designed for roundtrip stability. `$defs`/`$ref` survive, recursive structures survive (lazy placeholders + memoization), format markers survive. `oneOf` imports as a union with `x-oneOf` metadata. `allOf` and `not` raise clear errors instead of being silently dropped. `additionalProperties` handles all four input shapes (`true` / `false` / absent / schema object — the last treated as passthrough). Discriminated unions use Draft 2020-12 `discriminator` and reconstruct correctly even nested inside arrays.
+**Bidirectional JSON Schema.** `to_json_schema` and `from_json_schema` are built for roundtrip stability. `$defs`/`$ref` survive, recursive structures survive (lazy placeholders + memoization), format markers survive. `oneOf` imports as a union with `x-oneOf` metadata. `allOf` and `not` raise clear errors instead of being silently dropped. `additionalProperties` handles all four input shapes (`true` / `false` / absent / schema object — the last treated as passthrough). Discriminated unions use Draft 2020-12 `discriminator` and reconstruct correctly even nested inside arrays.
 
-**`Result`, not exceptions.** Rust's `Result` collapses Zex's `parse`/`safeParse` split into one — every operation returns `Result<_, ZerxError>`; use `?`. `ZerxError` carries `path`, `code`, `message`, `received`, `expected`, `inner_errors`, and serializes via `serde` for clean machine-readable handoff.
+**`Result`, not exceptions.** Every operation returns `Result<_, ZerxError>`; use `?`. No throwing variant, no `parse`/`safeParse` split. `ZerxError` carries `path`, `code`, `message`, `received`, `expected`, `inner_errors`, and serializes via `serde` for clean machine-readable handoff.
+
+## What it does not do
+
+- **No type generation or inference.** Zerx never derives a schema from a Rust type and never infers a compile-time `T` from a schema — `schemars`/`typify` and `validator`/`garde` own that ground. `validate` returns a dynamic `ZerxValue`, not an inferred type.
+- **No live Lua handles.** Functions, coroutines, and userdata are not representable; zerx validates Lua *data* only, via schema-directed disambiguation. There is no `mlua` dependency and no host-opaque value variant.
+- **No i18n.** Error messages are English-only; consumers branch on `code` and `path`, never on message text.
+- **No async or streaming validation.** Validation is synchronous and `Result`-returning.
 
 ## Quick taste
 
@@ -74,12 +81,14 @@ let event = zerx::discriminated_union("kind", [
     zerx::object([("kind", zerx::literal("key")),   ("code", zerx::string())]),
 ]);
 
-// Lua data through a union — each variant gets its own transform pass
-let lua_val: mlua::Value = lua.load("return { 'click', 100, 200 }").eval()?;  // 1-based table
-let cmd = zerx::union([
-    zerx::tuple([zerx::literal("click"), zerx::number(), zerx::number()]),
-    zerx::tuple([zerx::literal("key"),   zerx::string()]),
-]);
+// Schema-directed Lua validation (feature = "lua")
+// The schema decides: this table is a tuple, its byte strings are strings/literals.
+use zerx::{LuaValue, LuaTable};
+let lua_val = LuaValue::Table(LuaTable {
+    array: vec![LuaValue::Bytes(b"click".to_vec()), LuaValue::Integer(100), LuaValue::Integer(200)],
+    hash: vec![],
+});
+let cmd = zerx::tuple([zerx::literal("click"), zerx::number(), zerx::number()]);
 cmd.validate_lua(&lua_val)?;
 
 // Delta validation without an instance
@@ -90,8 +99,12 @@ post.parse_delta("/title", &"New title".into())?;   // Err if invalid
 let original = post.validate(&serde_json::json!({ "title": "a", "body": "x" }))?;
 let updated  = post.replace(&original, "/title", &"b".into())?;
 
-// SQL JSON Schema import — int64 → string, jsonb → json(), bytea → buffer(), all objects strict
-let sql_schema = zerx::from_json_schema(&postgres_json_schema, zerx::Opts::policy("sql"))?;
+// SQL JSON Schema import — int64 → string, jsonb → json(), bytea → buffer()
+use zerx::ImportOptions;
+let sql_schema = zerx::from_json_schema_with(
+    &postgres_json_schema,
+    &ImportOptions { policy: Some("sql".into()), ..Default::default() },
+)?;
 ```
 
 ## As a library
@@ -102,7 +115,7 @@ use serde::Serialize;
 
 fn api_schema() -> zerx::Schema {
     zerx::object([
-        ("id",         zerx::uuid()),
+        ("id",         zerx::string().uuid()),
         ("payload",    zerx::json()),
         ("signature",  zerx::buffer().mime("application/octet-stream")),
         ("created_at", zerx::string().format("date-time")),
@@ -119,8 +132,9 @@ pub fn api_tool_schema() -> serde_json::Value {
     api_schema().to_json_schema()
 }
 
-/// Validate the model's response — even when it arrives as an mlua value.
-pub fn validate_from_lua(v: &mlua::Value) -> Result<ZerxValue, ZerxError> {
+/// Validate the model's response — even when it arrives as Lua data (feature = "lua").
+#[cfg(feature = "lua")]
+pub fn validate_from_lua(v: &zerx::LuaValue) -> Result<ZerxValue, ZerxError> {
     api_schema().validate_lua(v)
 }
 ```
@@ -130,13 +144,15 @@ pub fn validate_from_lua(v: &mlua::Value) -> Result<ZerxValue, ZerxError> {
 | Group | Members |
 |-------|---------|
 | Basic | `string`, `number`, `boolean`, `enumerate`, `null`, `any`, `json` |
-| Special | `buffer().mime(_)`, `uri`, `url`, `jsonschema`, `function`, `tvalue` |
+| Special | `buffer().mime(_)`, `uri`, `url`, `jsonschema` |
 | Complex | `object`, `array`, `record`, `tuple`, `union`, `discriminated_union`, `literal`, `lazy` |
 | Modifiers | `optional`, `nullable`, `default`, `describe`, `title`, `format`, `mime_format`, `deprecated`, `read_only`, `write_only`, `meta`, `example`, `refine` |
-| Validators | `min`, `max`, `regex`/`pattern`, `int`, `multiline`, `email`, `uuid` |
+| Validators | `min`, `max`, `regex`/`pattern`, `int`, `email`, `uuid` |
 | Object utils | `passthrough`, `strip`, `partial`, `omit`, `omit_read_only`, `omit_write_only`, `strip_only`, `strip_read_only`, `strip_write_only`, `extend` |
-| Validate | `validate`, `validate_lua`, `parse_delta`, `replace` |
-| JSON Schema | `to_json_schema`, `from_json_schema`, `register_policy`, `apply_type_transforms` |
+| Validate | `validate`, `validate_lua` (feature `lua`), `parse_delta`, `replace` |
+| JSON Schema | `to_json_schema`, `to_json_schema_with`, `from_json_schema`, `from_json_schema_with`, `register_policy`, `apply_type_transforms` |
+
+`string().multiline(n)` is a UI meta hint (`x-ui-multiline`), not a validator — it has no validation effect.
 
 ## Error handling
 
@@ -146,12 +162,12 @@ Everything returns `Result<_, ZerxError>`; use `?`. No throwing variant — Rust
 match schema.validate(&bad_data) {
     Ok(value) => { /* ZerxValue, guaranteed schema-conformant */ }
     Err(e) => {
-        e.path;          // ["profile", "name"]
-        e.code;          // "unknown_property" | "missing_required_field" | "validation_failed" | …
+        e.path;          // Vec<String>, e.g. ["profile", "name"]
+        e.code;          // ErrorCode, e.g. "unknown_property" | "required" | "type_mismatch"
         e.message;       // human-readable, English-only (no i18n)
-        e.received;      // the actual value
-        e.expected;      // what was expected
-        e.inner_errors;  // for unions / nested failures
+        e.received;      // Option<String> — a compact type tag, never the raw value
+        e.expected;      // Option<String> — what the schema required
+        e.inner_errors;  // Vec<ZerxError>, for unions / nested failures
         // ZerxError: Serialize — clean machine-readable serialization
     }
 }
@@ -169,28 +185,52 @@ Consumers branch on `code` and `path`, never on message text.
 
 ## LLM Reference
 
-Zerx: a Rust runtime schema validation library built on `serde` + `serde_json`, with an optional `mlua` feature for host-opaque values. It is a conceptual port of [Zex](https://github.com/) (TypeScript) — consult the Zex source for the canonical semantics of every feature: `/Users/martinschlott/Documents/MyProjects/zex` (`docs/definition.md`, `docs/architecture.md`). This section describes the **target** design; see `docs/vision.md` for committed scope and open decisions.
+Zerx: a Rust runtime schema-validation library (v1.0.0) built on `serde` + `serde_json` + `regex`, with an optional `lua` feature for schema-directed validation of Lua data. It is a conceptual port of Zex (TypeScript); the type catalogue, modifier set, JSON Schema marker conventions, Delta/Replace semantics, error model, and policy pipeline carry over. Normative docs: `docs/definition.md`, `docs/decisions.md`, `docs/architecture/`.
 
-**Core model.** The schema is a runtime value (`zerx::Schema`), not a derived type — built via factory functions (`zerx::object`, `zerx::string`, …), composed, cloned, sliced (`omit`, `partial`), and extended. No type inference: validation returns a dynamic `ZerxValue`, a serde value over the full serde data model (including bytes), not the JSON projection. `ZerxValue` implements `Serialize`/`Deserialize`; `validate::<T: Serialize>` runs an internal serializer so any serde type validates without manual conversion.
+**Core model.** The schema is a runtime value (`zerx::Schema`), not a derived type — built via factory functions (`zerx::object`, `zerx::string`, …), composed, cloned, sliced (`omit`, `partial`), and extended. No type inference: validation returns a dynamic `ZerxValue`, a serde value over the full serde data model (including bytes), not the JSON projection. `ZerxValue` is `'static`, `Clone + PartialEq + Debug`, implements `Serialize`; `validate::<T: Serialize>` runs an internal serializer so any serde type validates without manual conversion. There is no host-opaque layer.
 
-**Two-layer values.** (1) serde-bridgeable — everything in serde's data model incl. bytes/buffer; full roundtrip through any serde format. (2) host-opaque (`mlua` feature) — Lua functions/coroutines/userdata, validatable via `validate_lua(&mlua::Value)` (not `Serialize`), surfacing in JSON Schema only as format markers (`function`, `tvalue`); no serde roundtrip.
+**Representation.** `Schema` is one concrete value: a `SchemaKind` enum, a shared modifier carrier, and a `Vec<Box<dyn Validator>>`. Typed builder structs (`StringSchema`, `NumberSchema`, …) front it and expose type-specific methods (`.min()` exists on `StringSchema`/`NumberSchema`, never on `BooleanSchema`); universal modifiers come from the blanket `Modify` trait. Builders convert to `Schema` via `Into<Schema>`. Every modifier is clone-and-return; `Schema` is not mutated in place. `Schema` is not `Send`/`Sync`.
 
-**Validate flow.** All operations return `Result<_, ZerxError>`. The flow performs (1) circular-reference check, (2) depth limit (Zex: `MAX_PARSE_DEPTH = 100`), (3) default application, (4) optional/nullable handling (default applies on a missing value, not on explicit `null`), (5) type check, (6) validators, (7) type-specific logic. Missing optional properties are omitted from output, never emitted as `null`.
+**Validate flow.** All operations return `Result<_, ZerxError>`. For a present value: depth guard → `nullable` null short-circuit → type check → validators (in storage order) → type-specific logic → refinement predicates. For a missing value: apply `default` if set, else omit if `optional`, else `Err(required)`. `default` applies on a missing value, not on explicit `null`. Missing optional properties are omitted from output, never emitted as `Null`. `MAX_PARSE_DEPTH = 100`.
 
-**Object modes.** `strict` (default) → `unknown_property` error; `passthrough` preserves unknowns; `strip` drops them. The runtime-strip layer (`strip_only`, `strip_read_only`, `strip_write_only`) runs before the mode check, so strict + a known strip set is valid. `omit*` changes the schema; `strip*` is runtime-only.
+**Lua (`lua` feature).** `LuaValue` is `{ Nil, Boolean(bool), Integer(i64), Float(f64), Bytes(Vec<u8>), Table(LuaTable) }`; `LuaTable { array: Vec<LuaValue>, hash: Vec<(LuaValue, LuaValue)> }`. `schema.validate_lua(&LuaValue) -> Result<ZerxValue, ZerxError>` is schema-directed: the schema node resolves table → array vs object/record and byte string → string vs buffer. A non-string hash key under `object`/`record` errors (`lua_invalid_key`); a shape that does not fit the node errors (`lua_shape_mismatch`). The input is an owned, acyclic tree — no cycle guard, no live handles, no `mlua`.
 
-**Unions.** `union` tries each variant in order, collecting per-variant errors into a combined error. `validate_lua` runs transform-and-validate per variant. `discriminated_union` uses a map for O(1) lookup via the discriminator key, Draft 2020-12 `discriminator` on export, and falls back to a plain union on import when variants aren't all objects.
+**JSON Schema.** `to_json_schema` / `to_json_schema_with(&ExportOptions)` compose base schema + validator fragments + modifier metadata, tracking `$defs`/`$ref`; recursive/lazy structures get stable registry entries. `from_json_schema` / `from_json_schema_with(&ImportOptions)` walk the AST: all four `additionalProperties` shapes, `oneOf` → union with `x-oneOf`, `type: "null"`, primitive defaults (defaulted object properties stay non-optional), clear errors on `allOf`/`not`, `$ref` resolved with memoized lazy placeholders so cycles survive.
 
-**JSON Schema.** `to_json_schema` composes the base schema + validator schemas + modifier metadata, tracking `$defs`/`$ref` in an export context; recursive/lazy structures get stable registry entries. `from_json_schema` walks the AST and reconstructs types: handles all four `additionalProperties` shapes, imports `oneOf` as a union with `x-oneOf`, recognizes `type: "null"`, applies primitive defaults, keeps defaulted object properties non-optional, raises clear errors on `allOf`/`not`, and resolves `$ref` with memoized lazy placeholders so cycles survive.
+**Policy system.** `register_policy(name, Policy { schema_transforms, type_transforms })`. `SchemaTransform`s run pre-parse over the input JSON `Value`; `TypeTransform`s run post-parse over the resulting `Schema`. `ImportOptions { policy: Option<String>, schema_transforms, type_transforms, deref }`. Order: deref → policy schema transforms → caller schema transforms → core import → policy type transforms → caller type transforms. Built-in `sql` policy does all its work as pre-parse schema transforms (its `type_transforms` is empty): int64→string, jsonb/json→`format: json`, bytea→`format: buffer`, `T | null` nullable normalization, timestamp/numeric format mapping. An unknown policy name errors `policy_unknown`. `apply_type_transforms` applies type transforms only.
 
-**Policy system.** `register_policy(name, { schema_transforms, type_transforms })`. `SchemaTransform`s run pre-parse over the input JSON Schema; `TypeTransform`s run post-parse over the resulting types. Built-in `sql`: int64→string (strategy-driven), jsonb→`json()`, bytea→`buffer()`, nullable normalization, SQL format mapping, `additionalProperties: false` enforcement, enum-as-literals. `apply_type_transforms` applies type transforms only. Deref hook for external `$ref`.
+**Public API (verbatim from `src/lib.rs`).**
+- `error`: `ErrorCode`, `ZerxError`
+- `value`: `Map`, `ZerxValue`
+- `schema`: `Schema`, `Modify`, `Validator`, `AnySchema`, `LazySchema`, `any`, `lazy`, `MAX_PARSE_DEPTH`
+- `types` (factories): `string`, `number`, `boolean`, `enumerate`, `null`, `object`, `array`, `record`, `tuple`, `union`, `discriminated_union`, `literal`, `buffer`, `uri`, `url`, `json`, `jsonschema` (plus the matching `*Schema` builder structs)
+- `json_schema`: `ExportOptions`, `DRAFT_2020_12`, `from_json_schema`
+- `policy`: `register_policy`, `from_json_schema_with`, `apply_type_transforms`, `Policy`, `ImportOptions`, `SchemaTransform`, `TypeTransform`, `RefResolver`
+- `lua` (feature `lua`): `LuaValue`, `LuaTable`
+- methods on `Schema`: `validate`, `validate_lua` (feature `lua`), `to_json_schema`, `to_json_schema_with`, `parse_delta`, `replace`
 
-**Error model.** `ZerxError { path, code, message, received, expected, inner_errors }`, `Serialize` for machine-readable handoff. Standard codes include `unknown_property`, `missing_required_field`, `validation_failed`. English-only messages (no i18n).
+**Error model.** `ZerxError { path: Vec<String>, code: ErrorCode, message: String, received: Option<String>, expected: Option<String>, inner_errors: Vec<ZerxError> }`, `Serialize` only (errors flow outward). `received`/`expected` are compact descriptor strings, never an embedded value. `ErrorCode` wraps a stable lowercase-snake string. Common codes: `unknown_property`, `required`, `type_mismatch`, `invalid_enum_value`, `invalid_literal`, `union_mismatch`, `invalid_discriminant`, `invalid_discriminated_union`, `string_too_short`, `string_too_long`, `pattern_invalid`, `pattern_mismatch`, `invalid_email`, `invalid_uuid`, `number_too_small`, `number_too_large`, `not_integer`, `array_too_short`, `array_too_long`, `tuple_length_mismatch`, `invalid_uri`, `invalid_url`, `refinement_failed`, `parse_depth_exceeded`, `lazy_reentrance`, `invalid_pointer`, `missing_parent`, `policy_unknown`, `lua_invalid_key`, `lua_shape_mismatch`.
 
-**Lazy / recursive.** `zerx::lazy(|| schema)` for recursive structures, with a reentrance guard that must not be bypassed. Roundtrip via `$ref` and the export context.
+**Runtime dependencies.** `serde` (with `derive`), `serde_json`, `regex` (full crate). The `lua` feature adds no dependency. No `serde_bytes`, no `mlua`.
 
-**Open architectural decisions** (must be resolved before implementation — see `docs/vision.md`): (1) modifier composition — enum-variant vs. trait-object wrapper, the decision that defines the internal representation; (2) `Vec<u8>` buffer fidelity — sources must emit bytes via `serialize_bytes` (`serde_bytes`); (3) host-opaque representation in `ZerxValue` — owning vs. handle.
+**Invariants — things that will bite you if you assume otherwise:**
+
+Buffers arrive only through serde's `serialize_bytes`. A plain `Vec<u8>` serializes as a number array and fails a `buffer()` schema; the field's source must emit bytes (e.g. `serde_bytes` / `ByteBuf` on the caller's own type). Zerx never coerces a number array into bytes.
+
+`received` and `expected` are `Option<String>` descriptor tags (a type tag, the expected shape), never the offending value itself. Do not expect to recover the raw input from a `ZerxError`.
+
+Strict is the default. The first unknown key errors `unknown_property` and field validation stops there. You must opt out explicitly with `.passthrough()` or `.strip()`. The runtime strip layer (`strip_only`/`strip_read_only`/`strip_write_only`) runs *before* the unknown-key check, so strict mode plus a known strip set is valid; `omit*` changes the schema shape, `strip*` is runtime-only.
+
+`default` applies only when a value is absent, not on an explicit `null`. A missing optional field is omitted from output entirely — it is never emitted as `Null`.
+
+`replace` revalidates the whole root (refinements fire), not just the replaced sub-tree, and it only sets a position — it never deletes and never creates an absent parent (`missing_parent`). The replacement value is `T: Serialize`, so a Lua value cannot be passed as the new value.
+
+`validate_lua` is schema-directed, not a fixed `LuaValue → ZerxValue` map: the same Lua table validates as an array under `array()` and as a map under `object()`/`record()`, and the same byte string validates as text under `string()` and as bytes under `buffer()`. The `lua` surface (`LuaValue`, `LuaTable`, `validate_lua`) exists only under the `lua` feature.
+
+`discriminated_union` construction is infallible; a structural defect (e.g. a variant whose discriminator is not a required literal) surfaces as `invalid_discriminated_union` at validate time and wins over `type_mismatch` for any input.
+
+Deep or cyclic serde input errors `parse_depth_exceeded` at depth 100 rather than overflowing the stack; `lazy` schemas carry a reentrance guard (`lazy_reentrance`) that must not be bypassed.
 
 ## License
 
-MIT
+MIT. See `LICENSE`.
