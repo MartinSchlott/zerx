@@ -20,6 +20,7 @@
 - `schema-core`: `ZerxError` (structured validation failure returned by the parse flow)
 - `value-model`: `ZerxError` (serialisation failure surfaced by the serde-in bridge)
 - `json-schema`: `ZerxError` (structured import failure)
+- `policy`: `ZerxError` (structured pipeline failure)
 
 ## External Contracts
 

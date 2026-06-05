@@ -321,7 +321,7 @@ Update step.
   plan is complete on its own. Deps: Phase 2. **Done.**
 - `PLAN_P1_policy_pipeline` — `register_policy`, schema transforms (pre-parse) and
   type transforms (post-parse), built-in `sql` policy, deref hook. Fills
-  `policy.md`. Deps: J2.
+  `policy.md`. Deps: J2. **Done.**
 
 **Phase 5 — Host-opaque (optional, feature-gated)**
 

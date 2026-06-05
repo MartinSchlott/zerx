@@ -21,7 +21,7 @@
 
 ## Provides to
 
-- (none — bidirectional public API surface exposed through `lib.rs`)
+- `policy`: `from_json_schema` (core import walk the pipeline wraps)
 
 ## External Contracts
 

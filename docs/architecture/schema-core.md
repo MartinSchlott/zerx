@@ -25,6 +25,7 @@
 - `types`: `Schema` (core representation that type variants extend by adding `SchemaKind` variants)
 - `types`: `Validator` (trait contract that concrete type validators implement; storage field owned here, implementations in `types`)
 - `json-schema`: `Schema` (schema value that export reads and import reconstructs)
+- `policy`: `Schema` (the value the pipeline produces and type transforms receive)
 
 ## External Contracts
 
