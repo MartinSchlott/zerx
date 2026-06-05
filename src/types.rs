@@ -1367,6 +1367,273 @@ pub fn null() -> NullSchema {
 }
 
 // ---------------------------------------------------------------------------
+// T4 error-code catalogue (no edit to error.rs)
+// ---------------------------------------------------------------------------
+
+impl ErrorCode {
+    pub const INVALID_URI: ErrorCode = ErrorCode::new("invalid_uri");
+    pub const INVALID_URL: ErrorCode = ErrorCode::new("invalid_url");
+}
+
+// ---------------------------------------------------------------------------
+// T4 structural validators
+// ---------------------------------------------------------------------------
+
+fn is_valid_uri(s: &str) -> bool {
+    // scheme ':' path  — scheme: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ); path non-empty
+    let colon = match s.find(':') {
+        Some(i) => i,
+        None => return false,
+    };
+    let scheme = &s[..colon];
+    let rest = &s[colon + 1..];
+    if scheme.is_empty() || rest.is_empty() {
+        return false;
+    }
+    let mut chars = scheme.chars();
+    if !chars.next().unwrap().is_ascii_alphabetic() {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
+}
+
+fn url_regex() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?i)^https?://(?:[-\w.])+(?::[0-9]+)?(?:/(?:[\w/_.-])*)?(?:\?(?:[\w&=%.~!$'()*+,;:@/-])*)?(?:#(?:[\w.~!$'()*+,;:@/-])*)?$"
+        ).expect("url regex is valid")
+    })
+}
+
+fn is_valid_url(s: &str) -> bool {
+    if !url_regex().is_match(s) {
+        return false;
+    }
+    // The regex guarantees the string starts with http(s)://, so "://" is present.
+    let after_scheme = &s[s.find("://").unwrap() + 3..];
+    let host_port_end = after_scheme
+        .find(|c: char| c == '/' || c == '?' || c == '#' || c.is_whitespace())
+        .unwrap_or(after_scheme.len());
+    let host_port = &after_scheme[..host_port_end];
+    if host_port.is_empty() {
+        return false;
+    }
+    // Split hostname and optional port (trailing ":digits")
+    let (hostname, port_opt) = if let Some(colon_pos) = host_port.rfind(':') {
+        let candidate = &host_port[colon_pos + 1..];
+        if !candidate.is_empty() && candidate.bytes().all(|b| b.is_ascii_digit()) {
+            (&host_port[..colon_pos], Some(candidate))
+        } else {
+            (host_port, None)
+        }
+    } else {
+        (host_port, None)
+    };
+    if hostname.is_empty() {
+        return false;
+    }
+    if hostname.contains("..") || hostname.starts_with('.') || hostname.ends_with('.') {
+        return false;
+    }
+    if !hostname.contains('.') && hostname != "localhost" {
+        return false;
+    }
+    if let Some(p) = port_opt {
+        match p.parse::<u32>() {
+            Ok(n) if (1..=65535).contains(&n) => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+// ---------------------------------------------------------------------------
+// T4 type-check delegates
+// ---------------------------------------------------------------------------
+
+pub(crate) fn check_buffer(value: &ZerxValue) -> Result<(), ZerxError> {
+    match value {
+        ZerxValue::Bytes(_) => Ok(()),
+        _ => Err(ZerxError::new(ErrorCode::TYPE_MISMATCH, "expected buffer")
+            .expected("buffer")
+            .received(type_tag(value))),
+    }
+}
+
+pub(crate) fn check_uri(value: &ZerxValue) -> Result<(), ZerxError> {
+    match value {
+        ZerxValue::String(s) => {
+            if is_valid_uri(s) {
+                Ok(())
+            } else {
+                Err(ZerxError::new(ErrorCode::INVALID_URI, "string is not a valid URI")
+                    .expected("uri"))
+            }
+        }
+        _ => Err(ZerxError::new(ErrorCode::TYPE_MISMATCH, "expected uri")
+            .expected("uri")
+            .received(type_tag(value))),
+    }
+}
+
+pub(crate) fn check_url(value: &ZerxValue) -> Result<(), ZerxError> {
+    match value {
+        ZerxValue::String(s) => {
+            if is_valid_url(s) {
+                Ok(())
+            } else {
+                Err(ZerxError::new(ErrorCode::INVALID_URL, "string is not a valid URL")
+                    .expected("url"))
+            }
+        }
+        _ => Err(ZerxError::new(ErrorCode::TYPE_MISMATCH, "expected url")
+            .expected("url")
+            .received(type_tag(value))),
+    }
+}
+
+pub(crate) fn check_json(value: &ZerxValue) -> Result<(), ZerxError> {
+    #[cfg(feature = "mlua")]
+    if let ZerxValue::HostOpaque(_) = value {
+        return Err(ZerxError::new(ErrorCode::TYPE_MISMATCH, "expected json")
+            .expected("json")
+            .received(type_tag(value)));
+    }
+    let _ = value;
+    Ok(())
+}
+
+pub(crate) fn check_jsonschema(value: &ZerxValue) -> Result<(), ZerxError> {
+    #[cfg(feature = "mlua")]
+    if let ZerxValue::HostOpaque(_) = value {
+        return Err(ZerxError::new(ErrorCode::TYPE_MISMATCH, "expected jsonschema")
+            .expected("jsonschema")
+            .received(type_tag(value)));
+    }
+    let _ = value;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// T4 builder newtypes
+// ---------------------------------------------------------------------------
+
+/// Builder for `buffer` schemas. Accepts only `ZerxValue::Bytes` (no coercion, C2).
+///
+/// ```compile_fail
+/// use zerx::buffer;
+/// let _ = buffer().min(3);   // ERROR: no method `min` on BufferSchema
+/// ```
+#[derive(Clone)]
+pub struct BufferSchema(Schema);
+
+/// Builder for `uri` schemas. Validates the RFC 3986 scheme/path structure.
+///
+/// ```compile_fail
+/// use zerx::uri;
+/// let _ = uri().min(3);   // ERROR: no method `min` on UriSchema
+/// ```
+#[derive(Clone)]
+pub struct UriSchema(Schema);
+
+/// Builder for `url` schemas. Validates HTTP/HTTPS URL structure.
+///
+/// ```compile_fail
+/// use zerx::url;
+/// let _ = url().min(3);   // ERROR: no method `min` on UrlSchema
+/// ```
+#[derive(Clone)]
+pub struct UrlSchema(Schema);
+
+/// Builder for `json` schemas. Accepts any serde-bridgeable value; identity parse.
+///
+/// ```compile_fail
+/// use zerx::json;
+/// let _ = json().min(3);   // ERROR: no method `min` on JsonSchema
+/// ```
+#[derive(Clone)]
+pub struct JsonSchema(Schema);
+
+/// Builder for `jsonschema` schemas. Accepts any serde-bridgeable value; identity parse.
+///
+/// ```compile_fail
+/// use zerx::jsonschema;
+/// let _ = jsonschema().min(3);   // ERROR: no method `min` on JsonschemaSchema
+/// ```
+#[derive(Clone)]
+pub struct JsonschemaSchema(Schema);
+
+impl BuilderInner for BufferSchema {
+    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+}
+impl BuilderInner for UriSchema {
+    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+}
+impl BuilderInner for UrlSchema {
+    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+}
+impl BuilderInner for JsonSchema {
+    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+}
+impl BuilderInner for JsonschemaSchema {
+    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+}
+
+impl From<BufferSchema> for Schema {
+    fn from(b: BufferSchema) -> Schema { b.0 }
+}
+impl From<UriSchema> for Schema {
+    fn from(b: UriSchema) -> Schema { b.0 }
+}
+impl From<UrlSchema> for Schema {
+    fn from(b: UrlSchema) -> Schema { b.0 }
+}
+impl From<JsonSchema> for Schema {
+    fn from(b: JsonSchema) -> Schema { b.0 }
+}
+impl From<JsonschemaSchema> for Schema {
+    fn from(b: JsonschemaSchema) -> Schema { b.0 }
+}
+
+// ---------------------------------------------------------------------------
+// T4 inherent methods
+// ---------------------------------------------------------------------------
+
+impl BufferSchema {
+    /// Set the MIME type for this buffer. Writes `modifiers.mime` (same field as
+    /// `mime_format`); read by J1 to emit `contentMediaType`.
+    pub fn mime(mut self, mime_type: impl Into<String>) -> Self {
+        self.0.modifiers.mime = Some(mime_type.into());
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T4 constructors
+// ---------------------------------------------------------------------------
+
+pub fn buffer() -> BufferSchema {
+    BufferSchema(Schema::new(SchemaKind::Buffer))
+}
+
+pub fn uri() -> UriSchema {
+    UriSchema(Schema::new(SchemaKind::Uri))
+}
+
+pub fn url() -> UrlSchema {
+    UrlSchema(Schema::new(SchemaKind::Url))
+}
+
+pub fn json() -> JsonSchema {
+    JsonSchema(Schema::new(SchemaKind::Json))
+}
+
+pub fn jsonschema() -> JsonschemaSchema {
+    JsonschemaSchema(Schema::new(SchemaKind::JsonSchema))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -2300,5 +2567,212 @@ mod tests {
         let err = val(s2, &json!({"inner": {"n": "x"}})).unwrap_err();
         assert_eq!(err.code, ErrorCode::TYPE_MISMATCH);
         assert_eq!(err.path, vec!["inner", "n"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // T4 — special types
+    // -----------------------------------------------------------------------
+
+    // Local Blob helper: Serialize calls serialize_bytes (replicates value.rs test helper).
+    struct Blob(Vec<u8>);
+    impl serde::Serialize for Blob {
+        fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+            ser.serialize_bytes(&self.0)
+        }
+    }
+
+    // T4-1: buffer accepts native bytes
+    #[test]
+    fn buffer_accepts_bytes() {
+        let ok = val(buffer(), &Blob(vec![1, 2, 3])).unwrap();
+        assert_eq!(ok, ZerxValue::Bytes(vec![1, 2, 3]));
+    }
+
+    // T4-2: buffer rejects non-bytes (C2 no-coercion)
+    #[test]
+    fn buffer_rejects_non_bytes() {
+        // A plain Vec<u8> is NOT emitted via serialize_bytes → becomes Array
+        let err = val(buffer(), &vec![1u8, 2, 3]).unwrap_err();
+        assert_eq!(err.code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(err.expected.as_deref(), Some("buffer"));
+        assert_eq!(err.received.as_deref(), Some("array"));
+
+        let err2 = val(buffer(), "hi").unwrap_err();
+        assert_eq!(err2.code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(err2.received.as_deref(), Some("string"));
+
+        let err3 = val(buffer(), &7i32).unwrap_err();
+        assert_eq!(err3.code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(err3.received.as_deref(), Some("number"));
+    }
+
+    // T4-3: buffer().mime(...) stores MIME on the modifier
+    #[test]
+    fn buffer_mime_stores_modifier() {
+        let b = buffer().mime("image/png");
+        assert_eq!(b.0.modifiers.mime.as_deref(), Some("image/png"));
+        // Still validates Ok
+        assert!(val(b, &Blob(vec![0])).is_ok());
+        // mime and mime_format write the same field
+        let b2 = buffer().mime_format("image/png");
+        assert_eq!(b2.0.modifiers.mime.as_deref(), Some("image/png"));
+    }
+
+    // T4-4: uri happy + sad paths
+    #[test]
+    fn uri_happy_and_sad() {
+        assert!(val(uri(), "https://example.com").is_ok());
+        assert!(val(uri(), "mailto:a@b.co").is_ok());
+        assert!(val(uri(), "urn:isbn:123").is_ok());
+
+        // Malformed URI strings → INVALID_URI
+        let sad_cases = &["not a uri", "://nohost", ":path"];
+        for s in sad_cases {
+            let err = val(uri(), *s).unwrap_err();
+            assert_eq!(err.code, ErrorCode::INVALID_URI, "expected INVALID_URI for {:?}", s);
+            assert_eq!(err.expected.as_deref(), Some("uri"));
+        }
+
+        // Non-string → TYPE_MISMATCH
+        let err_num = val(uri(), &7i32).unwrap_err();
+        assert_eq!(err_num.code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(err_num.expected.as_deref(), Some("uri"));
+    }
+
+    // T4-5: url happy + sad paths
+    #[test]
+    fn url_happy_and_sad() {
+        assert!(val(url(), "http://example.com").is_ok());
+        assert!(val(url(), "https://example.com:8080/path?q=1#frag").is_ok());
+        assert!(val(url(), "http://localhost").is_ok());
+
+        let sad_cases: &[&str] = &[
+            "ftp://example.com",       // wrong scheme
+            "http://exa..mple.com",    // consecutive dots
+            "http://nodot",            // no dot and not localhost
+            "http://example.com:99999", // port out of range
+        ];
+        for s in sad_cases {
+            let err = val(url(), *s).unwrap_err();
+            assert_eq!(err.code, ErrorCode::INVALID_URL, "expected INVALID_URL for {:?}", s);
+            assert_eq!(err.expected.as_deref(), Some("url"));
+        }
+
+        // Non-string → TYPE_MISMATCH
+        let err_bool = val(url(), &true).unwrap_err();
+        assert_eq!(err_bool.code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(err_bool.expected.as_deref(), Some("url"));
+    }
+
+    // T4-6: json accepts any serde-bridgeable value, identity parse
+    #[test]
+    fn json_accepts_anything() {
+        assert_eq!(val(json(), &7i32).unwrap(), ZerxValue::from_serialize(&7i32).unwrap());
+        assert_eq!(val(json(), "hi").unwrap(), ZerxValue::from_serialize("hi").unwrap());
+        assert_eq!(val(json(), &true).unwrap(), ZerxValue::from_serialize(&true).unwrap());
+        assert_eq!(val(json(), &()).unwrap(), ZerxValue::from_serialize(&()).unwrap());
+        assert_eq!(val(json(), &vec![1i64, 2, 3]).unwrap(), ZerxValue::from_serialize(&vec![1i64, 2, 3]).unwrap());
+        // Bytes (via Blob) also accepted
+        let b_ok = val(json(), &Blob(vec![9, 8])).unwrap();
+        assert_eq!(b_ok, ZerxValue::Bytes(vec![9, 8]));
+    }
+
+    // T4-7: jsonschema accepts any serde-bridgeable value, identity parse
+    #[test]
+    fn jsonschema_accepts_anything() {
+        use serde_json::json;
+        let schema_obj = json!({"type": "string"});
+        assert_eq!(
+            val(jsonschema(), &schema_obj).unwrap(),
+            ZerxValue::from_serialize(&schema_obj).unwrap()
+        );
+        // A bare boolean is a valid 2020-12 schema
+        assert_eq!(
+            val(jsonschema(), &true).unwrap(),
+            ZerxValue::from_serialize(&true).unwrap()
+        );
+        // No structural JSON-Schema validation: any value passes (v1 accept-all)
+        assert_eq!(
+            val(jsonschema(), &42i64).unwrap(),
+            ZerxValue::from_serialize(&42i64).unwrap()
+        );
+    }
+
+    // T4-8: negative compile-guarantee is covered by compile_fail doctests on the builder types
+
+    // T4-9: modifiers compose via blanket trait
+    #[test]
+    fn special_type_modifiers_compose() {
+        use crate::schema::ParseContext;
+        // optional buffer: missing field → None
+        let s: Schema = buffer().optional().into();
+        let mut ctx = ParseContext::new();
+        assert_eq!(s.parse_field(None, &mut ctx).unwrap(), None);
+
+        // describe on uri
+        let u: Schema = uri().describe("a URI field").into();
+        assert_eq!(u.modifiers.description.as_deref(), Some("a URI field"));
+
+        // default on json
+        let default_val = ZerxValue::Object(crate::Map::new());
+        let j: Schema = json().default(default_val.clone()).into();
+        assert_eq!(j.modifiers.default, Some(default_val));
+    }
+
+    // T4-10: SchemaKind dispatch + Debug renders expected strings
+    #[test]
+    fn schema_kind_debug_t4() {
+        let cases: &[(&str, Schema)] = &[
+            ("Buffer", buffer().into()),
+            ("Uri", uri().into()),
+            ("Url", url().into()),
+            ("Json", json().into()),
+            ("JsonSchema", jsonschema().into()),
+        ];
+        for (expected, s) in cases {
+            let debug = format!("{:?}", s);
+            assert!(debug.contains(expected), "expected {expected} in: {debug}");
+        }
+    }
+
+    // T4-11: composition — object mixing special types with complex types
+    #[test]
+    fn special_type_composition() {
+        use serde_json::json;
+
+        let schema = object([
+            ("avatar", buffer().mime("image/png").optional().into()),
+            ("home", url().into()),
+            ("meta", record(json()).into()),
+        ]);
+
+        // Valid input: avatar absent, home valid URL, meta a record of json values
+        let ok = val(
+            schema.clone(),
+            &json!({"home": "http://example.com", "meta": {"k": 1}}),
+        )
+        .unwrap();
+        let m = ok.as_object().unwrap();
+        assert!(m.get("avatar").is_none());
+        assert!(m.get("home").is_some());
+
+        // Malformed home URL → INVALID_URL with path = ["home"]
+        let err = val(
+            schema,
+            &json!({"home": "ftp://bad", "meta": {}}),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_URL);
+        assert_eq!(err.path, vec!["home"]);
+    }
+
+    // T4-12: clone immutability for buffer
+    #[test]
+    fn buffer_clone_immutability() {
+        let base = buffer();
+        let with_mime: Schema = base.clone().mime("image/png").into();
+        let without: Schema = Schema::from(base);
+        assert_eq!(with_mime.modifiers.mime.as_deref(), Some("image/png"));
+        assert_eq!(without.modifiers.mime, None);
     }
 }

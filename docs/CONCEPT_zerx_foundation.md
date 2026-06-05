@@ -299,6 +299,7 @@ Update step.
   **Done.**
 - `PLAN_T4_special_types` — `buffer` (with MIME, per C2), `uri`, `url`, `json`,
   `jsonschema`. Deps: T1.
+  **Done.**
 
 **Phase 3 — JSON Schema roundtrip** (deps: Phase 2)
 

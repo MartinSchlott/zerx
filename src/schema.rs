@@ -150,6 +150,11 @@ pub(crate) enum SchemaKind {
     Union(Vec<Schema>),
     DiscriminatedUnion(crate::types::DiscriminatedUnionBody),
     Literal(ZerxValue),
+    Buffer,     // T4
+    Uri,        // T4
+    Url,        // T4
+    Json,       // T4
+    JsonSchema, // T4
 }
 
 impl SchemaKind {
@@ -174,6 +179,11 @@ impl SchemaKind {
             SchemaKind::Union(_) => crate::types::check_union(),
             SchemaKind::DiscriminatedUnion(body) => crate::types::check_discriminated_union(value, body),
             SchemaKind::Literal(c) => crate::types::check_literal(value, c),
+            SchemaKind::Buffer => crate::types::check_buffer(value),
+            SchemaKind::Uri => crate::types::check_uri(value),
+            SchemaKind::Url => crate::types::check_url(value),
+            SchemaKind::Json => crate::types::check_json(value),
+            SchemaKind::JsonSchema => crate::types::check_jsonschema(value),
         }
     }
 
@@ -189,7 +199,12 @@ impl SchemaKind {
             | SchemaKind::Number
             | SchemaKind::Boolean
             | SchemaKind::Enum(_)
-            | SchemaKind::Null => Ok(value.clone()),
+            | SchemaKind::Null
+            | SchemaKind::Buffer
+            | SchemaKind::Uri
+            | SchemaKind::Url
+            | SchemaKind::Json
+            | SchemaKind::JsonSchema => Ok(value.clone()),
             SchemaKind::Lazy(_) => unreachable!("Lazy is intercepted before parse_inner"),
             SchemaKind::Object(body) => crate::types::parse_object(body, value, ctx),
             SchemaKind::Array(item) => crate::types::parse_array(item, value, ctx),
@@ -270,6 +285,11 @@ impl std::fmt::Debug for Schema {
             SchemaKind::Union(_) => "Union",
             SchemaKind::DiscriminatedUnion(_) => "DiscriminatedUnion",
             SchemaKind::Literal(_) => "Literal",
+            SchemaKind::Buffer => "Buffer",
+            SchemaKind::Uri => "Uri",
+            SchemaKind::Url => "Url",
+            SchemaKind::Json => "Json",
+            SchemaKind::JsonSchema => "JsonSchema",
         };
         f.debug_struct("Schema")
             .field("kind", &kind_str)

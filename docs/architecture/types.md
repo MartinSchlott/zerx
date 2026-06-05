@@ -32,7 +32,7 @@ None.
 
 ## Architecturally Significant Dependencies
 
-- `regex` (full crate, 1.x) — the `pattern`/`regex` validator compiles and matches user-supplied regular expressions; removing or replacing `regex` would require redesigning the `Pattern` validator.
+- `regex` (full crate, 1.x) — the `pattern`/`regex` validator and the `url` structural check both compile and match regular expressions using the `regex` crate; removing or replacing `regex` would require redesigning both.
 
 ## Constraints
 
@@ -149,6 +149,45 @@ None.
 
 - Codes introduced by PLAN_T2: `UNKNOWN_PROPERTY`, `ARRAY_TOO_SHORT`, `ARRAY_TOO_LONG`, `TUPLE_LENGTH_MISMATCH`, `INVALID_LITERAL`, `INVALID_DISCRIMINANT`, `INVALID_DISCRIMINATED_UNION`.
 
+### Special types (PLAN_T4)
+
+- The five special-type variants (`Buffer`, `Uri`, `Url`, `Json`, `JsonSchema`) MUST each add exactly one delegating arm to `check_type`, `parse_inner`, and the `Debug` match; no new parse-flow control logic MAY be introduced per variant; all five are leaves with identity `parse_inner`.
+
+#### `buffer` (PLAN_T4 — candidate C2)
+
+- `buffer()` MUST accept only `ZerxValue::Bytes`; any other variant MUST yield `Err(TYPE_MISMATCH)` with `expected = "buffer"` and `received = type_tag(value)`.
+- `buffer()` MUST NOT coerce a number array, an object shape, or any other representation into bytes; silent coercion of any other shape is prohibited (candidate C2).
+- `BufferSchema::mime(mime_type)` MUST write the MIME string to `modifiers.mime`; this is the same field written by the blanket `mime_format` method; `J1` reads `modifiers.mime` to emit `contentMediaType`.
+
+#### `uri` (PLAN_T4)
+
+- `uri()` with a non-string value MUST yield `Err(TYPE_MISMATCH)` with `expected = "uri"` and `received = type_tag(value)`.
+- `uri()` with a string failing the structural check MUST yield `Err(INVALID_URI)` with `expected = "uri"`.
+- Structural URI rule: the string MUST contain `':'`; the part before `':'` (scheme) MUST be non-empty and start with an ASCII alphabetic character with every subsequent character ASCII alphanumeric or one of `+`, `-`, `.`; the part after `':'` (rest) MUST be non-empty.
+
+#### `url` (PLAN_T4)
+
+- `url()` with a non-string value MUST yield `Err(TYPE_MISMATCH)` with `expected = "url"` and `received = type_tag(value)`.
+- `url()` with a string failing the structural check MUST yield `Err(INVALID_URL)` with `expected = "url"`.
+- The structural URL check requires the string to match a `OnceLock`-cached HTTP/HTTPS regex (case-insensitive, ported from Zex); the scheme MUST be `http` or `https`.
+- After the regex match, the extracted hostname MUST NOT be empty, MUST NOT contain `".."`, MUST NOT start or end with `'.'`, and MUST either contain a `'.'` or equal `"localhost"`.
+- If a port is present (`:` + decimal digits before the path), it MUST parse to a value in `1..=65535`.
+
+#### `json` / `jsonschema` (PLAN_T4)
+
+- `json()` and `jsonschema()` MUST accept any serde-bridgeable `ZerxValue` variant with identity parse (`parse_inner` returns `Ok(value.clone())`).
+- Under the `mlua` feature both MUST reject `ZerxValue::HostOpaque` with `Err(TYPE_MISMATCH)` (candidate C5); in the default build the arm is forward-correct but non-exercisable until `PLAN_M1_host_opaque`.
+- `json()` and `jsonschema()` differ only in their `SchemaKind` variant; that variant is the export marker read by `J1`; no structural JSON Schema document validation is performed (v1 accept-all).
+- Neither `json()` nor `jsonschema()` exposes any inherent validator methods.
+
+#### Negative compile-guarantee (PLAN_T4)
+
+- `BufferSchema`, `UriSchema`, `UrlSchema`, `JsonSchema`, and `JsonschemaSchema` MUST NOT expose any inherent string or number validator methods.
+
+### Error codes (PLAN_T4)
+
+- Codes introduced by PLAN_T4: `INVALID_URI`, `INVALID_URL`.
+
 ### Object utilities (PLAN_T3)
 
 - All T3 logic MUST reside within the `object` delegate; T3 introduces no new `SchemaKind` variant, no new dispatch arm, no new parse-flow control logic, and no new error code.
@@ -165,6 +204,6 @@ None.
 
 ## Related Decisions
 
-- Pending migration. This concern is governed by candidate decisions C1, C4, C7, C8, C9
+- Pending migration. This concern is governed by candidate decisions C1, C2, C4, C7, C8, C9
   in `docs/CONCEPT_zerx_foundation.md`; their `D-` slug IDs are added here at
   Concept Closeout, once promoted to `docs/decisions.md`.
