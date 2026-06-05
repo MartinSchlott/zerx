@@ -600,6 +600,10 @@ pub(crate) enum ObjectMode {
 pub(crate) struct ObjectBody {
     pub(crate) shape: Vec<(String, Schema)>,
     pub(crate) mode: ObjectMode,
+    pub(crate) all_optional: bool,
+    pub(crate) prestrip_keys: Vec<String>,
+    pub(crate) prestrip_read_only: bool,
+    pub(crate) prestrip_write_only: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -732,6 +736,25 @@ pub(crate) fn check_literal(value: &ZerxValue, constant: &ZerxValue) -> Result<(
 // T2 structural parse delegates
 // ---------------------------------------------------------------------------
 
+fn effective_prestrip(body: &ObjectBody) -> Vec<String> {
+    let mut keys = body.prestrip_keys.clone();
+    if body.prestrip_read_only {
+        for (k, fs) in &body.shape {
+            if fs.modifiers.read_only {
+                keys.push(k.clone());
+            }
+        }
+    }
+    if body.prestrip_write_only {
+        for (k, fs) in &body.shape {
+            if fs.modifiers.write_only {
+                keys.push(k.clone());
+            }
+        }
+    }
+    keys
+}
+
 pub(crate) fn parse_object(
     body: &ObjectBody,
     value: &ZerxValue,
@@ -742,8 +765,14 @@ pub(crate) fn parse_object(
         None => return Ok(value.clone()),
     };
 
+    let strip = effective_prestrip(body);
+    let is_stripped = |key: &str| strip.iter().any(|k| k == key);
+
     if body.mode == ObjectMode::Strict {
         for (key, val) in input.iter() {
+            if is_stripped(key) {
+                continue;
+            }
             if !body.shape.iter().any(|(k, _)| k == key) {
                 return Err(prefix_path(
                     ZerxError::new(
@@ -761,15 +790,25 @@ pub(crate) fn parse_object(
     let mut output = crate::Map::new();
 
     for (key, field_schema) in &body.shape {
-        match field_schema.parse_field(input.get(key), ctx) {
+        let raw = if is_stripped(key) { None } else { input.get(key) };
+        match field_schema.parse_field(raw, ctx) {
             Ok(Some(v)) => output.insert(key.clone(), v),
             Ok(None) => {}
-            Err(e) => return Err(prefix_path(e, key.clone())),
+            Err(e) => {
+                if body.all_optional && raw.is_none() && e.code == ErrorCode::REQUIRED {
+                    // partial: missing required field is treated as optional → omit
+                } else {
+                    return Err(prefix_path(e, key.clone()));
+                }
+            }
         }
     }
 
     if body.mode == ObjectMode::Passthrough {
         for (key, val) in input.iter() {
+            if is_stripped(key) {
+                continue;
+            }
             if !body.shape.iter().any(|(k, _)| k == key) {
                 output.insert(key.clone(), val.clone());
             }
@@ -1059,6 +1098,85 @@ impl ObjectSchema {
         }
         self
     }
+
+    pub fn partial(mut self) -> Self {
+        if let SchemaKind::Object(ref mut body) = self.0.kind {
+            body.all_optional = true;
+        }
+        self
+    }
+
+    pub fn extend<I, K>(mut self, fields: I) -> Self
+    where
+        I: IntoIterator<Item = (K, Schema)>,
+        K: Into<String>,
+    {
+        if let SchemaKind::Object(ref mut body) = self.0.kind {
+            for (k, v) in fields.into_iter().map(|(k, v)| (k.into(), v)) {
+                if let Some(entry) = body.shape.iter_mut().find(|(key, _)| key == &k) {
+                    entry.1 = v;
+                } else {
+                    body.shape.push((k, v));
+                }
+            }
+        }
+        self
+    }
+
+    pub fn omit<I, K>(mut self, keys: I) -> Self
+    where
+        I: IntoIterator<Item = K>,
+        K: Into<String>,
+    {
+        if let SchemaKind::Object(ref mut body) = self.0.kind {
+            let drop: Vec<String> = keys.into_iter().map(|k| k.into()).collect();
+            body.shape.retain(|(k, _)| !drop.contains(k));
+        }
+        self
+    }
+
+    pub fn omit_read_only(mut self) -> Self {
+        if let SchemaKind::Object(ref mut body) = self.0.kind {
+            body.shape.retain(|(_, fs)| !fs.modifiers.read_only);
+        }
+        self
+    }
+
+    pub fn omit_write_only(mut self) -> Self {
+        if let SchemaKind::Object(ref mut body) = self.0.kind {
+            body.shape.retain(|(_, fs)| !fs.modifiers.write_only);
+        }
+        self
+    }
+
+    pub fn strip_only<I, K>(mut self, keys: I) -> Self
+    where
+        I: IntoIterator<Item = K>,
+        K: Into<String>,
+    {
+        if let SchemaKind::Object(ref mut body) = self.0.kind {
+            for k in keys.into_iter().map(|k| k.into()) {
+                if !body.prestrip_keys.contains(&k) {
+                    body.prestrip_keys.push(k);
+                }
+            }
+        }
+        self
+    }
+
+    pub fn strip_read_only(mut self) -> Self {
+        if let SchemaKind::Object(ref mut body) = self.0.kind {
+            body.prestrip_read_only = true;
+        }
+        self
+    }
+
+    pub fn strip_write_only(mut self) -> Self {
+        if let SchemaKind::Object(ref mut body) = self.0.kind {
+            body.prestrip_write_only = true;
+        }
+        self
+    }
 }
 
 impl ArraySchema {
@@ -1090,7 +1208,14 @@ where
             shape.push((k, v));
         }
     }
-    let body = ObjectBody { shape, mode: ObjectMode::Strict };
+    let body = ObjectBody {
+        shape,
+        mode: ObjectMode::Strict,
+        all_optional: false,
+        prestrip_keys: Vec::new(),
+        prestrip_read_only: false,
+        prestrip_write_only: false,
+    };
     ObjectSchema(Schema::new(SchemaKind::Object(body)))
 }
 
@@ -1948,5 +2073,232 @@ mod tests {
             strict.validate(&WithExtra { a: 1, x: 2 }).unwrap_err().code,
             ErrorCode::UNKNOWN_PROPERTY
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // T3 — object utilities
+    // ---------------------------------------------------------------------------
+
+    // T3-1: partial makes required fields optional
+    #[test]
+    fn partial_makes_required_optional() {
+        use serde_json::json;
+        let s = object([("a", number().into()), ("b", string().into())]).partial();
+        // all fields missing → Ok with empty output
+        let ok = val(s.clone(), &json!({})).unwrap();
+        assert!(ok.as_object().unwrap().is_empty());
+        // one field present, one absent → Ok with only the present one
+        let ok2 = val(s, &json!({"a": 1})).unwrap();
+        let m = ok2.as_object().unwrap();
+        assert!(m.get("a").is_some());
+        assert!(m.get("b").is_none());
+    }
+
+    // T3-2: partial still validates present fields
+    #[test]
+    fn partial_validates_present_fields() {
+        use serde_json::json;
+        let s = object([("a", number().into()), ("b", string().into())]).partial();
+        let err = val(s, &json!({"a": "x"})).unwrap_err();
+        assert_eq!(err.code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(err.path, vec!["a"]);
+    }
+
+    // T3-3: partial preserves default precedence (contract-aligned)
+    #[test]
+    fn partial_preserves_default_precedence() {
+        use serde_json::json;
+        let s = object([
+            ("a", number().default(5i64).into()),
+            ("b", number().into()),
+        ]).partial();
+        // a has a default → applied; b is plain required → omitted under partial
+        let ok = val(s, &json!({})).unwrap();
+        let m = ok.as_object().unwrap();
+        assert_eq!(m.get("a").and_then(|v| v.as_i64()), Some(5));
+        assert!(m.get("b").is_none());
+    }
+
+    // T3-4: extend adds a required field
+    #[test]
+    fn extend_adds_required_field() {
+        use serde_json::json;
+        let s = object([("a", number().into())]).extend([("b", string().into())]);
+        let err = val(s.clone(), &json!({"a": 1})).unwrap_err();
+        assert_eq!(err.code, ErrorCode::REQUIRED);
+        assert_eq!(err.path, vec!["b"]);
+        let ok = val(s, &json!({"a": 1, "b": "x"})).unwrap();
+        let m = ok.as_object().unwrap();
+        assert!(m.get("a").is_some());
+        assert!(m.get("b").is_some());
+    }
+
+    // T3-5: extend overwrites a duplicate key in place
+    #[test]
+    fn extend_overwrites_duplicate_key() {
+        use serde_json::json;
+        let s = object([("a", number().into())]).extend([("a", string().into())]);
+        assert!(val(s.clone(), &json!({"a": "x"})).is_ok());
+        let err = val(s, &json!({"a": 1})).unwrap_err();
+        assert_eq!(err.code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(err.path, vec!["a"]);
+    }
+
+    // T3-6: extend preserves mode
+    #[test]
+    fn extend_preserves_mode() {
+        use serde_json::json;
+        let s = object([("a", number().into())]).strip().extend([("b", string().into())]);
+        let ok = val(s, &json!({"a": 1, "b": "x", "extra": 9})).unwrap();
+        let m = ok.as_object().unwrap();
+        assert!(m.get("extra").is_none());
+        assert!(m.get("a").is_some());
+        assert!(m.get("b").is_some());
+    }
+
+    // T3-7: omit removes a field; strict makes it unknown
+    #[test]
+    fn omit_removes_field() {
+        use serde_json::json;
+        let s = object([("a", number().into()), ("id", string().into())]).omit(["id"]);
+        let ok = val(s.clone(), &json!({"a": 1})).unwrap();
+        assert!(ok.as_object().unwrap().get("a").is_some());
+        let err = val(s.clone(), &json!({"a": 1, "id": "x"})).unwrap_err();
+        assert_eq!(err.code, ErrorCode::UNKNOWN_PROPERTY);
+        assert_eq!(err.path, vec!["id"]);
+        // omitting an absent key is a no-op
+        let s2 = s.omit(["nope"]);
+        assert!(val(s2, &json!({"a": 1})).is_ok());
+    }
+
+    // T3-8: omit_read_only / omit_write_only remove by modifier
+    #[test]
+    fn omit_read_only_write_only() {
+        use serde_json::json;
+        // read_only
+        let s_ro = object([("a", number().into()), ("ro", string().read_only().into())]).omit_read_only();
+        assert!(val(s_ro.clone(), &json!({"a": 1})).is_ok());
+        let err = val(s_ro, &json!({"a": 1, "ro": "x"})).unwrap_err();
+        assert_eq!(err.code, ErrorCode::UNKNOWN_PROPERTY);
+        assert_eq!(err.path, vec!["ro"]);
+        // write_only
+        let s_wo = object([("a", number().into()), ("wo", string().write_only().into())]).omit_write_only();
+        assert!(val(s_wo.clone(), &json!({"a": 1})).is_ok());
+        let err2 = val(s_wo, &json!({"a": 1, "wo": "x"})).unwrap_err();
+        assert_eq!(err2.code, ErrorCode::UNKNOWN_PROPERTY);
+        assert_eq!(err2.path, vec!["wo"]);
+    }
+
+    // T3-9: strip_only drops an unknown key silently in strict
+    #[test]
+    fn strip_only_drops_unknown_key() {
+        use serde_json::json;
+        let s = object([("a", number().into())]).strip_only(["junk"]);
+        let ok = val(s.clone(), &json!({"a": 1, "junk": true})).unwrap();
+        assert!(ok.as_object().unwrap().get("junk").is_none());
+        let err = val(s, &json!({"a": 1, "other": 1})).unwrap_err();
+        assert_eq!(err.code, ErrorCode::UNKNOWN_PROPERTY);
+        assert_eq!(err.path, vec!["other"]);
+    }
+
+    // T3-10: strip_only re-defaults a stripped defaulted field
+    #[test]
+    fn strip_only_redefaults_stripped_field() {
+        use serde_json::json;
+        let s = object([("a", number().default(5i64).into())]).strip_only(["a"]);
+        let ok = val(s, &json!({"a": 99})).unwrap();
+        let m = ok.as_object().unwrap();
+        assert_eq!(m.get("a").and_then(|v| v.as_i64()), Some(5));
+    }
+
+    // T3-11: strip_only starves a stripped required field
+    #[test]
+    fn strip_only_starves_required_field() {
+        use serde_json::json;
+        let s = object([("a", number().into())]).strip_only(["a"]);
+        let err = val(s, &json!({"a": 1})).unwrap_err();
+        assert_eq!(err.code, ErrorCode::REQUIRED);
+        assert_eq!(err.path, vec!["a"]);
+    }
+
+    // T3-12: strip_read_only / strip_write_only drops modifier-tagged field from input
+    #[test]
+    fn strip_read_only_write_only() {
+        use serde_json::json;
+        // read_only
+        let s_ro = object([
+            ("a", number().into()),
+            ("ro", string().read_only().optional().into()),
+        ]).strip_read_only();
+        let ok = val(s_ro, &json!({"a": 1, "ro": "x"})).unwrap();
+        let m = ok.as_object().unwrap();
+        assert!(m.get("ro").is_none());
+        assert!(m.get("a").is_some());
+        // write_only
+        let s_wo = object([
+            ("a", number().into()),
+            ("wo", string().write_only().optional().into()),
+        ]).strip_write_only();
+        let ok2 = val(s_wo, &json!({"a": 1, "wo": "x"})).unwrap();
+        let m2 = ok2.as_object().unwrap();
+        assert!(m2.get("wo").is_none());
+        assert!(m2.get("a").is_some());
+    }
+
+    // T3-13: omit_read_only then strip_read_only does NOT auto-strip (v1 contract)
+    #[test]
+    fn omit_read_only_then_strip_read_only_no_auto_strip() {
+        use serde_json::json;
+        // ro removed from shape by omit_read_only → strip_read_only has nothing to strip
+        let s = object([
+            ("a", number().into()),
+            ("ro", string().read_only().into()),
+        ]).omit_read_only().strip_read_only();
+        let err = val(s, &json!({"a": 1, "ro": "x"})).unwrap_err();
+        assert_eq!(err.code, ErrorCode::UNKNOWN_PROPERTY);
+        assert_eq!(err.path, vec!["ro"]);
+        // explicit escape hatch: strip_only names the key directly
+        let s2 = object([
+            ("a", number().into()),
+            ("ro", string().read_only().into()),
+        ]).omit_read_only().strip_only(["ro"]);
+        let ok = val(s2, &json!({"a": 1, "ro": "x"})).unwrap();
+        assert!(ok.as_object().unwrap().get("ro").is_none());
+        assert!(ok.as_object().unwrap().get("a").is_some());
+    }
+
+    // T3-14: clone immutability
+    #[test]
+    fn clone_immutability_partial() {
+        use serde_json::json;
+        let base = object([("a", number().into())]);
+        // clone().partial() → Ok on empty input
+        assert!(val(base.clone().partial(), &json!({})).is_ok());
+        // original → Err(REQUIRED) on empty input
+        let err = val(base, &json!({})).unwrap_err();
+        assert_eq!(err.code, ErrorCode::REQUIRED);
+    }
+
+    // T3-15: composition
+    #[test]
+    fn object_utility_composition() {
+        use serde_json::json;
+        // omit + extend + strip
+        let s = object([("a", number().into()), ("id", string().into())])
+            .omit(["id"])
+            .extend([("b", string().into())])
+            .strip();
+        let ok = val(s, &json!({"a": 1, "b": "x", "id": "ignored", "extra": 7})).unwrap();
+        let m = ok.as_object().unwrap();
+        assert!(m.get("a").is_some());
+        assert!(m.get("b").is_some());
+        assert!(m.get("id").is_none());
+        assert!(m.get("extra").is_none());
+
+        // deep field error path is preserved under partial
+        let s2 = object([("inner", object([("n", number().into())]).into())]).partial();
+        let err = val(s2, &json!({"inner": {"n": "x"}})).unwrap_err();
+        assert_eq!(err.code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(err.path, vec!["inner", "n"]);
     }
 }

@@ -149,6 +149,20 @@ None.
 
 - Codes introduced by PLAN_T2: `UNKNOWN_PROPERTY`, `ARRAY_TOO_SHORT`, `ARRAY_TOO_LONG`, `TUPLE_LENGTH_MISMATCH`, `INVALID_LITERAL`, `INVALID_DISCRIMINANT`, `INVALID_DISCRIMINATED_UNION`.
 
+### Object utilities (PLAN_T3)
+
+- All T3 logic MUST reside within the `object` delegate; T3 introduces no new `SchemaKind` variant, no new dispatch arm, no new parse-flow control logic, and no new error code.
+- `ObjectBody` carries four utility-governing fields: `all_optional` (partial mode), `prestrip_keys` (explicit prestrip list), `prestrip_read_only` (prestrip by read-only modifier), and `prestrip_write_only` (prestrip by write-only modifier).
+- The effective prestrip set MUST be computed from the union of `prestrip_keys`, the `shape` keys whose field carries `read_only` (when `prestrip_read_only` is set), and the `shape` keys whose field carries `write_only` (when `prestrip_write_only` is set).
+- Prestrip filtering MUST be applied before the unknown-key check; a prestipped key is not an unknown key and MUST NOT yield `UNKNOWN_PROPERTY`.
+- A prestripped key is treated as absent for field validation: if the field carries a `default`, that default MUST be applied; if the field is required with no default, `Err(REQUIRED)` with the key prepended to `path` MUST be returned.
+- `strip_read_only` and `strip_write_only` derive their effective strip sets exclusively from fields currently present in `shape`; a field already removed from `shape` by `omit_read_only` or `omit_write_only` is NOT auto-stripped by a subsequent `strip_read_only` or `strip_write_only` call; `strip_only` is the explicit escape hatch for naming such keys directly.
+- Under `all_optional`, a missing required field's `Err(REQUIRED)` MUST be reinterpreted as omit; field iteration MUST still delegate through `Schema::parse_field`, preserving `default → optional → REQUIRED` precedence (a missing defaulted field is still re-defaulted under `partial`); a present field MUST validate normally regardless of `all_optional`.
+- `extend` MUST merge incoming fields with last-write-wins / first-occurrence-order semantics; mode and all other `ObjectBody` state MUST be preserved.
+- `omit`, `omit_read_only`, and `omit_write_only` remove fields from `shape` (by name, by `read_only` modifier, and by `write_only` modifier respectively); an omitted field becomes an unknown key under the unchanged strict mode (per C4); omitting a key absent from `shape` MUST be a no-op.
+- All eight utility methods MUST be infallible and MUST clone-and-return per C1 immutability; no utility returns a `Result`.
+- `all_optional` is the source of truth for the exported `required` set, consumed by `PLAN_J1_export`.
+
 ## Related Decisions
 
 - Pending migration. This concern is governed by candidate decisions C1, C4, C7, C8, C9

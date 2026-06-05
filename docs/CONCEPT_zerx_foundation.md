@@ -296,6 +296,7 @@ Update step.
 - `PLAN_T3_object_utilities` — `partial`, `extend`, `omit`,
   `omit_read_only`/`omit_write_only` (shape changes) and `strip_only`,
   `strip_read_only`/`strip_write_only` (runtime-only). Deps: T2.
+  **Done.**
 - `PLAN_T4_special_types` — `buffer` (with MIME, per C2), `uri`, `url`, `json`,
   `jsonschema`. Deps: T1.
 
