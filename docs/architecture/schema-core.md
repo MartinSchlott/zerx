@@ -61,6 +61,18 @@ None.
 - `Schema` MUST NOT be `Send` or `Sync`; shared pieces (validators, refinement predicates, `lazy` thunk and resolution cache) MUST be held via single-threaded reference-counted smart pointers.
 - Error codes introduced by this concern (`PARSE_DEPTH_EXCEEDED`, `REQUIRED`, `REFINEMENT_FAILED`, `LAZY_REENTRANCE`) MUST be declared as associated constants in a separate `impl ErrorCode` block in `src/schema.rs`; no edit to `src/error.rs` is permitted.
 
+**Delta / Replace** (`src/delta.rs`) — constraints for the schema-only delta validation and the immutable-replace-and-revalidate operations:
+
+- Both operations MUST return `Result<ZerxValue, ZerxError>`; no throwing variant, no `safe*` or `try*` counterpart MUST exist (candidate C7).
+- The addressing scheme MUST be JSON Pointer (RFC 6901): an empty string addresses the root; any non-empty pointer MUST begin with `'/'`; segments MUST be split on `'/'`; un-escaping MUST proceed `~1`→`'/'` then `~0`→`'~'` in this order. A non-empty pointer not starting with `'/'` MUST be rejected with `INVALID_POINTER`.
+- `parse_delta` MUST navigate the schema by kind only (no instance), then run `parse_present` against the located sub-schema. Navigation MUST be a closed per-kind dispatch over `SchemaKind` with no catch-all arm, so a future variant is a compile error until handled.
+- `replace` MUST navigate the instance by value kind only (schema-independent), rebuild the tree immutably via clone-and-return (candidate C1), then run full root revalidation via `parse_present`; revalidation MUST include refinement predicates and `default` application.
+- Descending into a `union` or `discriminated_union` kind during `parse_delta` navigation MUST be rejected with `UNION_PATH_REQUIRES_INSTANCE`; variant selection requires an instance and is not schema-navigable alone.
+- `replace` MUST NOT create absent positions: an object-key segment absent from the instance MUST be rejected with `MISSING_PARENT` at every traversal depth, including the final segment, regardless of whether the schema declares the key optional.
+- `replace` does not support deletion; it always sets a position. Deletion is out of scope (candidate C7 forbids a second API shape for the same operation family).
+- Host-opaque descent errors for trees containing host-opaque leaves are deferred to `PLAN_M1_host_opaque` (candidate C3); the public `replace` signature's `Serialize` bound permanently excludes host-opaque instances from its argument domain.
+- Error codes introduced by this sub-concern (`INVALID_POINTER`, `INVALID_PATH`, `INDEX_OUT_OF_RANGE`, `UNION_PATH_REQUIRES_INSTANCE`, `MISSING_PARENT`) MUST be declared in an `impl ErrorCode` block in `src/delta.rs`; no edit to `src/error.rs` is permitted.
+
 ## Related Decisions
 
-- Pending migration. This concern is governed by candidate decisions C1, C7, C4 in `docs/CONCEPT_zerx_foundation.md`; their `D-` slug IDs are added here at Concept Closeout, once promoted to `docs/decisions.md`.
+- Pending migration. This concern is governed by candidate decisions C1, C3, C7, C4 in `docs/CONCEPT_zerx_foundation.md`; their `D-` slug IDs are added here at Concept Closeout, once promoted to `docs/decisions.md`.

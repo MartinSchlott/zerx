@@ -5,6 +5,7 @@ mod value;
 mod schema;
 mod types;
 mod json_schema;
+mod delta;
 
 pub use error::{ErrorCode, ZerxError};
 pub use value::{Map, ZerxValue};
