@@ -306,6 +306,7 @@ Update step.
 - `PLAN_J1_export` — `to_json_schema` with format markers, `ExportContext`
   `$defs`/`$ref` tracking, Draft 2020-12 `discriminator`. Fills `json-schema.md`
   (export). Deps: T2, T4.
+  **Done.**
 - `PLAN_J2_import` — `from_json_schema` AST walk, `$ref` resolution with memoised
   lazy placeholders, all four `additionalProperties` shapes, `oneOf`→union with
   `x-oneOf`, `allOf`/`not` raise clear errors, default application on import.

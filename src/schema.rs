@@ -108,6 +108,12 @@ impl Lazy {
         }
     }
 
+    /// Stable per-instance identity for export `$defs` dedup. All clones of the
+    /// same `lazy` share one resolution cell, hence one identity.
+    pub(crate) fn export_id(&self) -> usize {
+        Rc::as_ptr(&self.state) as *const () as usize
+    }
+
     pub(crate) fn resolve(&self) -> Result<Rc<Schema>, ZerxError> {
         {
             let state = self.state.borrow();

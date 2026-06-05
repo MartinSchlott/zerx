@@ -202,6 +202,11 @@ None.
 - All eight utility methods MUST be infallible and MUST clone-and-return per C1 immutability; no utility returns a `Result`.
 - `all_optional` is the source of truth for the exported `required` set, consumed by `PLAN_J1_export`.
 
+## Splitting Rationale
+
+- The type catalogue (basic/complex/special), its pluggable validators, and the object utilities form a single responsibility boundary: validators are members of the catalogue (inherent methods on the type builders), and object utilities are operations on the `object` type — neither is an independent cross-cutting capability that would warrant its own concern file.
+- The length reflects the vision's full type catalogue (≈19 types across three groups, each with its validators and utility operations), not multiple concerns; the file stays under the 300-line hard ceiling and is therefore not split.
+
 ## Related Decisions
 
 - Pending migration. This concern is governed by candidate decisions C1, C2, C4, C7, C8, C9
