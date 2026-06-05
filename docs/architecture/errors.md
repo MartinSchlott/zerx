@@ -49,4 +49,5 @@
 
 ## Related Decisions
 
-- Pending migration. This concern is governed by candidate decisions C7 and C8 in `docs/CONCEPT_zerx_foundation.md`; their `D-` slug IDs are added here at Concept Closeout, once promoted to `docs/decisions.md`.
+- `D-result-only-api`
+- `D-english-only-errors`

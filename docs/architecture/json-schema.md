@@ -187,4 +187,4 @@
 
 ## Related Decisions
 
-- (none yet — roundtrip behaviour is settled within the JSON Schema plans)
+- (none — JSON Schema roundtrip behaviour is fully specified by this concern's Constraints; no register decision binds it.)

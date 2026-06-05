@@ -51,6 +51,4 @@
 
 ## Related Decisions
 
-- Pending migration. This concern is governed by candidate decision C3 (revised)
-  in `docs/CONCEPT_zerx_foundation.md`; its `D-` slug ID is added here at
-  Concept Closeout, once promoted to `docs/decisions.md`.
+- `D-lua-schema-directed`

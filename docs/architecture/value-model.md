@@ -46,6 +46,5 @@ None.
 
 ## Related Decisions
 
-- Pending migration. This concern is governed by candidate decisions C5, C2
-  in `docs/CONCEPT_zerx_foundation.md`; their `D-` slug IDs are added here at
-  Concept Closeout, once promoted to `docs/decisions.md`.
+- `D-serde-value-model`
+- `D-buffer-fidelity`

@@ -1,6 +1,6 @@
 # Architecture Overview
 
-This file defines the topology of `docs/architecture/`. Every concern file in this directory MUST be listed below; every entry below MUST point to an existing concern file. Concern files are slim skeletons; each is filled by the plan named in `docs/CONCEPT_zerx_foundation.md`.
+This file defines the topology of `docs/architecture/`. Every concern file in this directory MUST be listed below; every entry below MUST point to an existing concern file.
 
 ## Concerns
 

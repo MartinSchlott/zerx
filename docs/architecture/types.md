@@ -47,7 +47,7 @@ None.
 - `type_tag(value)` MUST return a compact static descriptor for each `ZerxValue` variant (`"null"`, `"boolean"`, `"number"`, `"string"`, `"bytes"`, `"array"`, `"object"`).
 - All `received` and `expected` fields on errors raised by this concern MUST be descriptor strings — never raw values.
 
-### Negative compile-guarantee (PLAN_T1 — candidate C1)
+### Negative compile-guarantee (`D-modifier-composition`)
 
 - Type-specific validator methods MUST be inherent methods on the relevant typed builder only; they MUST NOT be available on builders where they make no sense.
 - `BooleanSchema` and `NullSchema` MUST NOT expose any inherent validator methods.
@@ -95,7 +95,7 @@ None.
 - The seven complex-type variants (`Object`, `Array`, `Record`, `Tuple`, `Union`, `DiscriminatedUnion`, `Literal`) MUST each add exactly one delegating arm to `check_type`, `parse_inner`, and the `Debug` match; no new parse-flow control logic MAY be introduced per variant.
 - Container `parse_*` delegates MUST prepend their path segment to every child error via `e.path.insert(0, segment)` as the stack unwinds; object/record delegates MUST prepend the field key; array/tuple delegates MUST prepend the decimal-string element index.
 
-#### `object` (PLAN_T2 — candidate C4)
+#### `object` (`D-strict-by-default`)
 
 - `check_object` MUST accept `ZerxValue::Object`; any other kind MUST yield `Err(TYPE_MISMATCH)` with `expected = "object"`.
 - The `object(fields)` constructor MUST canonicalize duplicate keys using last-write-wins / first-occurrence-order semantics: a repeated key overwrites the schema in place without moving its position.
@@ -153,10 +153,10 @@ None.
 
 - The five special-type variants (`Buffer`, `Uri`, `Url`, `Json`, `JsonSchema`) MUST each add exactly one delegating arm to `check_type`, `parse_inner`, and the `Debug` match; no new parse-flow control logic MAY be introduced per variant; all five are leaves with identity `parse_inner`.
 
-#### `buffer` (PLAN_T4 — candidate C2)
+#### `buffer` (`D-buffer-fidelity`)
 
 - `buffer()` MUST accept only `ZerxValue::Bytes`; any other variant MUST yield `Err(TYPE_MISMATCH)` with `expected = "buffer"` and `received = type_tag(value)`.
-- `buffer()` MUST NOT coerce a number array, an object shape, or any other representation into bytes; silent coercion of any other shape is prohibited (candidate C2).
+- `buffer()` MUST NOT coerce a number array, an object shape, or any other representation into bytes; silent coercion of any other shape is prohibited (`D-buffer-fidelity`).
 - `BufferSchema::mime(mime_type)` MUST write the MIME string to `modifiers.mime`; this is the same field written by the blanket `mime_format` method; `J1` reads `modifiers.mime` to emit `contentMediaType`.
 
 #### `uri` (PLAN_T4)
@@ -208,6 +208,9 @@ None.
 
 ## Related Decisions
 
-- Pending migration. This concern is governed by candidate decisions C1, C2, C4, C7, C8, C9
-  in `docs/CONCEPT_zerx_foundation.md`; their `D-` slug IDs are added here at
-  Concept Closeout, once promoted to `docs/decisions.md`.
+- `D-modifier-composition`
+- `D-buffer-fidelity`
+- `D-strict-by-default`
+- `D-result-only-api`
+- `D-english-only-errors`
+- `D-serde-foundation`
