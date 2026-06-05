@@ -17,6 +17,7 @@
 ## Consumes from
 
 - `schema-core`: `Schema` (schema value that export reads and import reconstructs)
+- `types`: validator `json_schema()` fragment contributions (per-validator JSON Schema keyword maps merged during export)
 
 ## Related Decisions
 

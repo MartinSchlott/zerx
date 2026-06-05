@@ -198,11 +198,13 @@ no dependency on `PLAN_F1_value_model`.
 
 ### C9 — Built on serde, lean beyond it (`D-serde-foundation`)
 
-**Decision.** Zerx is built on `serde` + `serde_json` as core dependencies, with
-`mlua` as an optional feature. We do **not** pursue Zex's zero-runtime-dependency
-posture, and we add no convenience crates without need — in particular zerx does
-**not** depend on `serde_bytes`; buffer fidelity rides on serde's native
-`serialize_bytes` (see C2).
+**Decision.** Zerx is built on `serde` + `serde_json` + `regex` (full `regex`
+crate, 1.x) as core dependencies, with `mlua` as an optional feature. We do
+**not** pursue Zex's zero-runtime-dependency posture, and we add no convenience
+crates without need — in particular zerx does **not** depend on `serde_bytes`;
+buffer fidelity rides on serde's native `serialize_bytes` (see C2). `regex` is
+scoped to the `regex`/`pattern` validator only; `regex-lite` was rejected in
+favour of the full crate's performance and feature set (Product-Owner decision).
 
 **Rationale.** The serde data model *is* the premise of the library; reusing it
 is the whole point.
@@ -286,6 +288,7 @@ Update step.
   of the `Validator` trait F2 defines. Lands the negative compile-guarantee
   (`.min()` unrepresentable on `bool`) and the type-specific-method composition.
   Extends `SchemaKind` with its variants and their dispatch arms. Deps: F2.
+  **Done.**
 - `PLAN_T2_complex_types` — `object`, `array`, `record`, `tuple`, `union`,
   `discriminated_union` (O(1) variant lookup), `literal`; object modes
   (strict/passthrough/strip). Deps: T1.

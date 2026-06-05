@@ -138,19 +138,28 @@ impl Lazy {
 pub(crate) enum SchemaKind {
     Any,
     Lazy(Lazy),
-    // PLAN_T1/T2/T4 each add their variant here, plus one arm in each dispatch match.
+    String,
+    Number,
+    Boolean,
+    Enum(Vec<std::string::String>),
+    Null,
 }
 
 impl SchemaKind {
     /// Leaf type check — intercepted for Lazy before this is called.
     pub(crate) fn check_type(
         &self,
-        _value: &ZerxValue,
+        value: &ZerxValue,
         _ctx: &mut ParseContext,
     ) -> Result<(), ZerxError> {
         match self {
             SchemaKind::Any => Ok(()),
             SchemaKind::Lazy(_) => unreachable!("Lazy is intercepted before check_type"),
+            SchemaKind::String => crate::types::check_string(value),
+            SchemaKind::Number => crate::types::check_number(value),
+            SchemaKind::Boolean => crate::types::check_boolean(value),
+            SchemaKind::Enum(set) => crate::types::check_enum(value, set),
+            SchemaKind::Null => crate::types::check_null(value),
         }
     }
 
@@ -161,7 +170,12 @@ impl SchemaKind {
         _ctx: &mut ParseContext,
     ) -> Result<ZerxValue, ZerxError> {
         match self {
-            SchemaKind::Any => Ok(value.clone()),
+            SchemaKind::Any
+            | SchemaKind::String
+            | SchemaKind::Number
+            | SchemaKind::Boolean
+            | SchemaKind::Enum(_)
+            | SchemaKind::Null => Ok(value.clone()),
             SchemaKind::Lazy(_) => unreachable!("Lazy is intercepted before parse_inner"),
         }
     }
@@ -223,6 +237,11 @@ impl std::fmt::Debug for Schema {
         let kind_str = match &self.kind {
             SchemaKind::Any => "Any",
             SchemaKind::Lazy(_) => "Lazy(<thunk>)",
+            SchemaKind::String => "String",
+            SchemaKind::Number => "Number",
+            SchemaKind::Boolean => "Boolean",
+            SchemaKind::Enum(_) => "Enum",
+            SchemaKind::Null => "Null",
         };
         f.debug_struct("Schema")
             .field("kind", &kind_str)
@@ -324,7 +343,7 @@ impl Schema {
 // BuilderInner — private driver for the blanket Modify impl
 // ---------------------------------------------------------------------------
 
-trait BuilderInner {
+pub(crate) trait BuilderInner {
     fn schema_mut(&mut self) -> &mut Schema;
 }
 
