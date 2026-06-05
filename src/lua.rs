@@ -572,6 +572,7 @@ mod tests {
         );
         let err = schema.validate_lua(&t).unwrap_err();
         assert_eq!(err.code, ErrorCode::LUA_SHAPE_MISMATCH);
+        assert!(err.path.is_empty(), "shape mismatch at root has empty path, got {:?}", err.path);
     }
 
     // --- table → object / record ---
@@ -595,6 +596,7 @@ mod tests {
         );
         let err = schema.validate_lua(&t).unwrap_err();
         assert_eq!(err.code, ErrorCode::LUA_SHAPE_MISMATCH);
+        assert!(err.path.is_empty(), "shape mismatch at root has empty path, got {:?}", err.path);
     }
 
     #[test]
@@ -606,6 +608,8 @@ mod tests {
         );
         let err = schema.validate_lua(&t).unwrap_err();
         assert_eq!(err.code, ErrorCode::LUA_INVALID_KEY);
+        // Position 0 in the hash is prepended as the path segment.
+        assert_eq!(err.path, vec!["0"], "invalid key at hash[0] has path [\"0\"], got {:?}", err.path);
     }
 
     #[test]
@@ -617,6 +621,7 @@ mod tests {
         );
         let err = schema.validate_lua(&t).unwrap_err();
         assert_eq!(err.code, ErrorCode::LUA_INVALID_KEY);
+        assert_eq!(err.path, vec!["0"], "invalid key at hash[0] has path [\"0\"], got {:?}", err.path);
     }
 
     #[test]
@@ -1056,6 +1061,7 @@ mod tests {
         );
         let err = schema.validate_lua(&t).unwrap_err();
         assert_eq!(err.code, ErrorCode::LUA_INVALID_KEY);
+        assert_eq!(err.path, vec!["0"], "invalid key at hash[0] has path [\"0\"], got {:?}", err.path);
     }
 
     #[test]
@@ -1067,6 +1073,7 @@ mod tests {
         );
         let err = schema.validate_lua(&t).unwrap_err();
         assert_eq!(err.code, ErrorCode::LUA_SHAPE_MISMATCH);
+        assert!(err.path.is_empty(), "shape mismatch at root has empty path, got {:?}", err.path);
     }
 
     #[test]
@@ -1128,5 +1135,60 @@ mod tests {
         );
         let err = schema.validate_lua(&t).unwrap_err();
         assert_eq!(err.code, ErrorCode::LUA_INVALID_KEY);
+    }
+
+    // --- Zex port: 0-/1-based array tables ---
+
+    #[test]
+    fn port_1based_array_maps_to_zerx_array() {
+        // Zex: lua arrays are 1-indexed; the array part (contiguous 1..=n) maps
+        // directly to a ZerxValue::Array preserving element order.
+        let schema: Schema = array(number()).into();
+        let t = table(
+            vec![LuaValue::Integer(10), LuaValue::Integer(20), LuaValue::Integer(30)],
+            vec![],
+        );
+        let result = schema.validate_lua(&t).unwrap();
+        assert_eq!(
+            result,
+            ZerxValue::Array(vec![ZerxValue::I64(10), ZerxValue::I64(20), ZerxValue::I64(30)])
+        );
+    }
+
+    // --- Zex port: strict-vs-strip under Lua ---
+
+    #[test]
+    fn port_strip_drops_unknown_keys() {
+        // Zex: strict-vs-strip — strip mode silently removes unknown keys
+        let schema: Schema = object([("x", number().into())]).strip().into();
+        let t = table(
+            vec![],
+            vec![
+                hash_entry("x", LuaValue::Integer(5)),
+                hash_entry("unknown", LuaValue::Integer(99)),
+            ],
+        );
+        let result = schema.validate_lua(&t).unwrap();
+        let mut expected = crate::Map::new();
+        expected.insert("x".to_string(), ZerxValue::I64(5));
+        assert_eq!(result, ZerxValue::Object(expected));
+    }
+
+    #[test]
+    fn port_passthrough_keeps_unknown_keys() {
+        // Zex: strict-vs-strip — passthrough mode preserves unknown keys via free-convert
+        let schema: Schema = object([("x", number().into())]).passthrough().into();
+        let t = table(
+            vec![],
+            vec![
+                hash_entry("x", LuaValue::Integer(5)),
+                hash_entry("extra", LuaValue::Integer(99)),
+            ],
+        );
+        let result = schema.validate_lua(&t).unwrap();
+        let mut expected = crate::Map::new();
+        expected.insert("x".to_string(), ZerxValue::I64(5));
+        expected.insert("extra".to_string(), ZerxValue::I64(99));
+        assert_eq!(result, ZerxValue::Object(expected));
     }
 }

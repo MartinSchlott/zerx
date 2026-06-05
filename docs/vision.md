@@ -34,7 +34,7 @@ real-world data — including data that isn't JSON-clean — and lets you
 **assemble schemas programmatically at runtime**. It is the Rust sibling of
 [Zex](#relationship-to-zex), carrying over Zex's "bastard" philosophy:
 schema validation is useful even when the data being validated isn't pure JSON
-(buffers, binary payloads, Lua tables/coroutines from `mlua`).
+(buffers, binary payloads, Lua data values from sibling runtimes).
 
 Two capabilities are the reason zerx exists:
 
@@ -89,11 +89,12 @@ This yields a two-layer value model:
    Full roundtrip through any serde format (json, msgpack, bincode, …).
    `validate<T: Serialize>(&T)` accepts any serde type directly — no manual
    conversion step.
-2. **host-opaque** (`mlua` feature) — Lua functions, coroutines, userdata
-   returned by `mlua`. Validatable at runtime via a dedicated
-   `validate_lua(&mlua::Value)` path (these are not `Serialize`), but **not**
-   serde-roundtrip-capable. In JSON Schema they appear only as format markers
-   (`format: "function"`, `format: "tvalue"`).
+2. **Lua data** (`lua` feature) — Lua data values from sibling runtimes such as
+   endymion. Validatable at runtime via a schema-directed
+   `validate_lua(&lua::LuaValue)` path (these are not `Serialize`). The schema
+   resolves Lua's two structural ambiguities: byte strings become `string` or
+   `buffer` depending on the directing schema kind; tables become `array` or
+   `object`/`record` depending on the directing schema kind.
 
 ## Strict by default — a security feature
 
@@ -118,7 +119,7 @@ Ported from Zex. All in scope for v1.
 | Basic | `string`, `number`, `boolean`, `enumerate`, `null`, `any` |
 | Complex | `object`, `array`, `record`, `tuple`, `union`, `discriminated_union`, `literal`, `lazy` |
 | Special | `buffer` (with MIME), `uri`, `url`, `json`, `jsonschema` |
-| Host-opaque (`mlua`) | `function` (coroutines), `tvalue` (userdata) |
+| Lua data (`lua`) | `LuaValue` / `LuaTable` — disambiguated via `validate_lua` |
 
 ## Modifier & validator catalogue
 
@@ -141,7 +142,7 @@ throwing variant** — everything returns `Result<_, ZerxError>`; callers use `?
 
 ```rust
 schema.validate<T: Serialize>(&T)        -> Result<ZerxValue, ZerxError>
-schema.validate_lua(&mlua::Value)        -> Result<ZerxValue, ZerxError>   // mlua feature
+schema.validate_lua(&lua::LuaValue)      -> Result<ZerxValue, ZerxError>   // lua feature
 schema.to_json_schema(opts?)             -> serde_json::Value
 zerx::from_json_schema(&Value, opts?)    -> Result<Schema, ZerxError>
 
@@ -200,8 +201,8 @@ let message = zerx::object([
         zerx::object([
             ("kind", zerx::literal("tool")),
             ("tool", zerx::string()),
-            // host-opaque bastard (mlua feature): runtime-validatable, no serde roundtrip
-            ("call", zerx::function().describe("callback the tool invokes")),
+            // note: "call" is a host-side callback, not a Lua data value; omitted from Lua input
+            ("call", zerx::string().describe("callback identifier the tool invokes")),
         ]),
     ])),
 
@@ -314,7 +315,7 @@ Unlike Zex (zero runtime deps), zerx is **built on serde** — that is the whole
 premise:
 
 - **Core:** `serde` + `serde_json` (the JSON Schema side and the dynamic value).
-- **Optional feature `mlua`:** the host-opaque layer.
+- **Optional feature `lua`:** zerx-owned Lua input types and schema-directed validation (no external Lua dependency).
 - **Likely:** `serde_bytes` for buffer fidelity (see open question below).
 
 Keep the dependency set lean beyond these; no convenience crates without need.
@@ -336,9 +337,9 @@ Keep the dependency set lean beyond these; no convenience crates without need.
 
 ## Success criteria
 
-1. **Non-JSON data is first-class.** Buffers (with MIME) and `mlua`
-   functions/userdata validate and (for buffers) roundtrip through format
-   markers — without first being made `serde_json`-clean.
+1. **Non-JSON data is first-class.** Buffers (with MIME) validate and roundtrip
+   through format markers; Lua data values validate via schema-directed
+   disambiguation — without first being made `serde_json`-clean.
 2. **Roundtrip stability.** `schema → to_json_schema → from_json_schema` yields
    a semantically equivalent schema; `$defs`/`$ref`, cycles, and format markers
    survive.
@@ -349,7 +350,7 @@ Keep the dependency set lean beyond these; no convenience crates without need.
 5. **Programmatic assembly works.** Schemas are built, cloned, sliced
    (`omit`/`partial`), and extended at runtime.
 6. **AI-ready.** Schemas hand off to LLMs/tool-use as JSON Schema, and their
-   output (including Lua data from `mlua`) validates.
+   output (including Lua data from sibling runtimes) validates.
 
 ## Relationship to Zex
 
