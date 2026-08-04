@@ -52,7 +52,7 @@ Built on `serde` + `serde_json` + `regex`. The `lua` feature is opt-in and adds 
 
 **Delta and Replace.** Validate sub-tree updates by JSON Pointer without re-sending the whole object. `parse_delta(path, &value)` validates a value against the schema at that path, no instance required. `replace(&instance, path, &value)` returns a new value with the sub-tree replaced and the **whole root** revalidated — `.refine()` cross-field constraints fire correctly.
 
-**Policy-driven JSON Schema import.** `from_json_schema_with(&schema, &opts)` runs a composable pre-parse `SchemaTransform` pass over the input and a post-parse `TypeTransform` pass over the resulting types. The built-in `sql` policy (PostgreSQL-focused) maps `int64 → string`, `jsonb → zerx::json()`, `bytea → zerx::buffer()`, normalizes `anyOf` of `T | null` to `T.nullable()`, and applies SQL format mappings (e.g. `timestamp* → date-time`). Register your own with `zerx::register_policy(name, …)`.
+**Policy-driven JSON Schema import.** `from_json_schema_with(&schema, &opts)` runs a composable pre-parse `SchemaTransform` pass over the input and a post-parse `TypeTransform` pass over the resulting types. The built-in `sql` policy (PostgreSQL-focused) maps `int64 → string`, `jsonb → zerx::json()`, `bytea → zerx::buffer()`, normalizes `anyOf` of `T | null` to `T.nullable()`, and applies SQL format mappings (e.g. `timestamp* → date-time`). Register your own with `zerx::register_policy(name, …)`. `ImportOptions.strip_unknown` is a separate, orthogonal switch: it makes an imported schema *drop* unknown properties instead of rejecting them, at every object node — the self-healing move for a persisted config file whose schema has since lost a field. It composes with any policy, and it never touches nodes the schema declared `additionalProperties: true`.
 
 **Bidirectional JSON Schema.** `to_json_schema` and `from_json_schema` are built for roundtrip stability. `$defs`/`$ref` survive, recursive structures survive (lazy placeholders + memoization), format markers survive. `oneOf` imports as a union with `x-oneOf` metadata. `allOf` and `not` raise clear errors instead of being silently dropped. `additionalProperties` handles all four input shapes (`true` / `false` / absent / schema object — the last treated as passthrough). Discriminated unions use Draft 2020-12 `discriminator` and reconstruct correctly even nested inside arrays.
 
@@ -62,6 +62,7 @@ Built on `serde` + `serde_json` + `regex`. The `lua` feature is opt-in and adds 
 
 - **No type generation or inference.** Zerx never derives a schema from a Rust type and never infers a compile-time `T` from a schema — `schemars`/`typify` and `validator`/`garde` own that ground. `validate` returns a dynamic `ZerxValue`, not an inferred type.
 - **No live Lua handles.** Functions, coroutines, and userdata are not representable; zerx validates Lua *data* only, via schema-directed disambiguation. There is no `mlua` dependency and no host-opaque value variant.
+- **No zerx keywords in your JSON Schema.** Behaviour never enters through the document. JSON Schema says what is *valid*, not what to do with what isn't — so `additionalProperties: false` means "unknown properties do not belong here" and nothing more. Whether that means reject or drop is caller policy (`ImportOptions.strip_unknown`), which keeps an exported schema portable to tools that never heard of zerx. There is no `x-zerx-*` vocabulary and there will not be one.
 - **No i18n.** Error messages are English-only; consumers branch on `code` and `path`, never on message text.
 - **No async or streaming validation.** Validation is synchronous and `Result`-returning.
 
@@ -105,6 +106,13 @@ let sql_schema = zerx::from_json_schema_with(
     &postgres_json_schema,
     &ImportOptions { policy: Some("sql".into()), ..Default::default() },
 )?;
+
+// Self-healing config: the schema dropped a field, the stored file still carries it
+let config = zerx::from_json_schema_with(
+    &app_json_schema,
+    &ImportOptions { strip_unknown: true, ..Default::default() },
+)?;
+let healed = config.validate(&stored_file)?;   // stale keys gone, at every depth
 ```
 
 ## As a library
