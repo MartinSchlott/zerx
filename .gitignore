@@ -58,3 +58,13 @@
 /CLAUDE.md
 /.heron/
 /target/
+/.agents/rules/conventions.md
+/.agents/skills/document-cleanup/SKILL.md
+/.agents/skills/document-cleanup/architecture.md
+/.agents/skills/document-cleanup/kanban.md
+/.agents/skills/document-cleanup/register.md
+/.claude/rules/conventions.md
+/.claude/skills/document-cleanup/SKILL.md
+/.claude/skills/document-cleanup/architecture.md
+/.claude/skills/document-cleanup/kanban.md
+/.claude/skills/document-cleanup/register.md
