@@ -58,6 +58,13 @@ This file lists the project's binding design decisions. Entries are normative an
 **Rationale:** The serde data model is the premise of the library, and `regex` is required for the arbitrary-pattern validator.
 **Consequence:** `regex` is scoped to the `regex`/`pattern` validator and the `url` structural check; the optional `lua` feature adds only a zerx-owned value type; further dependency additions are design-time decisions surfaced in a plan's Dependencies section.
 
+### D-import-unknown-caller-policy
+
+**Decision:** The disposition of unknown properties on JSON Schema import is a caller-side option in `ImportOptions`, not a schema keyword, vendor extension, or named registry policy.
+**Rationale:** JSON Schema is a validation vocabulary, not a transform vocabulary; `additionalProperties: false` says unknown properties do not belong, and whether that means reject or remove is the caller's choice — encoding it in the document would make a portable schema carry zerx-specific meaning.
+**Consequence:** Import-time behaviour that is not a statement about validity MUST enter through `ImportOptions` and MUST NOT be introduced as an `x-`-prefixed keyword; such an option MUST NOT be encoded into the exported document and MUST be re-supplied on every import; it stays orthogonal to `policy` so it composes with any registered policy.
+**Scope:** docs/architecture/json-schema.md, docs/architecture/policy.md
+
 ## Superseded
 
 (No superseded decisions yet.)

@@ -14,7 +14,7 @@
 
 ## Consumes from
 
-- `json-schema`: `from_json_schema` (core import walk the pipeline wraps)
+- `json-schema`: `from_json_schema_inner` (core import walk the pipeline wraps, carrying the caller's unknown-property disposition)
 - `schema-core`: `Schema` (the value the pipeline produces and type transforms receive)
 - `errors`: `ZerxError` (structured pipeline failure)
 
@@ -25,7 +25,7 @@
 ## External Contracts
 
 - `register_policy` — register a named policy (overwrite-safe, infallible).
-- `from_json_schema_with` — fallible import of a JSON Schema value with policy and transform options; the primary entry point for policy-driven import.
+- `from_json_schema_with` — fallible import of a JSON Schema value with policy and transform options; the primary entry point for policy-driven import. The options carry the caller's unknown-property disposition for the import.
 - `apply_type_transforms` — apply an ordered sequence of type transforms to a root `Schema` (non-recursive root-only fold).
 
 ## External Services
@@ -93,7 +93,17 @@
 
 - Caller-supplied type transforms receive only the root `Schema` and MAY rebuild it using the public constructor/builder surface; in v1 there is no public `Schema` introspection API for reading kind or children, so caller-supplied type transforms are limited to whole-`Schema` rewrites.
 
+### Unknown-property disposition on import
+
+- The caller-supplied disposition MUST apply to every object node the import walk reconstructs, not only the root.
+- A node importing as `passthrough` (`additionalProperties: true` or a schema-object value) MUST NOT be affected; the disposition reinterprets only the strict outcome.
+- `additionalProperties: false` and an absent `additionalProperties` MUST be treated identically.
+- The disposition MUST default to rejection; the default import behaviour MUST be unchanged.
+- The disposition MUST NOT be encoded into the exported document; it MUST be re-supplied on every import.
+- Union variants are matched first-match-wins; under the strip disposition a variant that strict mode would reject for an extra key MAY match.
+
 ## Related Decisions
 
 - `D-strict-by-default`
 - `D-result-only-api`
+- `D-import-unknown-caller-policy`

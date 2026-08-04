@@ -50,6 +50,23 @@ pub struct ImportOptions {
     pub type_transforms: Vec<TypeTransform>,
     /// Deref hook for external `$ref` resolution (applied first, before policy schema transforms).
     pub deref: Option<RefResolver>,
+    /// Disposition of unknown properties for every imported object node.
+    ///
+    /// `false` (default): a property the schema rejects yields `unknown_property` at validation
+    /// time. `true`: it is silently dropped instead.
+    ///
+    /// Applies to every reconstructed object node, not only the root. Nodes with
+    /// `additionalProperties: true` or a schema-object value import as passthrough and are NOT
+    /// affected — the flag reinterprets only the strict outcome.
+    ///
+    /// This is caller policy and is not carried by the JSON Schema document: a schema imported
+    /// with `strip_unknown: true` still exports `additionalProperties: false`, so the flag must be
+    /// supplied again on every import.
+    ///
+    /// Note: `union` variants are matched first-match-wins. Under `strip_unknown: true` a variant
+    /// that strict mode would have rejected for an extra key can match, and the extra keys are
+    /// dropped.
+    pub strip_unknown: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -415,7 +432,7 @@ pub fn from_json_schema_with(
     }
 
     // Step 3: J2 core import.
-    let schema = crate::json_schema::from_json_schema(&effective)?;
+    let schema = crate::json_schema::from_json_schema_inner(&effective, opts.strip_unknown)?;
 
     // Step 4: Apply ordered type transforms: [policy.type_transforms…, opts.type_transforms…].
     let mut type_transforms: Vec<TypeTransform> = Vec::new();
@@ -899,5 +916,112 @@ mod tests {
         let exported = re_export(&result.unwrap());
         assert_eq!(exported.get("type").and_then(|v| v.as_str()), Some("string"));
         assert!(exported.get("x-pg-type").is_none(), "x-pg-type leaked into export");
+    }
+
+    // 16. strip_unknown
+    #[test]
+    fn test_strip_unknown_default_is_reject() {
+        let schema = from_json_schema_with(
+            &json!({
+                "type":"object",
+                "properties":{"a":{"type":"string"}},
+                "required":["a"],
+                "additionalProperties":false
+            }),
+            &ImportOptions::default(),
+        )
+        .unwrap();
+        let err = schema.validate(&json!({"a":"x","stale":1})).unwrap_err();
+        assert_eq!(err.code, ErrorCode::UNKNOWN_PROPERTY);
+    }
+
+    #[test]
+    fn test_strip_unknown_via_import_options() {
+        let schema = from_json_schema_with(
+            &json!({
+                "type":"object",
+                "properties":{"a":{"type":"string"}},
+                "required":["a"],
+                "additionalProperties":false
+            }),
+            &ImportOptions {
+                strip_unknown: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let ok = schema.validate(&json!({"a":"x","stale":1})).unwrap();
+        assert!(ok.as_object().unwrap().get("stale").is_none());
+    }
+
+    // Regression guard for decision 1: strip_unknown is orthogonal to `policy` and
+    // composes with it.
+    #[test]
+    fn test_strip_unknown_composes_with_sql_policy() {
+        let schema = from_json_schema_with(
+            &json!({
+                "type":"object",
+                "properties":{"amount":{"type":"number","format":"int64"}},
+                "required":["amount"],
+                "additionalProperties":false
+            }),
+            &ImportOptions {
+                policy: Some("sql".into()),
+                strip_unknown: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let exported = re_export(&schema);
+        assert_eq!(
+            exported["properties"]["amount"]["type"].as_str(),
+            Some("string")
+        );
+
+        let ok = schema.validate(&json!({"amount":"42","stale":1})).unwrap();
+        let obj = ok.as_object().unwrap();
+        assert!(obj.get("amount").is_some());
+        assert!(obj.get("stale").is_none());
+    }
+
+    // The driving use case, end to end, as a permanent test: a root-level and a
+    // nested stale key both disappear in the same pass through the public entry point.
+    #[test]
+    fn test_strip_unknown_heals_nested_config() {
+        let schema = from_json_schema_with(
+            &json!({
+                "type":"object",
+                "properties":{
+                    "host":{"type":"string"},
+                    "tls":{
+                        "type":"object",
+                        "properties":{"enabled":{"type":"boolean"}},
+                        "required":["enabled"],
+                        "additionalProperties":false
+                    }
+                },
+                "required":["host","tls"],
+                "additionalProperties":false
+            }),
+            &ImportOptions {
+                strip_unknown: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let ok = schema
+            .validate(&json!({
+                "host":"a",
+                "legacy_port":1,
+                "tls":{"enabled":true,"legacy_ca":"x"}
+            }))
+            .unwrap();
+        let obj = ok.as_object().unwrap();
+        assert!(obj.get("host").is_some());
+        assert!(obj.get("legacy_port").is_none());
+        let tls = obj.get("tls").unwrap().as_object().unwrap();
+        assert!(tls.get("enabled").is_some());
+        assert!(tls.get("legacy_ca").is_none());
     }
 }

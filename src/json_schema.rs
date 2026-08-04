@@ -412,7 +412,15 @@ impl ErrorCode {
 
 /// Import a JSON Schema (Draft 2020-12) document back into a `Schema`. Fallible (C7).
 pub fn from_json_schema(value: &serde_json::Value) -> Result<Schema, ZerxError> {
-    let ctx = ImportContext::new(value);
+    from_json_schema_inner(value, false)
+}
+
+/// Core import walk, carrying the caller's unknown-property disposition.
+pub(crate) fn from_json_schema_inner(
+    value: &serde_json::Value,
+    strip_unknown: bool,
+) -> Result<Schema, ZerxError> {
+    let ctx = ImportContext::new(value, strip_unknown);
     import_value(value, &ctx, &[])
 }
 
@@ -447,10 +455,11 @@ pub(crate) struct ImportContext {
     resolved: Rc<RefCell<HashMap<String, Schema>>>,
     placeholders: RefCell<HashMap<String, Schema>>,
     importing: RefCell<HashSet<String>>,
+    strip_unknown: bool,
 }
 
 impl ImportContext {
-    fn new(root: &serde_json::Value) -> Self {
+    fn new(root: &serde_json::Value, strip_unknown: bool) -> Self {
         let defs = root
             .get("$defs")
             .and_then(|v| v.as_object())
@@ -461,6 +470,7 @@ impl ImportContext {
             resolved: Rc::new(RefCell::new(HashMap::new())),
             placeholders: RefCell::new(HashMap::new()),
             importing: RefCell::new(HashSet::new()),
+            strip_unknown,
         }
     }
 
@@ -960,7 +970,13 @@ fn import_object(
         Some(serde_json::Value::Object(_)) => {
             ob = ob.passthrough();
         }
-        _ => {}
+        // Everything else means the schema rejects unknown properties; the caller's
+        // strip_unknown flag reinterprets only this outcome, not passthrough.
+        _ => {
+            if ctx.strip_unknown {
+                ob = ob.strip();
+            }
+        }
     }
 
     Ok(ob.into())
@@ -1831,6 +1847,203 @@ mod tests {
         let err = from(input).unwrap_err();
         assert_eq!(err.code, ErrorCode::IMPORT_MALFORMED);
         assert!(!err.path.is_empty(), "error path should point to offending node");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Strip-unknown import tests (J3)
+    // ---------------------------------------------------------------------------
+
+    // J3-1. Strip applies at the root.
+    #[test]
+    fn j3_strip_root_object() {
+        let input = serde_json::json!({
+            "type":"object",
+            "properties":{"a":{"type":"string"}},
+            "required":["a"],
+            "additionalProperties":false
+        });
+        let value = serde_json::json!({"a":"x","stale":1});
+
+        let schema = from_json_schema_inner(&input, true).unwrap();
+        let ok = schema.validate(&value).unwrap();
+        let obj = ok.as_object().unwrap();
+        assert!(obj.get("a").is_some());
+        assert!(obj.get("stale").is_none());
+        assert_eq!(obj.len(), 1);
+
+        let strict = from_json_schema_inner(&input, false).unwrap();
+        let err = strict.validate(&value).unwrap_err();
+        assert_eq!(err.code, ErrorCode::UNKNOWN_PROPERTY);
+    }
+
+    // J3-2. Strip applies to nested objects (regression guard for the recursive decision).
+    #[test]
+    fn j3_strip_nested_object() {
+        let input = serde_json::json!({
+            "type":"object",
+            "properties":{
+                "inner":{
+                    "type":"object",
+                    "properties":{"b":{"type":"string"}},
+                    "required":["b"],
+                    "additionalProperties":false
+                }
+            },
+            "required":["inner"],
+            "additionalProperties":false
+        });
+        let schema = from_json_schema_inner(&input, true).unwrap();
+        let ok = schema
+            .validate(&serde_json::json!({"inner":{"b":"x","stale":1}}))
+            .unwrap();
+        let inner = ok.as_object().unwrap().get("inner").unwrap().as_object().unwrap();
+        assert!(inner.get("b").is_some());
+        assert!(inner.get("stale").is_none());
+    }
+
+    // J3-3. Absent additionalProperties also strips.
+    #[test]
+    fn j3_strip_absent_additional_properties() {
+        let input = serde_json::json!({
+            "type":"object",
+            "properties":{"a":{"type":"string"}},
+            "required":["a"]
+        });
+        let schema = from_json_schema_inner(&input, true).unwrap();
+        let ok = schema.validate(&serde_json::json!({"a":"x","stale":1})).unwrap();
+        assert!(ok.as_object().unwrap().get("stale").is_none());
+    }
+
+    // J3-4. additionalProperties:true (and a schema-object value) are untouched.
+    #[test]
+    fn j3_strip_passthrough_untouched() {
+        let bool_true = serde_json::json!({
+            "type":"object",
+            "properties":{"a":{"type":"string"}},
+            "additionalProperties":true
+        });
+        let schema = from_json_schema_inner(&bool_true, true).unwrap();
+        let ok = schema.validate(&serde_json::json!({"a":"x","extra":1})).unwrap();
+        assert!(ok.as_object().unwrap().get("extra").is_some());
+
+        let schema_ap = serde_json::json!({
+            "type":"object",
+            "properties":{"a":{"type":"string"}},
+            "additionalProperties":{"type":"string"}
+        });
+        let schema2 = from_json_schema_inner(&schema_ap, true).unwrap();
+        let ok2 = schema2.validate(&serde_json::json!({"a":"x","extra":"y"})).unwrap();
+        assert!(ok2.as_object().unwrap().get("extra").is_some());
+    }
+
+    // J3-5. Union first-match-wins under strip — pins the accepted consequence.
+    #[test]
+    fn j3_strip_union_first_match_wins() {
+        let input = serde_json::json!({
+            "anyOf": [
+                {
+                    "type":"object",
+                    "properties":{"a":{"type":"string"}},
+                    "required":["a"],
+                    "additionalProperties":false
+                },
+                {
+                    "type":"object",
+                    "properties":{"a":{"type":"string"},"b":{"type":"string"}},
+                    "required":["a","b"],
+                    "additionalProperties":false
+                }
+            ]
+        });
+        let schema = from_json_schema_inner(&input, true).unwrap();
+        let ok = schema
+            .validate(&serde_json::json!({"a":"x","b":"y"}))
+            .unwrap();
+        let obj = ok.as_object().unwrap();
+        assert!(obj.get("a").is_some());
+        assert!(
+            obj.get("b").is_none(),
+            "first variant matched under strip and dropped the second variant's field"
+        );
+    }
+
+    // J3-6. Discriminated union still builds under strip; dispatch still works.
+    #[test]
+    fn j3_strip_discriminated_union_builds() {
+        let du: Schema = discriminated_union(
+            "kind",
+            [
+                object([("kind", literal("a").into()), ("x", string().into())]).into(),
+                object([("kind", literal("b").into()), ("y", number().into())]).into(),
+            ],
+        )
+        .into();
+        let exported = du.to_json_schema();
+
+        let schema = from_json_schema_inner(&exported, true).unwrap();
+        assert!(schema.to_json_schema().get("oneOf").is_some());
+
+        let ok = schema
+            .validate(&serde_json::json!({"kind":"a","x":"hi","stale":1}))
+            .unwrap();
+        let obj = ok.as_object().unwrap();
+        assert!(obj.get("stale").is_none());
+        assert_eq!(obj.get("x").and_then(|v| v.as_str()), Some("hi"));
+    }
+
+    // J3-7. `record` is unaffected by strip_unknown.
+    #[test]
+    fn j3_strip_record_unaffected() {
+        let input = serde_json::json!({
+            "type":"object","format":"record",
+            "additionalProperties":{"type":"string"}
+        });
+        let schema = from_json_schema_inner(&input, true).unwrap();
+        let ok = schema
+            .validate(&serde_json::json!({"a":"x","b":"y"}))
+            .unwrap();
+        assert_eq!(ok.as_object().unwrap().len(), 2);
+
+        let bad = serde_json::json!({
+            "type":"object","format":"record","additionalProperties":false
+        });
+        let err = from_json_schema_inner(&bad, true).unwrap_err();
+        assert_eq!(err.code, ErrorCode::IMPORT_MALFORMED);
+    }
+
+    // J3-8. $ref/$defs reached through a lazy node strip too (regression guard for decision 5).
+    #[test]
+    fn j3_strip_reaches_through_ref() {
+        let input = serde_json::json!({
+            "$ref": "#/$defs/S1",
+            "$defs": {
+                "S1": {
+                    "type":"object",
+                    "properties":{"a":{"type":"string"}},
+                    "required":["a"],
+                    "additionalProperties":false
+                }
+            }
+        });
+        let schema = from_json_schema_inner(&input, true).unwrap();
+        let ok = schema.validate(&serde_json::json!({"a":"x","stale":1})).unwrap();
+        assert!(ok.as_object().unwrap().get("stale").is_none());
+    }
+
+    // J3-9. Export is unchanged — the option does not leak into the document.
+    #[test]
+    fn j3_strip_export_unchanged() {
+        let input = serde_json::json!({
+            "type":"object",
+            "properties":{"a":{"type":"string"}},
+            "required":["a"],
+            "additionalProperties":false
+        });
+        let schema = from_json_schema_inner(&input, true).unwrap();
+        assert_eq!(
+            schema.to_json_schema()["additionalProperties"],
+            serde_json::json!(false)
+        );
     }
 
     // 18. Infallibility / determinism

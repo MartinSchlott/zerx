@@ -20,7 +20,7 @@
 
 ## Provides to
 
-- `policy`: `from_json_schema` (core import walk the pipeline wraps)
+- `policy`: `from_json_schema_inner` (core import walk the pipeline wraps, carrying the caller's unknown-property disposition)
 
 ## External Contracts
 
@@ -74,7 +74,7 @@
 ### Object mode → `additionalProperties` mapping
 
 - `Strict` → `additionalProperties: false`.
-- `Strip` → `additionalProperties: false`. Accepted limitation: `strip` and `strict` both export `false`; the strip runtime behaviour is not representable in standard JSON Schema, so a `strip` schema roundtrips back as `strict`.
+- `Strip` → `additionalProperties: false`. Accepted limitation: `strip` and `strict` both export `false`; the strip runtime behaviour is not representable in standard JSON Schema, so a `strip` schema roundtrips back as `strict`. An import-time strip disposition is likewise not representable in the exported document and MUST be re-supplied on every import.
 - `Passthrough` → `additionalProperties: true`.
 
 ### `record(any())` shorthand
@@ -123,6 +123,7 @@
 - Absent → strict mode (fail-closed; C4 security boundary).
 - `true` → `passthrough()`.
 - Schema object → `passthrough()` (zerx does not model a per-extra-key value schema on a plain object; `record` covers that case).
+- When the caller-supplied unknown-property disposition is strip, the `false` and absent cases MUST reconstruct as `strip` mode instead of `strict`; `true` and schema-object cases remain `passthrough()`, unaffected by the disposition.
 
 ### `required` / `optional` / default import rule
 
@@ -187,4 +188,4 @@
 
 ## Related Decisions
 
-- (none — JSON Schema roundtrip behaviour is fully specified by this concern's Constraints; no register decision binds it.)
+- `D-import-unknown-caller-policy`
