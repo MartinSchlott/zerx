@@ -1,0 +1,544 @@
+#!/usr/bin/env bash
+# Canonical verification entrypoint. See docs/tests.md for the contract this
+# script implements. Requires macOS system bash 3.2 (no associative arrays,
+# no mapfile, no ${var^^}).
+
+GATE_TIMEOUT=300
+
+# --- runner state (initialised before any other work) ---
+lock_owned=0
+child_pid=
+child_pgid=
+watchdog_pid=
+watchdog_pgid=
+timed_out=0
+cleanup_done=0
+pending_status=
+pending_kind=
+pending_id=
+pending_reason=
+
+usage_text() {
+  cat <<'EOF'
+Usage:
+  scripts/verify all                  # lint, test (both variants), api
+  scripts/verify lint
+  scripts/verify test [FILTER]        # all-features variant
+  scripts/verify test core [FILTER]   # feature-off variant
+  scripts/verify api [FILTER]
+EOF
+}
+
+fail_usage() {
+  msg="$1"
+  if [ -n "$msg" ]; then
+    echo "ERROR: $msg" >&2
+  fi
+  usage_text >&2
+  exit 64
+}
+
+# --- generic polling / termination primitives ---
+
+poll_pid_gone() {
+  pid="$1"; max_s="$2"
+  ticks=$((max_s * 10))
+  i=0
+  while [ "$i" -lt "$ticks" ]; do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -0 "$pid" 2>/dev/null || return 0
+  return 1
+}
+
+poll_group_gone() {
+  pgid="$1"; max_s="$2"
+  ticks=$((max_s * 10))
+  i=0
+  while [ "$i" -lt "$ticks" ]; do
+    kill -0 -"$pgid" 2>/dev/null || return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -0 -"$pgid" 2>/dev/null || return 0
+  return 1
+}
+
+# TERM -> poll b1 -> KILL -> poll b2. Returns 0 if gone, 1 if still alive.
+term_then_kill_pid() {
+  pid="$1"; b1="$2"; b2="$3"
+  kill -TERM "$pid" 2>/dev/null
+  poll_pid_gone "$pid" "$b1" && return 0
+  kill -KILL "$pid" 2>/dev/null
+  poll_pid_gone "$pid" "$b2" && return 0
+  return 1
+}
+
+term_then_kill_group() {
+  pgid="$1"; b1="$2"; b2="$3"
+  kill -TERM -"$pgid" 2>/dev/null
+  poll_group_gone "$pgid" "$b1" && return 0
+  kill -KILL -"$pgid" 2>/dev/null
+  poll_group_gone "$pgid" "$b2" && return 0
+  return 1
+}
+
+# No leading TERM -- used only where the leader has already exited and we are
+# just confirming any stragglers die (step 13's normal per-gate path).
+poll_then_kill_group() {
+  pgid="$1"; b1="$2"; b2="$3"
+  poll_group_gone "$pgid" "$b1" && return 0
+  kill -KILL -"$pgid" 2>/dev/null
+  poll_group_gone "$pgid" "$b2" && return 0
+  return 1
+}
+
+print_capped() {
+  max="$1"
+  tmpf=$(mktemp)
+  cat >"$tmpf"
+  total=$(wc -l <"$tmpf" | tr -d ' ')
+  if [ "$total" -gt "$max" ]; then
+    head -n "$max" "$tmpf"
+    echo "… and $((total - max)) more"
+  else
+    cat "$tmpf"
+  fi
+  rm -f "$tmpf"
+}
+
+# --- terminal_exit: status 70 or 71, lock retained ---
+
+terminal_exit() {
+  t_status="$1"; t_kind="$2"; t_id="$3"; t_reason="$4"
+  printf 'FATAL: %s; lock retained at target/verify/.lock\n' "$t_reason" >&2
+  if [ "$t_kind" = group ]; then
+    printf 'surviving process group %s:\n' "$t_id" >&2
+    pgrep -g "$t_id" . >&2 2>/dev/null
+  else
+    printf 'direct child %s:\n' "$t_id" >&2
+    ps -o pid=,stat=,command= -p "$t_id" >&2 2>/dev/null
+    printf 'descendants of this child cannot be enumerated (no owned process group)\n' >&2
+  fi
+  cleanup_done=1
+  exit "$t_status"
+}
+
+# Records a cleanup failure into the pending-terminal quartet. First failure
+# wins, except a "gate" source displaces a previously-recorded "watchdog" one
+# (only the gate group holds CARGO_TARGET_DIR) -- in that case the watchdog
+# fact is preserved by appending a note rather than being lost.
+record_pending() {
+  r_status="$1"; r_kind="$2"; r_id="$3"; r_reason="$4"; r_source="$5"
+  if [ -z "$pending_status" ]; then
+    pending_status="$r_status"
+    pending_kind="$r_kind"
+    pending_id="$r_id"
+    pending_reason="$r_reason"
+  elif [ "$r_source" = gate ]; then
+    pending_status="$r_status"
+    pending_kind="$r_kind"
+    pending_id="$r_id"
+    pending_reason="$r_reason (watchdog cleanup was also unproven)"
+  fi
+}
+
+# --- cleanup handler (EXIT INT TERM HUP) ---
+
+cleanup_handler() {
+  h_status="$1"
+  trap '' EXIT INT TERM HUP
+
+  if [ "$cleanup_done" = 1 ]; then
+    exit "$h_status"
+  fi
+
+  # item 3: watchdog cleanup
+  if [ -n "$watchdog_pgid" ]; then
+    disown "$watchdog_pid" 2>/dev/null
+    if term_then_kill_group "$watchdog_pgid" 2 2; then
+      watchdog_pid=
+      watchdog_pgid=
+    else
+      record_pending 71 group "$watchdog_pgid" "watchdog group survived TERM+KILL" watchdog
+    fi
+  elif [ -n "$watchdog_pid" ]; then
+    discovered=$(ps -o pgid= -p "$watchdog_pid" 2>/dev/null | tr -d ' ')
+    if [ -n "$discovered" ] && [ "$discovered" = "$watchdog_pid" ]; then
+      watchdog_pgid="$discovered"
+      disown "$watchdog_pid" 2>/dev/null
+      if term_then_kill_group "$watchdog_pgid" 2 2; then
+        watchdog_pid=
+        watchdog_pgid=
+      else
+        record_pending 71 group "$watchdog_pgid" "watchdog group survived TERM+KILL" watchdog
+      fi
+    else
+      if term_then_kill_pid "$watchdog_pid" 5 2; then
+        wait "$watchdog_pid" 2>/dev/null
+        record_pending 70 process "$watchdog_pid" "watchdog process-group ownership could not be established during cleanup" watchdog
+      else
+        record_pending 71 process "$watchdog_pid" "watchdog coordinator survived TERM+KILL" watchdog
+      fi
+    fi
+  fi
+
+  # item 4: gate cleanup
+  if [ -n "$child_pgid" ]; then
+    if term_then_kill_group "$child_pgid" 5 2; then
+      child_pgid=
+    else
+      record_pending 71 group "$child_pgid" "process group survived TERM+KILL" gate
+    fi
+  elif [ -n "$child_pid" ]; then
+    discovered=$(ps -o pgid= -p "$child_pid" 2>/dev/null | tr -d ' ')
+    if [ -n "$discovered" ] && [ "$discovered" = "$child_pid" ]; then
+      child_pgid="$discovered"
+      if term_then_kill_group "$child_pgid" 5 2; then
+        child_pgid=
+      else
+        record_pending 71 group "$child_pgid" "process group survived TERM+KILL" gate
+      fi
+    else
+      if term_then_kill_pid "$child_pid" 5 2; then
+        wait "$child_pid" 2>/dev/null
+        record_pending 70 process "$child_pid" "process-group ownership could not be established during cleanup" gate
+      else
+        record_pending 71 process "$child_pid" "child survived TERM+KILL" gate
+      fi
+    fi
+  fi
+
+  # item 5: dispatch any pending terminal outcome
+  if [ -n "$pending_status" ]; then
+    terminal_exit "$pending_status" "$pending_kind" "$pending_id" "$pending_reason"
+  fi
+
+  # item 6: release the lock, only if we own it, only now
+  if [ "$lock_owned" = 1 ]; then
+    rm -rf target/verify/.lock
+  fi
+
+  # item 7
+  exit "$h_status"
+}
+
+# --- lock acquisition ---
+
+acquire_lock() {
+  scope="$1"
+  if mkdir target/verify/.lock 2>/dev/null; then
+    lock_owned=1
+    printf '%s\n' "$scope" >target/verify/.lock/scope
+    printf '%s\n' "$$" >target/verify/.lock/owner
+    return 0
+  fi
+
+  owner_content=""
+  if [ -r target/verify/.lock/owner ]; then
+    owner_content=$(cat target/verify/.lock/owner 2>/dev/null)
+  fi
+  scope_content="unknown"
+  if [ -r target/verify/.lock/scope ] && [ -s target/verify/.lock/scope ]; then
+    scope_content=$(cat target/verify/.lock/scope 2>/dev/null)
+  fi
+
+  case "$owner_content" in
+  '' | *[!0-9]*)
+    echo "BUSY — verification lock present with incomplete metadata (target/verify/.lock); if no runner is active, remove it manually" >&2
+    exit 2
+    ;;
+  esac
+
+  if kill -0 "$owner_content" 2>/dev/null; then
+    echo "BUSY — verification already running: $scope_content" >&2
+    exit 2
+  else
+    echo "BUSY — stale lock from dead pid $owner_content: remove target/verify/.lock" >&2
+    exit 2
+  fi
+}
+
+# --- gate helpers ---
+
+gate_display() {
+  case "$1" in
+  test-core) echo "test core" ;;
+  *) echo "$1" ;;
+  esac
+}
+
+emit_pass() {
+  g="$1"; log="$2"; dur="$3"
+  disp=$(gate_display "$g")
+  if [ "$g" = "lint" ]; then
+    printf 'PASS %s — %ss\n' "$disp" "$dur"
+    return
+  fi
+  n=$(grep -oE 'test result: ok\. [0-9]+ passed' "$log" | head -1 | grep -oE '[0-9]+')
+  if [ -n "$n" ]; then
+    printf 'PASS %s — %s tests, %ss\n' "$disp" "$n" "$dur"
+  else
+    printf 'PASS %s — %ss\n' "$disp" "$dur"
+  fi
+}
+
+emit_fail() {
+  g="$1"; log="$2"; dur="$3"
+  disp=$(gate_display "$g")
+  printf 'FAIL %s — %ss\n' "$disp" "$dur"
+
+  printed=0
+  lineno=$(grep -n '^failures:$' "$log" | tail -1 | cut -d: -f1)
+  if [ -n "$lineno" ]; then
+    block=$(tail -n +"$((lineno + 1))" "$log" | awk 'NF{print} !NF{exit}')
+    if [ -n "$block" ]; then
+      printf '%s\n' "$block" | print_capped 20
+      printed=1
+    fi
+  fi
+  if [ "$printed" -eq 0 ]; then
+    errlines=$(grep '^error' "$log")
+    if [ -n "$errlines" ]; then
+      printf '%s\n' "$errlines" | print_capped 20
+      printed=1
+    fi
+  fi
+  if [ "$printed" -eq 0 ]; then
+    echo "no diagnostic matched; log tail:"
+    grep -v '^[[:space:]]*$' "$log" | tail -n 15
+  fi
+  echo "log: target/verify/logs/${g}.log"
+}
+
+emit_timeout() {
+  g="$1"; secs="$2"; log="$3"
+  disp=$(gate_display "$g")
+  printf 'TIMEOUT %s — killed after %ss — log: %s\n' "$disp" "$secs" "$log"
+}
+
+gate_target_dir() {
+  case "$1" in
+  test-core) echo "target/verify/core" ;;
+  *) echo "target/verify/lua" ;;
+  esac
+}
+
+# --- per-gate execution (Step 1, "Per-gate sequence") ---
+
+run_gate() {
+  gate_id="$1"; filter="$2"
+  logfile="target/verify/logs/${gate_id}.log"
+  timeoutfile="target/verify/logs/${gate_id}.timeout"
+  pgidfile="target/verify/logs/${gate_id}.pgid"
+  wpgidfile="target/verify/logs/${gate_id}.wpgid"
+
+  # step 6
+  : >"$logfile"
+  rm -f "$timeoutfile"
+  timed_out=0
+
+  target_dir=$(gate_target_dir "$gate_id")
+  case "$gate_id" in
+  lint)
+    cmd=(cargo clippy --all-features --all-targets -- -D warnings)
+    ;;
+  test)
+    cmd=(cargo test --lib --all-features)
+    [ -n "$filter" ] && cmd+=("$filter")
+    ;;
+  test-core)
+    cmd=(cargo test --lib)
+    [ -n "$filter" ] && cmd+=("$filter")
+    ;;
+  api)
+    cmd=(cargo test --doc --all-features)
+    [ -n "$filter" ] && cmd+=("$filter")
+    ;;
+  esac
+
+  gate_start=$SECONDS
+
+  # step 7
+  set -m
+  CARGO_TARGET_DIR="$target_dir" CARGO_TERM_COLOR=never "${cmd[@]}" >"$logfile" 2>&1 &
+  child_pid=$!
+  set +m
+
+  # step 8
+  discovered=$(ps -o pgid= -p "$child_pid" 2>/dev/null | tr -d ' ')
+  if [ -z "$discovered" ] || [ "$discovered" != "$child_pid" ]; then
+    if term_then_kill_pid "$child_pid" 5 2; then
+      wait "$child_pid" 2>/dev/null
+      terminal_exit 70 process "$child_pid" "process-group ownership could not be established"
+    else
+      terminal_exit 71 process "$child_pid" "child survived TERM+KILL"
+    fi
+  fi
+  child_pgid="$discovered"
+
+  # step 9
+  echo "$child_pgid" >target/verify/.lock/pgid
+  echo "$child_pgid" >"$pgidfile"
+
+  # step 10
+  set -m
+  (sleep "$GATE_TIMEOUT"; touch "$timeoutfile"; kill -TERM -"$child_pgid" 2>/dev/null; sleep 5; kill -KILL -"$child_pgid" 2>/dev/null) &
+  watchdog_pid=$!
+  set +m
+  wdiscovered=$(ps -o pgid= -p "$watchdog_pid" 2>/dev/null | tr -d ' ')
+
+  if [ -z "$wdiscovered" ] || [ "$wdiscovered" != "$watchdog_pid" ]; then
+    if term_then_kill_group "$child_pgid" 5 2; then
+      rm -f target/verify/.lock/pgid
+      child_pgid=
+    else
+      terminal_exit 71 group "$child_pgid" "process group survived TERM+KILL"
+    fi
+    if term_then_kill_pid "$watchdog_pid" 5 2; then
+      wait "$watchdog_pid" 2>/dev/null
+      terminal_exit 70 process "$watchdog_pid" "watchdog process-group ownership could not be established"
+    else
+      terminal_exit 71 process "$watchdog_pid" "watchdog coordinator survived TERM+KILL"
+    fi
+  fi
+  watchdog_pgid="$wdiscovered"
+  echo "$watchdog_pgid" >"$wpgidfile"
+
+  # step 11
+  wait "$child_pid"
+  child_status=$?
+  child_pid=
+  duration=$((SECONDS - gate_start))
+
+  # step 12
+  if [ -f "$timeoutfile" ]; then
+    timed_out=1
+    if poll_group_gone "$watchdog_pgid" 10; then
+      :
+    else
+      if term_then_kill_group "$watchdog_pgid" 5 2; then
+        :
+      else
+        terminal_exit 71 group "$watchdog_pgid" "watchdog group survived TERM+KILL"
+      fi
+    fi
+    wait "$watchdog_pid" 2>/dev/null
+    watchdog_pid=
+    watchdog_pgid=
+  else
+    disown "$watchdog_pid" 2>/dev/null
+    kill -TERM -"$watchdog_pgid" 2>/dev/null
+    if poll_group_gone "$watchdog_pgid" 2; then
+      :
+    else
+      kill -KILL -"$watchdog_pgid" 2>/dev/null
+      if poll_group_gone "$watchdog_pgid" 2; then
+        :
+      else
+        terminal_exit 71 group "$watchdog_pgid" "watchdog group survived TERM+KILL"
+      fi
+    fi
+    watchdog_pid=
+    watchdog_pgid=
+    if [ -f "$timeoutfile" ]; then
+      timed_out=1
+    fi
+  fi
+
+  # step 13
+  if poll_then_kill_group "$child_pgid" 5 2; then
+    :
+  else
+    terminal_exit 71 group "$child_pgid" "process group survived TERM+KILL"
+  fi
+  rm -f target/verify/.lock/pgid
+  child_pgid=
+
+  # step 14
+  if [ "$timed_out" = 1 ]; then
+    emit_timeout "$gate_id" "$GATE_TIMEOUT" "$logfile"
+    return 124
+  fi
+  if [ "$child_status" -eq 0 ]; then
+    emit_pass "$gate_id" "$logfile" "$duration"
+    return 0
+  else
+    emit_fail "$gate_id" "$logfile" "$duration"
+    return "$child_status"
+  fi
+}
+
+# --- argument parsing ---
+
+if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+  usage_text
+  exit 0
+fi
+
+argc=$#
+gates_to_run=""
+filter=""
+
+case "$1" in
+all)
+  [ "$argc" -eq 1 ] || fail_usage "'all' does not accept extra arguments"
+  gates_to_run="lint test test-core api"
+  ;;
+lint)
+  [ "$argc" -eq 1 ] || fail_usage "'lint' does not accept extra arguments"
+  gates_to_run="lint"
+  ;;
+test)
+  if [ "$argc" -eq 1 ]; then
+    gates_to_run="test"
+  elif [ "$2" = "core" ]; then
+    [ "$argc" -le 3 ] || fail_usage "'test core' accepts at most one filter argument"
+    gates_to_run="test-core"
+    filter="$3"
+  else
+    [ "$argc" -le 2 ] || fail_usage "'test' accepts at most one filter argument"
+    gates_to_run="test"
+    filter="$2"
+  fi
+  ;;
+api)
+  if [ "$argc" -eq 1 ]; then
+    gates_to_run="api"
+  else
+    [ "$2" != "core" ] || fail_usage "'core' is a variant of test only"
+    [ "$argc" -le 2 ] || fail_usage "'api' accepts at most one filter argument"
+    gates_to_run="api"
+    filter="$2"
+  fi
+  ;;
+*)
+  fail_usage "unknown command: $1"
+  ;;
+esac
+
+# --- startup sequence (steps 2-5) ---
+
+mkdir -p target/verify target/verify/logs
+
+trap 'cleanup_handler "$?"' EXIT
+trap 'cleanup_handler 130' INT
+trap 'cleanup_handler 143' TERM
+trap 'cleanup_handler 129' HUP
+
+acquire_lock "$*"
+
+# --- run requested gates ---
+
+overall_status=0
+for gate_id in $gates_to_run; do
+  run_gate "$gate_id" "$filter"
+  overall_status=$?
+  if [ "$overall_status" -ne 0 ]; then
+    break
+  fi
+done
+
+exit "$overall_status"

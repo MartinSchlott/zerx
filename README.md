@@ -241,6 +241,10 @@ Strict is the default. The first unknown key errors `unknown_property` and field
 
 Deep or cyclic serde input errors `parse_depth_exceeded` at depth 100 rather than overflowing the stack; `lazy` schemas carry a reentrance guard (`lazy_reentrance`) that must not be bypassed.
 
+## Verification
+
+`scripts/verify all` is the canonical verification entrypoint — lint, both test-feature configurations, and the compile-time API doctests, run once each, quiet on success. `docs/tests.md` is the verification contract: gate table, exit-status meanings, and the test inventory.
+
 ## License
 
 MIT. See `LICENSE`.

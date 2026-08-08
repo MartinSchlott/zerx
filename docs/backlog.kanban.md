@@ -13,6 +13,18 @@ id: zrx9backlog0col0backlog1
   > `register_policy` already support out-of-tree policies; only the `sql` policy
   > ships built-in for v1. An OpenAPI policy would join `sql` as a second built-in.
 
+- [ ] `rustfmt` gate
+  > `cargo fmt --check` currently fails with a 3216-line diff — the codebase has never
+  > been rustfmt-formatted. A `fmt` gate requires a one-time whole-repo reformat, which
+  > is a separate, Product-Owner-approved change. Deliberately excluded from V1
+  > (PLAN_V1_verification_gates).
+
+- [ ] Migrate `backlog.kanban.md`/`bug.kanban.md` to the current three-heading format
+  > Surfaced during V1 plan review (PLAN_V1_verification_gates): the boards predate the
+  > `markdown-kanban` template (no `###` cards, no `template:`/`priority` fields, no
+  > embedded self-description, divergent column set). Cosmetic today, but it blocks any
+  > tooling that parses the template block.
+
 ## Next
 id: zrx9backlog0col0next0001
 
@@ -34,3 +46,7 @@ id: zrx9backlog0col0someday1
 - [ ] Async / streaming validation
   > Explicitly out of scope for the foundation (CONCEPT scope boundary). Parked here
   > as a speculative direction; no consumer demand yet.
+
+- [ ] CI wiring
+  > There is no `.github/workflows/`. `scripts/verify all` is the natural single CI
+  > step if the project ever wants CI.
