@@ -1,5 +1,11 @@
 # Verification
 
+Local Cargo artifacts and runner output on this machine live under
+`/Users/martinschlott/Documents/MyProjects/RustBuildTargets/zerx`. Resolve output
+through Cargo metadata; older `target/` examples below refer to that output root.
+See [the machine build-storage guide](../../RUST_BUILD_STORAGE.md).
+
+
 `scripts/verify` is zerx's canonical verification entrypoint. `scripts/verify all` is the
 pre-commit / final-validation gate — run it before considering any change done.
 

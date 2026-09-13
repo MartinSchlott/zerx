@@ -113,7 +113,7 @@ print_capped() {
 
 terminal_exit() {
   t_status="$1"; t_kind="$2"; t_id="$3"; t_reason="$4"
-  printf 'FATAL: %s; lock retained at target/verify/.lock\n' "$t_reason" >&2
+  printf 'FATAL: %s; lock retained at %s/verify/.lock\n' "$t_reason" "$CARGO_OUTPUT_DIR" >&2
   if [ "$t_kind" = group ]; then
     printf 'surviving process group %s:\n' "$t_id" >&2
     pgrep -g "$t_id" . >&2 2>/dev/null
@@ -218,7 +218,7 @@ cleanup_handler() {
 
   # item 6: release the lock, only if we own it, only now
   if [ "$lock_owned" = 1 ]; then
-    rm -rf target/verify/.lock
+    rm -rf "${CARGO_OUTPUT_DIR}/verify/.lock"
   fi
 
   # item 7
@@ -229,25 +229,25 @@ cleanup_handler() {
 
 acquire_lock() {
   scope="$1"
-  if mkdir target/verify/.lock 2>/dev/null; then
+  if mkdir "${CARGO_OUTPUT_DIR}/verify/.lock" 2>/dev/null; then
     lock_owned=1
-    printf '%s\n' "$scope" >target/verify/.lock/scope
-    printf '%s\n' "$$" >target/verify/.lock/owner
+    printf '%s\n' "$scope" >"${CARGO_OUTPUT_DIR}/verify/.lock/scope"
+    printf '%s\n' "$$" >"${CARGO_OUTPUT_DIR}/verify/.lock/owner"
     return 0
   fi
 
   owner_content=""
-  if [ -r target/verify/.lock/owner ]; then
-    owner_content=$(cat target/verify/.lock/owner 2>/dev/null)
+  if [ -r "${CARGO_OUTPUT_DIR}/verify/.lock/owner" ]; then
+    owner_content=$(cat "${CARGO_OUTPUT_DIR}/verify/.lock/owner" 2>/dev/null)
   fi
   scope_content="unknown"
-  if [ -r target/verify/.lock/scope ] && [ -s target/verify/.lock/scope ]; then
-    scope_content=$(cat target/verify/.lock/scope 2>/dev/null)
+  if [ -r "${CARGO_OUTPUT_DIR}/verify/.lock/scope" ] && [ -s "${CARGO_OUTPUT_DIR}/verify/.lock/scope" ]; then
+    scope_content=$(cat "${CARGO_OUTPUT_DIR}/verify/.lock/scope" 2>/dev/null)
   fi
 
   case "$owner_content" in
   '' | *[!0-9]*)
-    echo "BUSY — verification lock present with incomplete metadata (target/verify/.lock); if no runner is active, remove it manually" >&2
+    echo "BUSY — verification lock present with incomplete metadata (${CARGO_OUTPUT_DIR}/verify/.lock); if no runner is active, remove it manually" >&2
     exit 2
     ;;
   esac
@@ -256,7 +256,7 @@ acquire_lock() {
     echo "BUSY — verification already running: $scope_content" >&2
     exit 2
   else
-    echo "BUSY — stale lock from dead pid $owner_content: remove target/verify/.lock" >&2
+    echo "BUSY — stale lock from dead pid $owner_content: remove ${CARGO_OUTPUT_DIR}/verify/.lock" >&2
     exit 2
   fi
 }
@@ -310,7 +310,7 @@ emit_fail() {
     echo "no diagnostic matched; log tail:"
     grep -v '^[[:space:]]*$' "$log" | tail -n 15
   fi
-  echo "log: target/verify/logs/${g}.log"
+  echo "log: ${CARGO_OUTPUT_DIR}/verify/logs/${g}.log"
 }
 
 emit_timeout() {
@@ -321,8 +321,8 @@ emit_timeout() {
 
 gate_target_dir() {
   case "$1" in
-  test-core) echo "target/verify/core" ;;
-  *) echo "target/verify/lua" ;;
+  test-core) echo "${CARGO_OUTPUT_DIR}/verify/core" ;;
+  *) echo "${CARGO_OUTPUT_DIR}/verify/lua" ;;
   esac
 }
 
@@ -330,10 +330,10 @@ gate_target_dir() {
 
 run_gate() {
   gate_id="$1"; filter="$2"
-  logfile="target/verify/logs/${gate_id}.log"
-  timeoutfile="target/verify/logs/${gate_id}.timeout"
-  pgidfile="target/verify/logs/${gate_id}.pgid"
-  wpgidfile="target/verify/logs/${gate_id}.wpgid"
+  logfile="${CARGO_OUTPUT_DIR}/verify/logs/${gate_id}.log"
+  timeoutfile="${CARGO_OUTPUT_DIR}/verify/logs/${gate_id}.timeout"
+  pgidfile="${CARGO_OUTPUT_DIR}/verify/logs/${gate_id}.pgid"
+  wpgidfile="${CARGO_OUTPUT_DIR}/verify/logs/${gate_id}.wpgid"
 
   # step 6
   : >"$logfile"
@@ -380,7 +380,7 @@ run_gate() {
   child_pgid="$discovered"
 
   # step 9
-  echo "$child_pgid" >target/verify/.lock/pgid
+  echo "$child_pgid" >"${CARGO_OUTPUT_DIR}/verify/.lock/pgid"
   echo "$child_pgid" >"$pgidfile"
 
   # step 10
@@ -392,7 +392,7 @@ run_gate() {
 
   if [ -z "$wdiscovered" ] || [ "$wdiscovered" != "$watchdog_pid" ]; then
     if term_then_kill_group "$child_pgid" 5 2; then
-      rm -f target/verify/.lock/pgid
+      rm -f "${CARGO_OUTPUT_DIR}/verify/.lock/pgid"
       child_pgid=
     else
       terminal_exit 71 group "$child_pgid" "process group survived TERM+KILL"
@@ -454,7 +454,7 @@ run_gate() {
   else
     terminal_exit 71 group "$child_pgid" "process group survived TERM+KILL"
   fi
-  rm -f target/verify/.lock/pgid
+  rm -f "${CARGO_OUTPUT_DIR}/verify/.lock/pgid"
   child_pgid=
 
   # step 14
@@ -521,7 +521,9 @@ esac
 
 # --- startup sequence (steps 2-5) ---
 
-mkdir -p target/verify target/verify/logs
+CARGO_OUTPUT_DIR="$(cargo metadata --offline --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')" || exit 1
+
+mkdir -p "${CARGO_OUTPUT_DIR}/verify" "${CARGO_OUTPUT_DIR}/verify/logs"
 
 trap 'cleanup_handler "$?"' EXIT
 trap 'cleanup_handler 130' INT
