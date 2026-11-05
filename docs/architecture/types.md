@@ -137,13 +137,18 @@ None.
 - `DiscriminantKey` MUST represent `Bool`, `i128`-range integers (all integer `ZerxValue` variants via lossless widening), and `String`; any other literal kind (float, null, array, object, bytes) MUST be treated as non-keyable and yield `DiscriminatorState::Invalid`.
 - An input object whose discriminator field is absent or non-keyable MUST yield `Err(INVALID_DISCRIMINANT)` with `expected` listing allowed discriminant values.
 - A discriminator value present but not in the lookup map MUST yield `Err(INVALID_DISCRIMINANT)` with `expected` listing allowed values and `received = type_tag(discriminator_value)`.
+- An integral `F64` discriminator argument in `i128` range MUST key as its integer, while float literals MUST stay non-keyable, so import classification and export do not depend on the argument-side rule.
 - When a variant is matched, `parse_present` MUST be called on the whole input object; no path segment is added at the discriminated-union level.
 
 #### `literal` (PLAN_T2)
 
-- `check_literal` MUST accept input only when `value == constant` using `ZerxValue` `PartialEq`; any non-matching value MUST yield `Err(INVALID_LITERAL)` with `expected = literal_descriptor(constant)` and `received = type_tag(value)`.
+- `check_literal` MUST accept input only when the value equals the constant under the literal equality rules below; any non-matching value MUST yield `Err(INVALID_LITERAL)` with `expected = literal_descriptor(constant)` and `received = type_tag(value)`.
 - `literal_descriptor` MUST NOT embed a raw `ZerxValue` in any error field; it MUST return a compact string form of the constant.
-- Numeric literals use exact variant equality: `literal(5i64)` stores `I64(5)` and MUST NOT match `U64(5)`. This cross-variant caveat is accepted for v1.
+- Literal equality MUST compare numbers by exact mathematical value across `I64`, `U64`, `I128`, `U128` and `F64`, and MUST NOT compare through a lossy `f64` conversion.
+- Literal equality MUST compare arrays recursively by position and objects recursively independent of key order.
+- Literal equality MUST keep non-numeric values variant-strict: a number MUST NOT equal a string, boolean or null, and `Bytes` MUST NOT equal `String` or `Array`.
+- `ZerxValue` `PartialEq` MUST stay variant-strict, because tests and consumers use it to assert exact variants; literal equality MUST NOT change it.
+- A matched literal MUST return the input value in its own form, not in the form of the constant.
 
 ### Error codes (PLAN_T2)
 

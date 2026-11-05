@@ -643,6 +643,56 @@ fn discriminant_key(value: &ZerxValue) -> Option<DiscriminantKey> {
     }
 }
 
+// An argument-side integral float keys as its integer; float literals stay
+// non-keyable so the schema-side key space is unchanged.
+pub(crate) fn float_discriminant_key(value: f64) -> Option<DiscriminantKey> {
+    const TWO_POW_127: f64 = 170141183460469231731687303715884105728.0;
+    if value.is_finite() && value.fract() == 0.0 && (-TWO_POW_127..TWO_POW_127).contains(&value) {
+        Some(DiscriminantKey::Int(value as i128))
+    } else {
+        None
+    }
+}
+
+fn exact_integer_form(value: &ZerxValue) -> Option<(bool, u128)> {
+    match value {
+        ZerxValue::I64(n) => Some((*n < 0, u128::from(n.unsigned_abs()))),
+        ZerxValue::I128(n) => Some((*n < 0, n.unsigned_abs())),
+        ZerxValue::U64(n) => Some((false, u128::from(*n))),
+        ZerxValue::U128(n) => Some((false, *n)),
+        ZerxValue::F64(f) => {
+            const TWO_POW_128: f64 = 340282366920938463463374607431768211456.0;
+            if f.is_finite() && f.fract() == 0.0 && f.abs() < TWO_POW_128 {
+                Some((*f < 0.0, f.abs() as u128))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+// JSON Schema literal equality: numbers by exact value across variants, never
+// through a lossy f64 conversion; recursive through containers; object key
+// order irrelevant. Everything else stays variant-strict.
+fn literal_eq(value: &ZerxValue, constant: &ZerxValue) -> bool {
+    match (value, constant) {
+        (ZerxValue::Array(a), ZerxValue::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| literal_eq(x, y))
+        }
+        (ZerxValue::Object(a), ZerxValue::Object(b)) => {
+            a.len() == b.len()
+                && a.iter()
+                    .all(|(key, av)| b.get(key).is_some_and(|bv| literal_eq(av, bv)))
+        }
+        (ZerxValue::F64(a), ZerxValue::F64(b)) => a == b,
+        _ => match (exact_integer_form(value), exact_integer_form(constant)) {
+            (Some(a), Some(b)) => a == b,
+            _ => value == constant,
+        },
+    }
+}
+
 fn literal_descriptor(value: &ZerxValue) -> String {
     match value {
         ZerxValue::Bool(b) => b.to_string(),
@@ -721,7 +771,7 @@ pub(crate) fn check_discriminated_union(
 }
 
 pub(crate) fn check_literal(value: &ZerxValue, constant: &ZerxValue) -> Result<(), ZerxError> {
-    if value == constant {
+    if literal_eq(value, constant) {
         Ok(())
     } else {
         Err(ZerxError::new(ErrorCode::INVALID_LITERAL, "value does not match literal constant")
@@ -928,7 +978,11 @@ pub(crate) fn parse_discriminated_union(
         }
     };
 
-    let disc_key = match discriminant_key(disc_value) {
+    let disc_key = match disc_value {
+        ZerxValue::F64(f) => float_discriminant_key(*f),
+        _ => discriminant_key(disc_value),
+    };
+    let disc_key = match disc_key {
         Some(k) => k,
         None => {
             return Err(ZerxError::new(
@@ -2155,10 +2209,90 @@ mod tests {
         assert!(val(literal(true), &true).is_ok());
         assert_eq!(val(literal(true), &false).unwrap_err().code, ErrorCode::INVALID_LITERAL);
 
-        // Numeric exact-match: literal(5i64) matches I64(5) but not U64(5)
+        // Numbers compare by value: literal(5i64) matches I64(5) and U64(5)
         let v_i64 = ZerxValue::from_serialize(&5i64).unwrap();
         let s: Schema = literal(5i64).into();
         assert!(s.parse_present(&v_i64, &mut ParseContext::new()).is_ok());
+        assert!(s
+            .parse_present(&ZerxValue::U64(5), &mut ParseContext::new())
+            .is_ok());
+    }
+
+    #[test]
+    fn literal_eq_boundaries() {
+        let two_127: f64 = 2f64.powi(127);
+
+        // i128::MIN is exactly -2^127.
+        assert!(literal_eq(
+            &ZerxValue::I128(i128::MIN),
+            &ZerxValue::F64(-two_127)
+        ));
+        assert!(literal_eq(
+            &ZerxValue::F64(-two_127),
+            &ZerxValue::I128(i128::MIN)
+        ));
+
+        // 2^128 is out of f64 integer range: no integer form, so strict inequality.
+        assert!(!literal_eq(
+            &ZerxValue::U128(u128::MAX),
+            &ZerxValue::F64(2f64.powi(128))
+        ));
+
+        // 2^127 is representable on both sides.
+        assert!(literal_eq(
+            &ZerxValue::U128(1u128 << 127),
+            &ZerxValue::F64(two_127)
+        ));
+
+        // Signed zero compares equal to itself and to integer zero.
+        assert!(literal_eq(&ZerxValue::F64(0.0), &ZerxValue::F64(-0.0)));
+        assert!(literal_eq(&ZerxValue::I64(0), &ZerxValue::F64(-0.0)));
+        assert!(literal_eq(&ZerxValue::F64(0.0), &ZerxValue::I64(0)));
+
+        // NaN equals nothing; infinities equal themselves.
+        let nan = ZerxValue::F64(f64::NAN);
+        assert!(!literal_eq(&nan, &nan));
+        let inf = ZerxValue::F64(f64::INFINITY);
+        assert!(literal_eq(&inf, &inf));
+    }
+
+    #[test]
+    fn zerx_value_partial_eq_stays_variant_strict() {
+        assert_ne!(ZerxValue::I64(1), ZerxValue::U64(1));
+        assert_ne!(ZerxValue::I64(1), ZerxValue::F64(1.0));
+
+        let mut a = crate::Map::new();
+        a.insert("a", ZerxValue::I64(1));
+        a.insert("b", ZerxValue::I64(2));
+        let mut b = crate::Map::new();
+        b.insert("b", ZerxValue::I64(2));
+        b.insert("a", ZerxValue::I64(1));
+        assert_ne!(ZerxValue::Object(a), ZerxValue::Object(b));
+    }
+
+    #[test]
+    fn float_literal_discriminator_stays_invalid() {
+        let du = discriminated_union("k", [object([("k", literal(1.0).into())]).into()]);
+        let err = val(du, &serde_json::json!({"k": 1.0})).unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_DISCRIMINATED_UNION);
+    }
+
+    #[test]
+    fn float_discriminant_key_boundaries() {
+        let two_127: f64 = 2f64.powi(127);
+        assert!(float_discriminant_key(-two_127) == Some(DiscriminantKey::Int(i128::MIN)));
+        // 2^127 is outside the i128 range and must not saturate to i128::MAX.
+        assert!(float_discriminant_key(two_127).is_none());
+
+        // The next representable float below -2^127 is out of range.
+        let below = f64::from_bits((-two_127).to_bits() + 1);
+        assert!(below < -two_127);
+        assert!(float_discriminant_key(below).is_none());
+
+        assert!(float_discriminant_key(f64::NAN).is_none());
+        assert!(float_discriminant_key(f64::INFINITY).is_none());
+        assert!(float_discriminant_key(f64::NEG_INFINITY).is_none());
+        assert!(float_discriminant_key(1.5).is_none());
     }
 
     // T2-13: discriminated_union happy path

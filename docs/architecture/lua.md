@@ -48,6 +48,7 @@
 - Non-string hash keys and mixed tables MUST be rejected with representability errors even under free-conversion schemas (`any`, `json`, `jsonschema`) — no silent data loss.
 - An empty Lua table under a free-conversion schema MUST produce an empty `ZerxValue::Array` (the documented disambiguation bias).
 - The discriminator value in a `discriminated_union` MUST be mapped to an infallible scalar placeholder (`Bool`/`I64`/`String`/`Null`) before the Miss/non-keyable path builds its output object; a `Table`-valued discriminator MUST produce the `Null` placeholder, never a recursive table conversion.
+- An integral `Float` discriminator in `i128` range MUST key as its integer, and its placeholder MUST be `Null`.
 
 ## Related Decisions
 

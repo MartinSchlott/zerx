@@ -1340,6 +1340,18 @@ mod tests {
         (serde_json::to_string(&v1).unwrap(), serde_json::to_string(&v2).unwrap())
     }
 
+    fn validate_zv(schema: &Schema, value: ZerxValue) -> Result<ZerxValue, ZerxError> {
+        schema.validate(&value)
+    }
+
+    fn obj(entries: &[(&str, ZerxValue)]) -> ZerxValue {
+        let mut map = Map::new();
+        for (key, value) in entries {
+            map.insert(*key, value.clone());
+        }
+        ZerxValue::Object(map)
+    }
+
     // J2-1. Scalars and empty schema.
     #[test]
     fn import_scalars() {
@@ -1623,6 +1635,248 @@ mod tests {
         });
         let exported3 = from(bad_du2).unwrap().to_json_schema();
         assert!(exported3.get("anyOf").is_some());
+    }
+
+    // J2-12a. Literal value equality across numeric variants.
+    #[test]
+    fn import_literal_accepts_equal_numeric_values() {
+        let const_one = from(serde_json::json!({"const": 1})).unwrap();
+        for value in [ZerxValue::I64(1), ZerxValue::U64(1), ZerxValue::F64(1.0)] {
+            assert!(
+                validate_zv(&const_one, value.clone()).is_ok(),
+                "const 1 rejected {value:?}"
+            );
+        }
+
+        let enum_num = from(serde_json::json!({"enum": [1, 2]})).unwrap();
+        for value in [ZerxValue::I64(2), ZerxValue::U64(2), ZerxValue::F64(2.0)] {
+            assert!(validate_zv(&enum_num, value).is_ok());
+        }
+
+        let const_float = from(serde_json::json!({"const": 1.0})).unwrap();
+        for value in [ZerxValue::I64(1), ZerxValue::U64(1), ZerxValue::F64(1.0)] {
+            assert!(validate_zv(&const_float, value).is_ok());
+        }
+
+        assert!(validate_zv(
+            &from(serde_json::json!({"const": -1})).unwrap(),
+            ZerxValue::I64(-1)
+        )
+        .is_ok());
+        assert!(validate_zv(
+            &from(serde_json::json!({"const": 1.5})).unwrap(),
+            ZerxValue::F64(1.5)
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn import_literal_rejects_unequal_numeric_values() {
+        let const_one = from(serde_json::json!({"const": 1})).unwrap();
+        for value in [
+            ZerxValue::I64(2),
+            ZerxValue::U64(2),
+            ZerxValue::F64(1.5),
+            ZerxValue::F64(f64::NAN),
+        ] {
+            let err = validate_zv(&const_one, value).unwrap_err();
+            assert_eq!(err.code, ErrorCode::INVALID_LITERAL);
+        }
+
+        let enum_num = from(serde_json::json!({"enum": [1, 2]})).unwrap();
+        let err = validate_zv(&enum_num, ZerxValue::I64(3)).unwrap_err();
+        assert_eq!(err.code, ErrorCode::UNION_MISMATCH);
+    }
+
+    #[test]
+    fn import_literal_keeps_integer_precision() {
+        let schema = from(serde_json::json!({"const": 9007199254740993u64})).unwrap();
+        assert!(validate_zv(&schema, ZerxValue::F64(9007199254740992.0)).is_err());
+        assert!(validate_zv(&schema, ZerxValue::U64(9007199254740993)).is_ok());
+    }
+
+    #[test]
+    fn import_literal_nested_value_equality() {
+        let object_const = from(serde_json::json!({"const": {"v": 1}})).unwrap();
+        for value in [
+            obj(&[("v", ZerxValue::I64(1))]),
+            obj(&[("v", ZerxValue::U64(1))]),
+            obj(&[("v", ZerxValue::F64(1.0))]),
+        ] {
+            assert!(validate_zv(&object_const, value).is_ok());
+        }
+        assert!(validate_zv(&object_const, obj(&[("v", ZerxValue::I64(2))])).is_err());
+        assert!(validate_zv(&object_const, obj(&[])).is_err());
+        assert!(validate_zv(
+            &object_const,
+            obj(&[("v", ZerxValue::I64(1)), ("x", ZerxValue::I64(0))])
+        )
+        .is_err());
+
+        let array_const = from(serde_json::json!({"const": [1, {"v": 2.0}]})).unwrap();
+        for value in [
+            ZerxValue::Array(vec![ZerxValue::I64(1), obj(&[("v", ZerxValue::I64(2))])]),
+            ZerxValue::Array(vec![ZerxValue::F64(1.0), obj(&[("v", ZerxValue::F64(2.0))])]),
+            ZerxValue::Array(vec![ZerxValue::U64(1), obj(&[("v", ZerxValue::U64(2))])]),
+        ] {
+            assert!(validate_zv(&array_const, value).is_ok());
+        }
+        // Unequal element, different length, and reordered array all stay strict.
+        assert!(validate_zv(
+            &array_const,
+            ZerxValue::Array(vec![ZerxValue::I64(1), obj(&[("v", ZerxValue::I64(3))])])
+        )
+        .is_err());
+        assert!(validate_zv(&array_const, ZerxValue::Array(vec![ZerxValue::I64(1)])).is_err());
+        assert!(validate_zv(
+            &array_const,
+            ZerxValue::Array(vec![obj(&[("v", ZerxValue::I64(2))]), ZerxValue::I64(1)])
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn import_literal_non_numbers_stay_strict() {
+        let const_one = from(serde_json::json!({"const": 1})).unwrap();
+        for value in [
+            ZerxValue::String("1".to_string()),
+            ZerxValue::Bool(true),
+            ZerxValue::Null,
+            ZerxValue::Bytes(vec![1]),
+            ZerxValue::Array(vec![ZerxValue::I64(1)]),
+        ] {
+            assert!(validate_zv(&const_one, value).is_err());
+        }
+
+        let const_x = from(serde_json::json!({"const": "x"})).unwrap();
+        assert!(validate_zv(&const_x, ZerxValue::Bytes(b"x".to_vec())).is_err());
+    }
+
+    #[test]
+    fn import_literal_rejection_error_unchanged() {
+        let schema = from(serde_json::json!({"const": 1})).unwrap();
+        let err = validate_zv(&schema, ZerxValue::I64(2)).unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_LITERAL);
+        assert_eq!(err.message, "value does not match literal constant");
+        assert_eq!(err.expected.as_deref(), Some("1"));
+        assert_eq!(err.received.as_deref(), Some("number"));
+
+        let nested =
+            from(serde_json::json!({"const": {"name": "SECRET_ARGUMENT", "n": 1}})).unwrap();
+        let err = validate_zv(
+            &nested,
+            obj(&[
+                ("name", ZerxValue::String("SECRET_ARGUMENT".to_string())),
+                ("n", ZerxValue::I64(2)),
+            ]),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_LITERAL);
+        assert!(!err.to_json().to_string().contains("SECRET_ARGUMENT"));
+    }
+
+    #[test]
+    fn import_literal_preserves_input_form() {
+        let const_one = from(serde_json::json!({"const": 1})).unwrap();
+        assert_eq!(
+            validate_zv(&const_one, ZerxValue::I64(1)).unwrap(),
+            ZerxValue::I64(1)
+        );
+        assert_eq!(
+            validate_zv(&const_one, ZerxValue::F64(1.0)).unwrap(),
+            ZerxValue::F64(1.0)
+        );
+
+        let object_const = from(serde_json::json!({"const": {"a": 1, "b": 2}})).unwrap();
+        let input = obj(&[("b", ZerxValue::I64(2)), ("a", ZerxValue::I64(1))]);
+        let output = validate_zv(&object_const, input).unwrap();
+        let keys: Vec<&str> = output
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .collect();
+        assert_eq!(keys, vec!["b", "a"]);
+    }
+
+    #[test]
+    fn import_literal_export_unchanged() {
+        assert_eq!(
+            js(&from(serde_json::json!({"const": 1})).unwrap()),
+            serde_json::json!({"const": 1})
+        );
+        assert_eq!(
+            js(&from(serde_json::json!({"const": 1.0})).unwrap()),
+            serde_json::json!({"const": 1.0})
+        );
+        assert_eq!(js(&literal(5i64).into()), serde_json::json!({"const": 5}));
+
+        let (v1, v2) = roundtrip_str(&from(serde_json::json!({"const": 1})).unwrap());
+        assert_eq!(v1, v2);
+        let (v1, v2) = roundtrip_str(&from(serde_json::json!({"const": 1.0})).unwrap());
+        assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn import_discriminated_union_accepts_integral_float_discriminant() {
+        let schema = from(serde_json::json!({
+            "oneOf": [
+                {"type":"object","properties":{"k":{"const":1},"a":{"type":"string"}},"required":["k","a"],"additionalProperties":false},
+                {"type":"object","properties":{"k":{"const":2},"b":{"type":"string"}},"required":["k","b"],"additionalProperties":false}
+            ],
+            "discriminator": {"propertyName": "k"}
+        }))
+        .unwrap();
+        assert!(js(&schema).get("oneOf").is_some());
+
+        for (k, expected) in [
+            (ZerxValue::I64(1), ZerxValue::I64(1)),
+            (ZerxValue::U64(1), ZerxValue::U64(1)),
+            (ZerxValue::F64(1.0), ZerxValue::F64(1.0)),
+        ] {
+            let out = validate_zv(
+                &schema,
+                obj(&[("k", k), ("a", ZerxValue::String("x".to_string()))]),
+            )
+            .unwrap();
+            assert_eq!(out.as_object().unwrap().get("k"), Some(&expected));
+        }
+
+        for k in [ZerxValue::F64(3.0), ZerxValue::F64(1.5)] {
+            let err = validate_zv(
+                &schema,
+                obj(&[("k", k), ("a", ZerxValue::String("x".to_string()))]),
+            )
+            .unwrap_err();
+            assert_eq!(err.code, ErrorCode::INVALID_DISCRIMINANT);
+        }
+    }
+
+    #[test]
+    fn import_discriminated_union_float_literals_fall_back_to_union() {
+        let schema = from(serde_json::json!({
+            "oneOf": [
+                {"type":"object","properties":{"k":{"const":1.0},"a":{"type":"string"}},"required":["k","a"],"additionalProperties":false},
+                {"type":"object","properties":{"k":{"const":2.0},"b":{"type":"string"}},"required":["k","b"],"additionalProperties":false}
+            ],
+            "discriminator": {"propertyName": "k"}
+        }))
+        .unwrap();
+        let exported = js(&schema);
+        assert!(exported.get("anyOf").is_some());
+        assert_eq!(exported.get("x-oneOf"), Some(&serde_json::json!(true)));
+        assert!(exported.get("discriminator").is_none());
+
+        assert!(validate_zv(
+            &schema,
+            obj(&[("k", ZerxValue::I64(1)), ("a", ZerxValue::String("x".to_string()))])
+        )
+        .is_ok());
+        assert!(validate_zv(
+            &schema,
+            obj(&[("k", ZerxValue::F64(1.0)), ("a", ZerxValue::String("x".to_string()))])
+        )
+        .is_ok());
     }
 
     // J2-13. Modifiers round-trip.

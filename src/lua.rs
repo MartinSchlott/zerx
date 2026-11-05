@@ -3,7 +3,7 @@
 #![allow(clippy::result_large_err)]
 
 use crate::schema::{ParseContext, SchemaKind};
-use crate::types::{DiscriminantKey, DiscriminatorState, ObjectMode};
+use crate::types::{float_discriminant_key, DiscriminantKey, DiscriminatorState, ObjectMode};
 use crate::{ErrorCode, Map, Schema, ZerxError, ZerxValue};
 
 // ---------------------------------------------------------------------------
@@ -376,7 +376,9 @@ fn lua_discriminant_map(lua: &LuaValue) -> (Option<DiscriminantKey>, ZerxValue) 
             ),
             Err(_) => (None, ZerxValue::Null),
         },
-        // Float, Table, Nil, non-UTF-8 Bytes → non-keyable; Null is the infallible sentinel.
+        // An integral float keys as its integer; Table, Nil, non-integral floats
+        // and non-UTF-8 Bytes are non-keyable. Null is the infallible sentinel.
+        LuaValue::Float(f) => (float_discriminant_key(*f), ZerxValue::Null),
         _ => (None, ZerxValue::Null),
     }
 }
@@ -933,6 +935,67 @@ mod tests {
         expected.insert("code".to_string(), ZerxValue::I64(2));
         expected.insert("msg".to_string(), ZerxValue::String("ok".to_string()));
         assert_eq!(result, ZerxValue::Object(expected));
+    }
+
+    #[test]
+    fn discriminated_union_integral_float_discriminator() {
+        let schema: Schema = discriminated_union(
+            "code",
+            [
+                object([("code", literal(1i64).into()), ("msg", string().into())]).into(),
+                object([("code", literal(2i64).into()), ("msg", string().into())]).into(),
+            ],
+        )
+        .into();
+
+        let t = table(
+            vec![],
+            vec![
+                (LuaValue::Bytes(b"code".to_vec()), LuaValue::Float(1.0)),
+                hash_entry("msg", bytes(b"ok")),
+            ],
+        );
+        let result = schema.validate_lua(&t).unwrap();
+        let mut expected = crate::Map::new();
+        expected.insert("code".to_string(), ZerxValue::F64(1.0));
+        expected.insert("msg".to_string(), ZerxValue::String("ok".to_string()));
+        assert_eq!(result, ZerxValue::Object(expected));
+
+        for f in [3.0, 1.5] {
+            let t = table(
+                vec![],
+                vec![
+                    (LuaValue::Bytes(b"code".to_vec()), LuaValue::Float(f)),
+                    hash_entry("msg", bytes(b"ok")),
+                ],
+            );
+            let err = schema.validate_lua(&t).unwrap_err();
+            assert_eq!(err.code, ErrorCode::INVALID_DISCRIMINANT, "float {f}");
+        }
+    }
+
+    #[test]
+    fn literal_object_accepts_reordered_lua_table() {
+        let mut constant = crate::Map::new();
+        constant.insert("a", ZerxValue::I64(1));
+        constant.insert("b", ZerxValue::String("x".to_string()));
+        let schema: Schema = literal(ZerxValue::Object(constant)).into();
+
+        let t = table(
+            vec![],
+            vec![
+                hash_entry("b", bytes(b"x")),
+                hash_entry("a", LuaValue::Integer(1)),
+            ],
+        );
+        let result = schema.validate_lua(&t).unwrap();
+        let keys: Vec<&str> = result
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .collect();
+        assert_eq!(keys, vec!["b", "a"]);
     }
 
     #[test]
