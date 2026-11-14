@@ -154,6 +154,7 @@ pub(crate) enum SchemaKind {
     Record(Box<Schema>),
     Tuple(Vec<Schema>),
     Union(Vec<Schema>),
+    OneOf(Vec<Schema>),
     DiscriminatedUnion(crate::types::DiscriminatedUnionBody),
     Literal(ZerxValue),
     Buffer,     // T4
@@ -183,6 +184,7 @@ impl SchemaKind {
             SchemaKind::Record(_) => crate::types::check_record(value),
             SchemaKind::Tuple(_) => crate::types::check_tuple(value),
             SchemaKind::Union(_) => crate::types::check_union(),
+            SchemaKind::OneOf(_) => crate::types::check_union(),
             SchemaKind::DiscriminatedUnion(body) => crate::types::check_discriminated_union(value, body),
             SchemaKind::Literal(c) => crate::types::check_literal(value, c),
             SchemaKind::Buffer => crate::types::check_buffer(value),
@@ -217,6 +219,7 @@ impl SchemaKind {
             SchemaKind::Record(vs) => crate::types::parse_record(vs, value, ctx),
             SchemaKind::Tuple(items) => crate::types::parse_tuple(items, value, ctx),
             SchemaKind::Union(variants) => crate::types::parse_union(variants, value, ctx),
+            SchemaKind::OneOf(variants) => crate::types::parse_one_of(variants, value, ctx),
             SchemaKind::DiscriminatedUnion(body) => crate::types::parse_discriminated_union(body, value, ctx),
             SchemaKind::Literal(_) => Ok(value.clone()),
         }
@@ -289,6 +292,7 @@ impl std::fmt::Debug for Schema {
             SchemaKind::Record(_) => "Record",
             SchemaKind::Tuple(_) => "Tuple",
             SchemaKind::Union(_) => "Union",
+            SchemaKind::OneOf(_) => "OneOf",
             SchemaKind::DiscriminatedUnion(_) => "DiscriminatedUnion",
             SchemaKind::Literal(_) => "Literal",
             SchemaKind::Buffer => "Buffer",

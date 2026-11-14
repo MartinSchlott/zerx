@@ -305,6 +305,28 @@ impl Schema {
                 Err(ZerxError::union(Vec::new(), inner_errors))
             }
 
+            // OneOf: transform and parse against every variant; exactly one must match.
+            SchemaKind::OneOf(variants) => {
+                let mut successes: Vec<ZerxValue> = Vec::with_capacity(variants.len());
+                let mut inner_errors = Vec::with_capacity(variants.len());
+                for variant in variants {
+                    match variant.lua_transform(lua, ctx) {
+                        Ok(transformed) => {
+                            match variant.parse_present(&transformed, &mut ParseContext::new()) {
+                                Ok(_) => successes.push(transformed),
+                                Err(e) => inner_errors.push(e),
+                            }
+                        }
+                        Err(e) => inner_errors.push(e),
+                    }
+                }
+                match successes.len() {
+                    1 => Ok(successes.pop().expect("one success collected")),
+                    0 => Err(ZerxError::union(Vec::new(), inner_errors)),
+                    n => Err(crate::types::one_of_ambiguous_error(n)),
+                }
+            }
+
             // DiscriminatedUnion: discriminator gate first.
             SchemaKind::DiscriminatedUnion(body) => match lua {
                 LuaValue::Table(t) => {
@@ -851,6 +873,30 @@ mod tests {
         let raw = vec![0xFF, 0xFE];
         let result = schema.validate_lua(&bytes(&raw)).unwrap();
         assert_eq!(result, ZerxValue::Bytes(raw));
+    }
+
+    // --- oneOf ---
+
+    #[test]
+    fn one_of_counts_matches_exactly() {
+        let s = crate::types::one_of([string().into(), number().into()]);
+        assert_eq!(
+            s.validate_lua(&bytes(b"hi")).unwrap(),
+            ZerxValue::String("hi".to_string())
+        );
+        assert_eq!(
+            s.validate_lua(&LuaValue::Boolean(true)).unwrap_err().code,
+            ErrorCode::UNION_MISMATCH
+        );
+
+        let two = crate::types::one_of([
+            number().into(),
+            number().int().into(),
+        ]);
+        assert_eq!(
+            two.validate_lua(&LuaValue::Integer(1)).unwrap_err().code,
+            ErrorCode::ONE_OF_AMBIGUOUS
+        );
     }
 
     // --- discriminated_union with all key kinds (Finding 2) ---

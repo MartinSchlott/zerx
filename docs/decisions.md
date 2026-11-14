@@ -65,6 +65,13 @@ This file lists the project's binding design decisions. Entries are normative an
 **Consequence:** Import-time behaviour that is not a statement about validity MUST enter through `ImportOptions` and MUST NOT be introduced as an `x-`-prefixed keyword; such an option MUST NOT be encoded into the exported document and MUST be re-supplied on every import; it stays orthogonal to `policy` so it composes with any registered policy.
 **Scope:** docs/architecture/json-schema.md, docs/architecture/policy.md
 
+### D-import-fail-closed
+
+**Decision:** We import a JSON Schema as a schema that accepts nothing the source forbids, refusing with `IMPORT_UNSUPPORTED`/`IMPORT_MALFORMED` what zerx cannot reconstruct. We do not import a wider schema, fall back to `any()`, or store an unenforced assertion keyword as `meta`.
+**Rationale:** zerx is strict by design. An imported schema that silently accepts what its source forbids is a security-boundary failure, and a refusal surfaces it to the author.
+**Consequence:** Every assertion keyword on an imported node MUST be enforced by the reconstruction, vacuous for the node's declared type, or refused; `meta` MUST carry only non-assertion keys. New import support MUST state which keywords it consumes. A deliberate narrowing, which accepts less than the source, MAY exist only where `docs/architecture/json-schema.md` names it.
+**Scope:** docs/architecture/json-schema.md, docs/architecture/policy.md
+
 ## Superseded
 
 (No superseded decisions yet.)

@@ -60,6 +60,7 @@
 - `Tuple(items)` → `{"type":"array","prefixItems":[…],"items":false,"minItems":n,"maxItems":n}`.
 - `Union(variants)` → `{"anyOf":[…]}`.
 - `DiscriminatedUnion(body)` → `{"oneOf":[…],"discriminator":{"propertyName":<key>}}`.
+- `OneOf(variants)` (crate-internal, built only by import) → `{"oneOf":[…]}`.
 - `Buffer` → `{"type":"string","format":"buffer"}` (`contentMediaType` added by `mime` modifier).
 - `Uri` → `{"type":"string","format":"uri"}`.
 - `Url` → `{"type":"string","format":"url"}`.
@@ -105,22 +106,37 @@
 ### Export-reserved keyword set
 
 - The following keys MUST NOT be written by the `meta` step: `type`, `properties`, `required`, `additionalProperties`, `items`, `prefixItems`, `minItems`, `maxItems`, `anyOf`, `oneOf`, `discriminator`, `const`, `enum`, `$ref`, `$defs`, `$schema`, `format`, `contentMediaType`, `minLength`, `maxLength`, `pattern`, `minimum`, `maximum`, `description`, `default`, `examples`, `deprecated`, `readOnly`, `writeOnly`, `title`.
+- Every assertion keyword of the import coverage table MUST also be export-reserved, so `meta` can never emit an assertion. `$id` is not reserved: a root `$id` round-trips as `meta`.
 
 ### Import pipeline order
 
-- The import walk (`import_value`) MUST follow this fixed dispatch order: (1) boolean schema, (2) non-object guard, (2.5) `type` parsing, (3) `$ref`, (4) `allOf`/`not` error, (5) nullable `anyOf` collapse, (6) `oneOf`/`anyOf` union or discriminated union, (7) `enum`, (8) `const`, (9) format-marker kinds, (10) `type` dispatch, (11) object reconstruction, (12) annotation/modifier reconstruction, (13) remaining keyword classification.
+- The import walk (`import_value`) MUST follow this fixed dispatch order: (1) boolean schema, (2) non-object guard, (2.5) `type` parsing, (3) `$ref`, (4) `allOf`/`not` error, (5) nullable `anyOf` collapse, (6) `oneOf`/`anyOf` union or discriminated union, (7) `enum`, (8) `const`, (9) format-marker kinds, (10) `type` dispatch, (11) object reconstruction, (12) annotation/modifier reconstruction, (13) assertion coverage check, then `meta` routing of the remaining keys.
 - A node with `$ref` MUST skip steps 4–11 and proceed directly to step 12.
 - `type` parsing MUST run on every object node, `$ref` nodes included, so a malformed `type` is never skipped.
 
 ### `type` import
 
-- An absent `type` MUST impose no type restriction; a node with no other base-producing keyword imports as `any()`.
+- An absent `type` MUST impose no type restriction; a node with no other base-producing keyword and no unconsumed assertion keyword imports as `any()`.
 - A single string naming one of the seven Draft 2020-12 types MUST import as that type; `integer` imports as `number().int()`.
 - An array of exactly two distinct type names, one of them `"null"`, in either order, MUST import as the non-null type with `.nullable()` applied, keeping that type's sibling constraints.
 - `.nullable()` from a type array MUST be applied only to a base built by format-marker or `type` dispatch; a base from `$ref`, `anyOf`/`oneOf` or `enum`/`const` MUST NOT receive it, so `null` passes there only where the members admit it.
 - An unknown type name, an empty array, an array holding a non-string, an unknown name or a duplicate, and any `type` that is neither a string nor an array MUST raise `IMPORT_MALFORMED`.
 - Every other well-formed type array (one element, two non-null names, three or more names) MUST raise `IMPORT_UNSUPPORTED`; only a single type name or `[T, "null"]` is accepted, even where zerx could represent the form.
 - `integer` MUST be treated as a subset of `number` wherever type sets are compared.
+
+### Assertion keyword coverage
+
+- The assertion keywords are the Draft 2020-12 core, applicator and validation keywords that constrain instances. Each MUST be classified by the instance types it applies to: any type (`type`, `enum`, `const`, `allOf`, `anyOf`, `oneOf`, `not`, `if`, `then`, `else`, `$ref`, `$dynamicRef`), string, number (integer included), array, or object.
+- Every assertion keyword on an imported node MUST be consumed by the branch that reconstructs the node, vacuous, or refused with `IMPORT_UNSUPPORTED`; an assertion keyword MUST NOT reach `meta` (`D-import-fail-closed`).
+- A keyword MUST count as vacuous only when the node declares a `type` that admits none of the instance types the keyword applies to; an untyped node has no vacuous keywords.
+- The unsupported applicators MUST stay refused even where they would be vacuous.
+- Each reconstruction branch MUST consume exactly the keywords it rebuilds into the schema; a keyword the branch reads but does not enforce MUST NOT count as consumed.
+- An object node MUST refuse a `required` name that is not a key of `properties`, because strict mode would reject the key instead of requiring it.
+- A tuple node MUST refuse `minItems` above, or `maxItems` below, the number of `prefixItems`; bracketing values are consumed.
+- A tuple MAY import narrower than its source: `prefixItems` with `items:false` reconstructs a fixed-length tuple, although the source also accepts shorter arrays. This is the one named narrowing under `D-import-fail-closed`.
+- A consumed keyword whose value violates the Draft 2020-12 grammar MUST raise `IMPORT_MALFORMED`; an integral float counts as an integer.
+- An empty `anyOf`/`oneOf` MUST raise `IMPORT_UNSUPPORTED`; it accepts nothing, and zerx has no never type.
+- `$id` on any node other than the root MUST raise `IMPORT_UNSUPPORTED`; a nested `$id` would re-base the `$ref`s inside it. A root `$id` imports as `meta`.
 
 ### Import keyword→modifier mapping (inverse of export)
 
@@ -133,8 +149,9 @@
 - `false` → strict mode (constructor default; no call needed).
 - Absent → strict mode (fail-closed; C4 security boundary).
 - `true` → `passthrough()`.
-- Schema object → `passthrough()` (zerx does not model a per-extra-key value schema on a plain object; `record` covers that case).
-- When the caller-supplied unknown-property disposition is strip, the `false` and absent cases MUST reconstruct as `strip` mode instead of `strict`; `true` and schema-object cases remain `passthrough()`, unaffected by the disposition.
+- `{}` → `passthrough()`.
+- Any other schema object MUST raise `IMPORT_UNSUPPORTED`; zerx does not model a per-extra-key value schema on a plain object, and `record` covers that case through its marker.
+- When the caller-supplied unknown-property disposition is strip, the `false` and absent cases MUST reconstruct as `strip` mode instead of `strict`; the `true` and `{}` cases remain `passthrough()`, unaffected by the disposition.
 
 ### `required` / `optional` / default import rule
 
@@ -151,7 +168,8 @@
 ### `oneOf` / `anyOf` / discriminator import
 
 - `oneOf` with a `discriminator.propertyName` where all variants reconstruct to valid discriminated-union objects (per the full `build_discriminator_state` invariant) MUST import as `discriminated_union(key, variants)`.
-- If the discriminator invariant fails for any reason, `oneOf` MUST fall back to `union(variants)` with `meta("x-oneOf", true)` so the original `oneOf` intent survives re-export.
+- `oneOf` without a `discriminator`, or whose discriminator invariant fails, MUST import as the crate-internal `OneOf` kind, which accepts a value only when exactly one variant accepts it.
+- A legacy `anyOf` carrying `x-oneOf: true` MUST import as `union(variants)` with that `meta` key, as its JSON Schema meaning is `anyOf`.
 - `anyOf` (after nullable-collapse check) MUST import as `union(variants)`; a `discriminator` alongside `anyOf` is honoured the same way as on `oneOf`.
 - A `type` sibling of `anyOf`/`oneOf` MUST be honoured only when every member is an object declaring its own `type` within the outer type set; otherwise the node MUST raise `IMPORT_UNSUPPORTED`. Under that condition the union equals the intersection, so no extra `.nullable()` is applied.
 
@@ -164,7 +182,7 @@
 
 - `format:"json"` without `type` → `json()`; `format:"json"` with any `type` MUST raise `IMPORT_UNSUPPORTED`, because `json()` accepts every value.
 - `type:"object"` + `format:"record"` → `record(import(additionalProperties))` where `true`/absent maps to `any()` and `false` raises `IMPORT_MALFORMED`.
-- `type:"object"` + `format:"jsonschema"` → `jsonschema()` with an import-side refinement accepting only objects; the refinement is not exported.
+- `type:"object"` + `format:"jsonschema"` → `jsonschema()`.
 - `type:"string"` + `format:"buffer"` → `buffer()` (`contentMediaType` applied as `.mime_format()` in step 12).
 - `type:"string"` + `format:"uri"` → `uri()`.
 - `type:"string"` + `format:"url"` → `url()`.
@@ -178,8 +196,10 @@
 - `enum`/`const` MUST be dispatched before `type` so `{"type":"string","enum":[…]}` reconstructs the enum.
 - With a `type` present, every `enum` member and the `const` value MUST be an instance of the declared type set; otherwise the node MUST raise `IMPORT_UNSUPPORTED`. A member is never filtered out silently.
 - A `[T, "null"]` type array MUST NOT add `null` to an `enum`/`const`; `null` passes only if it is a member.
-- An `enum`/`const` node carrying any of `minLength`, `maxLength`, `pattern`, `minimum`, `maximum`, `minItems`, `maxItems`, `items`, `prefixItems`, `properties`, `required` or `additionalProperties` MUST raise `IMPORT_UNSUPPORTED`, with or without `type`; the enum/literal reconstruction would drop the constraint.
-- A node carrying both `enum` and `const` MUST raise `IMPORT_UNSUPPORTED`; the enum reconstruction would drop the `const`.
+- A sibling assertion keyword of `enum`/`const` MUST be evaluated statically against every member it applies to: when every applicable member satisfies it the keyword is consumed, and when a member violates it the node MUST raise `IMPORT_UNSUPPORTED`.
+- Static evaluation MUST use the runtime semantics of the matching validator, such as character counting for string lengths and the `regex` crate for `pattern`; a non-compiling `pattern` MUST raise `IMPORT_MALFORMED`.
+- A sibling keyword that applies to a member but cannot be evaluated statically, such as a sub-schema keyword, MUST raise `IMPORT_UNSUPPORTED`.
+- A node carrying both `enum` and `const` MUST import as `literal(const)` when the `const` equals an `enum` member, and MUST raise `IMPORT_UNSUPPORTED` otherwise.
 
 ### Boolean schema import
 
@@ -189,7 +209,7 @@
 ### `$ref` import with memoised lazy
 
 - A `$ref` value MUST start with `#/$defs/`; any other form MUST raise `IMPORT_MALFORMED`.
-- A `type` sibling of `$ref` MUST raise `IMPORT_UNSUPPORTED`; the `$ref` path skips `type` dispatch.
+- Every assertion sibling of `$ref`, `type` and the unsupported applicators included, MUST raise `IMPORT_UNSUPPORTED`; the `$ref` path reconstructs only the reference and annotations.
 - All `$ref`s to the same `$defs` id MUST share one `lazy` instance (clones share one resolution cell), so re-export emits a single `$defs` entry per id.
 - Structural errors in a referenced `$defs` entry MUST be surfaced eagerly (via `ensure_resolved`) before `from_json_schema` returns; the thunk MUST only clone an already-resolved schema and MUST NOT fail.
 - A self- or mutual-reference detected by the cycle guard (`importing` id-set) MUST return the existing placeholder and NOT recurse.
@@ -197,9 +217,9 @@
 ### Import fallibility and error codes
 
 - `from_json_schema` MUST return `Result<Schema, ZerxError>` (C7); every error MUST carry the failing node's `path`.
-- `IMPORT_UNSUPPORTED` — well-formed JSON Schema feature outside zerx's model (`allOf`, `not`, `false` schema, unsupported applicators, non-canonical `type` arrays, `type` not honourable at its site, other).
-- `IMPORT_MALFORMED` — structurally invalid input (non-object/bool node, array missing `items`, record with `additionalProperties:false`, `$ref` to missing or non-local target, `type` outside the Draft 2020-12 grammar).
-- Unsupported applicators that are NOT `allOf`/`not` (`if`, `then`, `else`, `contains`, `minContains`, `maxContains`, `patternProperties`, `propertyNames`, `dependentSchemas`, `dependentRequired`, `unevaluatedProperties`, `unevaluatedItems`, `$dynamicRef`) MUST raise `IMPORT_UNSUPPORTED` rather than being silently routed to `meta`.
+- `IMPORT_UNSUPPORTED` — well-formed JSON Schema feature outside zerx's model (`allOf`, `not`, `false` schema, unsupported applicators, non-canonical `type` arrays, `type` not honourable at its site, unconsumed assertion keywords, other).
+- `IMPORT_MALFORMED` — structurally invalid input (non-object/bool node, array missing `items`, record with `additionalProperties:false`, `$ref` to missing or non-local target, `type` or another consumed keyword outside the Draft 2020-12 grammar).
+- Unsupported applicators that are NOT `allOf`/`not` (`if`, `then`, `else`, `contains`, `minContains`, `maxContains`, `patternProperties`, `propertyNames`, `dependentSchemas`, `dependentRequired`, `unevaluatedProperties`, `unevaluatedItems`, `$dynamicRef`) MUST raise `IMPORT_UNSUPPORTED` rather than being silently routed to `meta`, on `$ref` nodes too.
 
 ### Accepted import limitation — `x-ui-multiline`
 
@@ -213,3 +233,4 @@
 ## Related Decisions
 
 - `D-import-unknown-caller-policy`
+- `D-import-fail-closed`

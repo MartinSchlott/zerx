@@ -25,6 +25,15 @@ id: zrx9backlog0col0backlog1
   > embedded self-description, divergent column set). Cosmetic today, but it blocks any
   > tooling that parses the template block.
 
+- [ ] Enforce `exclusiveMinimum`/`exclusiveMaximum`/`multipleOf`/`uniqueItems`/`minProperties`/`maxProperties`
+  > PLAN_J5_import_assertions_fail_closed refuses these keywords at import (`D-import-fail-closed`).
+  > Real validators on the builders, exported as their keywords, would let such schemas import
+  > instead. Common in generated schemas (e.g. `exclusiveMinimum` for "greater than").
+
+- [ ] Public `one_of` builder
+  > PLAN_J5 added a crate-internal `OneOf` kind with exactly-one semantics, built only by JSON
+  > Schema import. A public builder would let callers construct it programmatically.
+
 ## Next
 id: zrx9backlog0col0next0001
 

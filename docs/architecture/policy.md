@@ -78,7 +78,7 @@
 
 - Nullable normalisation, type array: a node whose `type` is an array of exactly two strings, one `"null"` and one other name, and that carries none of `enum`, `const`, `anyOf`, `oneOf`, `allOf`, `not`, `$ref`, `$dynamicRef`, `if`, `then`, `else`, MUST be rewritten to `anyOf:[{…node…, type:T}, {type:"null"}]`, with `$defs` and `$schema` kept on the outer node and no keyword dropped. The split is exact only when no keyword constrains `null` itself.
 - A type-array node that does not meet that condition MUST be left unchanged, so the core import honours or refuses its `type`.
-- Nullable normalisation, `oneOf`: a node with `oneOf` of exactly two members where exactly one is `{"type":"null"}` MUST be rewritten to `anyOf:[<other>, {type:"null"}]` only when every other key is `$defs`, `$schema`, an annotation keyword or an `x-` key; those keys MUST move unchanged to the outer node. A node with any other sibling MUST be left unchanged.
+- The built-in `sql` policy MUST NOT rewrite `oneOf` to `anyOf`; under exactly-one `oneOf` semantics the rewrite is wider whenever a member admits `null`.
 - Array `items` fallback: a `{"type":"array"}` node without `items` MUST have `"items": {}` added (imports as `array(any())`).
 - pg-type substitution: nodes carrying PostgreSQL type signals MUST be rewritten as follows, with the signal keyword removed:
   - `{"type":"string","format":"bytea"}` (case-insensitive) or `{"type":"string","x-pg-type":"bytea"}` → `{"type":"string","format":"buffer"}`.
@@ -98,7 +98,7 @@
 ### Unknown-property disposition on import
 
 - The caller-supplied disposition MUST apply to every object node the import walk reconstructs, not only the root.
-- A node importing as `passthrough` (`additionalProperties: true` or a schema-object value) MUST NOT be affected; the disposition reinterprets only the strict outcome.
+- A node importing as `passthrough` (`additionalProperties: true` or `{}`) MUST NOT be affected; the disposition reinterprets only the strict outcome.
 - `additionalProperties: false` and an absent `additionalProperties` MUST be treated identically.
 - The disposition MUST default to rejection; the default import behaviour MUST be unchanged.
 - The disposition MUST NOT be encoded into the exported document; it MUST be re-supplied on every import.
@@ -109,3 +109,4 @@
 - `D-strict-by-default`
 - `D-result-only-api`
 - `D-import-unknown-caller-policy`
+- `D-import-fail-closed`

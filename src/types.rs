@@ -581,6 +581,7 @@ impl ErrorCode {
     pub const INVALID_LITERAL: ErrorCode             = ErrorCode::new("invalid_literal");
     pub const INVALID_DISCRIMINANT: ErrorCode        = ErrorCode::new("invalid_discriminant");
     pub const INVALID_DISCRIMINATED_UNION: ErrorCode = ErrorCode::new("invalid_discriminated_union");
+    pub const ONE_OF_AMBIGUOUS: ErrorCode       = ErrorCode::new("one_of_ambiguous");
 }
 
 // ---------------------------------------------------------------------------
@@ -675,7 +676,7 @@ fn exact_integer_form(value: &ZerxValue) -> Option<(bool, u128)> {
 // JSON Schema literal equality: numbers by exact value across variants, never
 // through a lossy f64 conversion; recursive through containers; object key
 // order irrelevant. Everything else stays variant-strict.
-fn literal_eq(value: &ZerxValue, constant: &ZerxValue) -> bool {
+pub(crate) fn literal_eq(value: &ZerxValue, constant: &ZerxValue) -> bool {
     match (value, constant) {
         (ZerxValue::Array(a), ZerxValue::Array(b)) => {
             a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| literal_eq(x, y))
@@ -948,6 +949,34 @@ pub(crate) fn parse_union(
         }
     }
     Err(ZerxError::union(Vec::new(), inner_errors))
+}
+
+pub(crate) fn one_of_ambiguous_error(matched: usize) -> ZerxError {
+    ZerxError::new(
+        ErrorCode::ONE_OF_AMBIGUOUS,
+        format!("value matched {matched} oneOf variants; exactly one is required"),
+    )
+    .expected("exactly one oneOf variant")
+}
+
+pub(crate) fn parse_one_of(
+    variants: &[Schema],
+    value: &ZerxValue,
+    ctx: &mut crate::schema::ParseContext,
+) -> Result<ZerxValue, ZerxError> {
+    let mut successes: Vec<ZerxValue> = Vec::with_capacity(variants.len());
+    let mut inner_errors = Vec::with_capacity(variants.len());
+    for variant in variants {
+        match variant.parse_present(value, ctx) {
+            Ok(v) => successes.push(v),
+            Err(e) => inner_errors.push(e),
+        }
+    }
+    match successes.len() {
+        1 => Ok(successes.pop().expect("one success collected")),
+        0 => Err(ZerxError::union(Vec::new(), inner_errors)),
+        n => Err(one_of_ambiguous_error(n)),
+    }
 }
 
 pub(crate) fn parse_discriminated_union(
@@ -1293,6 +1322,15 @@ where
     UnionSchema(Schema::new(SchemaKind::Union(variants.into_iter().collect())))
 }
 
+/// Crate-internal exactly-one union. Built only by JSON Schema import; there is
+/// deliberately no public builder, so the kind cannot be constructed by callers.
+pub(crate) fn one_of<I>(variants: I) -> Schema
+where
+    I: IntoIterator<Item = Schema>,
+{
+    Schema::new(SchemaKind::OneOf(variants.into_iter().collect()))
+}
+
 pub fn discriminated_union<K, I>(key: K, variants: I) -> DiscriminatedUnionSchema
 where
     K: Into<String>,
@@ -1549,8 +1587,13 @@ pub(crate) fn check_json(_value: &ZerxValue) -> Result<(), ZerxError> {
     Ok(())
 }
 
-pub(crate) fn check_jsonschema(_value: &ZerxValue) -> Result<(), ZerxError> {
-    Ok(())
+pub(crate) fn check_jsonschema(value: &ZerxValue) -> Result<(), ZerxError> {
+    match value {
+        ZerxValue::Object(_) => Ok(()),
+        _ => Err(ZerxError::new(ErrorCode::TYPE_MISMATCH, "expected object")
+            .expected("object")
+            .received(type_tag(value))),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1593,7 +1636,8 @@ pub struct UrlSchema(Schema);
 #[derive(Clone)]
 pub struct JsonSchema(Schema);
 
-/// Builder for `jsonschema` schemas. Accepts any serde-bridgeable value; identity parse.
+/// Builder for `jsonschema` schemas. Accepts only `ZerxValue::Object`; any other
+/// variant fails with `TYPE_MISMATCH` (`expected` = `object`). Identity parse.
 ///
 /// ```compile_fail
 /// use zerx::jsonschema;
@@ -2795,25 +2839,56 @@ mod tests {
         assert_eq!(b_ok, ZerxValue::Bytes(vec![9, 8]));
     }
 
-    // T4-7: jsonschema accepts any serde-bridgeable value, identity parse
+    // T4-7: jsonschema accepts objects only; the kind's own check is the export
+    // form's meaning.
     #[test]
-    fn jsonschema_accepts_anything() {
+    fn jsonschema_accepts_only_objects() {
         use serde_json::json;
         let schema_obj = json!({"type": "string"});
         assert_eq!(
             val(jsonschema(), &schema_obj).unwrap(),
             ZerxValue::from_serialize(&schema_obj).unwrap()
         );
-        // A bare boolean is a valid 2020-12 schema
+        assert!(val(jsonschema(), &json!({})).is_ok());
+        for bad in [json!(5), json!("x"), json!([]), json!(true)] {
+            let err = val(jsonschema(), &bad).unwrap_err();
+            assert_eq!(err.code, ErrorCode::TYPE_MISMATCH, "input {bad}");
+            assert_eq!(err.expected.as_deref(), Some("object"));
+        }
+    }
+
+    #[test]
+    fn one_of_matches_exactly_once() {
+        let s = one_of([string().into(), number().into()]);
         assert_eq!(
-            val(jsonschema(), &true).unwrap(),
-            ZerxValue::from_serialize(&true).unwrap()
+            s.validate(&"x").unwrap(),
+            ZerxValue::String("x".to_string())
         );
-        // No structural JSON-Schema validation: any value passes (v1 accept-all)
+        assert!(s.validate(&9i64).is_ok());
+
+        // zero matches: the never-accepting case keeps the union code
         assert_eq!(
-            val(jsonschema(), &42i64).unwrap(),
-            ZerxValue::from_serialize(&42i64).unwrap()
+            s.validate(&true).unwrap_err().code,
+            ErrorCode::UNION_MISMATCH
         );
+
+        // two matches: number and integer both accept 1
+        let two = one_of([number().into(), number().int().into()]);
+        let err = two.validate(&1i64).unwrap_err();
+        assert_eq!(err.code, ErrorCode::ONE_OF_AMBIGUOUS);
+        assert_eq!(err.expected.as_deref(), Some("exactly one oneOf variant"));
+        assert!(two.validate(&1.5f64).is_ok());
+
+        // the winning variant's output is returned
+        let strip_variant = one_of([
+            object([("a", string().into())]).strip().into(),
+            boolean().into(),
+        ]);
+        let out = strip_variant
+            .validate(&serde_json::json!({"a": "x", "extra": 1}))
+            .unwrap();
+        assert_eq!(out.as_object().unwrap().len(), 1);
+        assert!(out.as_object().unwrap().get("extra").is_none());
     }
 
     // T4-8: negative compile-guarantee is covered by compile_fail doctests on the builder types

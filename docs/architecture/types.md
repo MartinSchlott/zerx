@@ -130,6 +130,13 @@ None.
 - `parse_union` MUST attempt each variant via `parse_present` in declaration order and return the first `Ok`.
 - If all variants fail, `parse_union` MUST return `Err(ZerxError::union([], inner_errors))` with per-variant errors as `inner_errors`.
 
+#### `OneOf` (crate-internal)
+
+- The `OneOf` kind MUST be constructible only inside the crate; it carries the exactly-one semantics of an imported JSON Schema `oneOf` and has no public builder.
+- `parse_one_of` MUST attempt every variant and accept the value only when exactly one variant accepts it, returning that variant's output.
+- When no variant accepts the value, `parse_one_of` MUST return `Err(ZerxError::union([], inner_errors))`.
+- When two or more variants accept the value, `parse_one_of` MUST return `Err(ONE_OF_AMBIGUOUS)` without embedding the value.
+
 #### `discriminated_union` (PLAN_T2)
 
 - A variant is well-formed for `discriminated_union` only if: its kind is `Object`; the `shape` contains the discriminator key; the discriminator field's kind is `Literal`; the discriminator field is required, non-defaulted, and non-nullable (`optional == false`, `default.is_none()`, `nullable == false`); the literal const is keyable (`Bool`, `i128`-range integer, or `String`); and the discriminant key is unique across all variants.
@@ -152,7 +159,7 @@ None.
 
 ### Error codes (PLAN_T2)
 
-- Codes introduced by PLAN_T2: `UNKNOWN_PROPERTY`, `ARRAY_TOO_SHORT`, `ARRAY_TOO_LONG`, `TUPLE_LENGTH_MISMATCH`, `INVALID_LITERAL`, `INVALID_DISCRIMINANT`, `INVALID_DISCRIMINATED_UNION`.
+- Codes introduced by PLAN_T2: `UNKNOWN_PROPERTY`, `ARRAY_TOO_SHORT`, `ARRAY_TOO_LONG`, `TUPLE_LENGTH_MISMATCH`, `INVALID_LITERAL`, `INVALID_DISCRIMINANT`, `INVALID_DISCRIMINATED_UNION`, `ONE_OF_AMBIGUOUS`.
 
 ### Special types (PLAN_T4)
 
@@ -180,8 +187,9 @@ None.
 
 #### `json` / `jsonschema` (PLAN_T4)
 
-- `json()` and `jsonschema()` MUST accept any serde-bridgeable `ZerxValue` variant with identity parse (`parse_inner` returns `Ok(value.clone())`).
-- `json()` and `jsonschema()` differ only in their `SchemaKind` variant; that variant is the export marker read by `J1`; no structural JSON Schema document validation is performed (v1 accept-all).
+- `json()` MUST accept any serde-bridgeable `ZerxValue` variant with identity parse (`parse_inner` returns `Ok(value.clone())`).
+- `jsonschema()` MUST accept only `ZerxValue::Object`, failing with `TYPE_MISMATCH` otherwise, with identity parse; its runtime check MUST agree with its exported form `type:"object"`.
+- No structural JSON Schema document validation is performed by `jsonschema()`.
 - Neither `json()` nor `jsonschema()` exposes any inherent validator methods.
 
 #### Negative compile-guarantee (PLAN_T4)

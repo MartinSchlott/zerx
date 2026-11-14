@@ -49,6 +49,7 @@
 - An empty Lua table under a free-conversion schema MUST produce an empty `ZerxValue::Array` (the documented disambiguation bias).
 - The discriminator value in a `discriminated_union` MUST be mapped to an infallible scalar placeholder (`Bool`/`I64`/`String`/`Null`) before the Miss/non-keyable path builds its output object; a `Table`-valued discriminator MUST produce the `Null` placeholder, never a recursive table conversion.
 - An integral `Float` discriminator in `i128` range MUST key as its integer, and its placeholder MUST be `Null`.
+- The crate-internal `OneOf` kind MUST transform and parse a Lua value against every variant and return the transformed value only when exactly one variant succeeds; zero successes MUST yield the union error and several MUST yield `ONE_OF_AMBIGUOUS`.
 
 ## Related Decisions
 

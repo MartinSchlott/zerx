@@ -131,7 +131,7 @@ fn navigate_schema(root: &Schema, segments: &[std::string::String]) -> Result<Sc
                 consumed.push(seg.clone());
                 field
             }
-            SchemaKind::Union(_) | SchemaKind::DiscriminatedUnion(_) => {
+            SchemaKind::Union(_) | SchemaKind::OneOf(_) | SchemaKind::DiscriminatedUnion(_) => {
                 let mut path = consumed;
                 path.push(seg.clone());
                 return Err(ZerxError::new(
@@ -245,7 +245,7 @@ impl Schema {
     ///
     /// An empty `path` validates against the whole schema (equivalent to
     /// `validate`). Navigation is schema-only; descending into a
-    /// `union`/`discriminated_union` requires an instance — use `replace`.
+    /// `union`/`oneOf`/`discriminated_union` requires an instance — use `replace`.
     pub fn parse_delta<T: serde::Serialize + ?Sized>(
         &self,
         path: &str,
@@ -460,6 +460,13 @@ mod tests {
     #[test]
     fn parse_delta_union_descent_fails() {
         let schema: Schema = union([string().into(), number().into()]).into();
+        let err = schema.parse_delta("/0", &"x").unwrap_err();
+        assert_eq!(err.code, ErrorCode::UNION_PATH_REQUIRES_INSTANCE);
+    }
+
+    #[test]
+    fn parse_delta_one_of_descent_fails() {
+        let schema: Schema = crate::types::one_of([string().into(), number().into()]);
         let err = schema.parse_delta("/0", &"x").unwrap_err();
         assert_eq!(err.code, ErrorCode::UNION_PATH_REQUIRES_INSTANCE);
     }
