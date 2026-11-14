@@ -195,6 +195,7 @@ None.
 #### Negative compile-guarantee (PLAN_T4)
 
 - `BufferSchema`, `UriSchema`, `UrlSchema`, `JsonSchema`, and `JsonschemaSchema` MUST NOT expose any inherent string or number validator methods.
+- A `uri()` or `url()` reconstructed by JSON Schema import MAY carry string-length and pattern validators attached by the import; they run after the structural check.
 
 ### Error codes (PLAN_T4)
 

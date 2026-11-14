@@ -187,6 +187,9 @@
 - `type:"string"` + `format:"uri"` → `uri()`.
 - `type:"string"` + `format:"url"` → `url()`.
 - The markers MUST match on the non-null type name of a `[T, "null"]` type array, with `.nullable()` applied to the marker kind.
+- `type:"string"` + `format:"uri"`/`"url"` MUST consume `minLength`, `maxLength` and `pattern` as string validators enforced together with the marker check, so a string carrying those validators and a `uri`/`url` format round-trips.
+- The `buffer` marker MUST NOT consume `minLength`, `maxLength` or `pattern`; string validators do not apply to bytes, so the import refuses them (`D-import-fail-closed`).
+- Accepted limitation: a string node whose `format` modifier names a marker re-imports as follows. `uri`/`url` re-import as that marker with their string validators. `buffer` re-imports as `buffer()` and is refused when string validators are present. `json` is refused because a `type` is present. `record`/`jsonschema` do not match a string node, so the node imports as a string and the `format` annotation is dropped.
 
 ### `enum` / `const` import
 

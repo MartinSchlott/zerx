@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::schema::{Schema, SchemaKind};
-use crate::types::{DiscriminatorState, ObjectBody, ObjectMode};
+use crate::types::{DiscriminatorState, ObjectBody, ObjectMode, StringSchema};
 use crate::{ErrorCode, Modify, ZerxError, ZerxValue};
 
 // ---------------------------------------------------------------------------
@@ -978,6 +978,54 @@ fn type_error(path: &[String], code: ErrorCode, message: impl Into<String>) -> Z
     ZerxError::new(code, message).at(path.to_vec())
 }
 
+/// Rebuilds the string validators (`minLength`, `maxLength`, `pattern`) a string
+/// node carries, in that order, and records each present keyword in `consumed`.
+/// Used by both the plain string dispatch and the `uri`/`url` marker branches so
+/// the keywords are enforced identically wherever a string node is reconstructed.
+fn import_string_validators(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    path: &[String],
+    consumed: &mut HashSet<String>,
+) -> Result<StringSchema, ZerxError> {
+    use crate::string;
+
+    let mut sb = string();
+    if let Some(raw) = obj.get("minLength") {
+        let n = as_non_negative_u64(raw).ok_or_else(|| {
+            type_error(
+                path,
+                ErrorCode::IMPORT_MALFORMED,
+                "`minLength` must be a non-negative integer",
+            )
+        })?;
+        sb = sb.min(n as usize);
+        consumed.insert("minLength".to_string());
+    }
+    if let Some(raw) = obj.get("maxLength") {
+        let n = as_non_negative_u64(raw).ok_or_else(|| {
+            type_error(
+                path,
+                ErrorCode::IMPORT_MALFORMED,
+                "`maxLength` must be a non-negative integer",
+            )
+        })?;
+        sb = sb.max(n as usize);
+        consumed.insert("maxLength".to_string());
+    }
+    if let Some(raw) = obj.get("pattern") {
+        let pat = raw.as_str().ok_or_else(|| {
+            type_error(
+                path,
+                ErrorCode::IMPORT_MALFORMED,
+                "`pattern` must be a string",
+            )
+        })?;
+        sb = sb.regex(pat);
+        consumed.insert("pattern".to_string());
+    }
+    Ok(sb)
+}
+
 /// Parse Draft 2020-12 `type`. Only a single known name or exactly one non-null
 /// known name plus `"null"` is accepted; every other well-formed form is
 /// `IMPORT_UNSUPPORTED`, every malformed form `IMPORT_MALFORMED`.
@@ -1120,7 +1168,7 @@ pub(crate) fn import_value(
 ) -> Result<Schema, ZerxError> {
     use crate::{
         any, array, boolean, buffer, discriminated_union, enumerate, json, jsonschema,
-        literal, null, number, record, string, tuple, union, uri, url,
+        literal, null, number, record, tuple, union, uri, url,
     };
 
     // Step 1: Boolean schema.
@@ -1456,15 +1504,23 @@ pub(crate) fn import_value(
                     consumed.insert("type".to_string());
                 }
                 (TypeName::String, Some("buffer")) => {
+                    // `buffer` holds bytes; the string validators skip non-string
+                    // values, so consuming them here would not enforce them.
                     base = Some(buffer().into());
                     consumed.insert("type".to_string());
                 }
                 (TypeName::String, Some("uri")) => {
-                    base = Some(uri().into());
+                    let mut schema: Schema = uri().into();
+                    let extra: Schema = import_string_validators(obj, path, &mut consumed)?.into();
+                    schema.validators.extend(extra.validators);
+                    base = Some(schema);
                     consumed.insert("type".to_string());
                 }
                 (TypeName::String, Some("url")) => {
-                    base = Some(url().into());
+                    let mut schema: Schema = url().into();
+                    let extra: Schema = import_string_validators(obj, path, &mut consumed)?.into();
+                    schema.validators.extend(extra.validators);
+                    base = Some(schema);
                     consumed.insert("type".to_string());
                 }
                 _ => {}
@@ -1479,40 +1535,7 @@ pub(crate) fn import_value(
             consumed.insert("type".to_string());
             let built: Schema = match s.name {
                 TypeName::String => {
-                    let mut sb = string();
-                    if let Some(raw) = obj.get("minLength") {
-                        let n = as_non_negative_u64(raw).ok_or_else(|| {
-                            type_error(
-                                path,
-                                ErrorCode::IMPORT_MALFORMED,
-                                "`minLength` must be a non-negative integer",
-                            )
-                        })?;
-                        sb = sb.min(n as usize);
-                        consumed.insert("minLength".to_string());
-                    }
-                    if let Some(raw) = obj.get("maxLength") {
-                        let n = as_non_negative_u64(raw).ok_or_else(|| {
-                            type_error(
-                                path,
-                                ErrorCode::IMPORT_MALFORMED,
-                                "`maxLength` must be a non-negative integer",
-                            )
-                        })?;
-                        sb = sb.max(n as usize);
-                        consumed.insert("maxLength".to_string());
-                    }
-                    if let Some(raw) = obj.get("pattern") {
-                        let pat = raw.as_str().ok_or_else(|| {
-                            type_error(
-                                path,
-                                ErrorCode::IMPORT_MALFORMED,
-                                "`pattern` must be a string",
-                            )
-                        })?;
-                        sb = sb.regex(pat);
-                        consumed.insert("pattern".to_string());
-                    }
+                    let mut sb = import_string_validators(obj, path, &mut consumed)?;
                     match fmt {
                         Some("email") => sb = sb.email(),
                         Some("uuid") => sb = sb.uuid(),
@@ -3940,7 +3963,6 @@ mod tests {
     fn import_format_marker_siblings_refused() {
         for bad in [
             serde_json::json!({"type": "object", "format": "jsonschema", "required": ["x"]}),
-            serde_json::json!({"type": "string", "format": "uri", "minLength": 3}),
             serde_json::json!({
                 "type": "object", "format": "record",
                 "additionalProperties": {}, "required": ["x"]
@@ -3952,6 +3974,238 @@ mod tests {
                 "input {bad}"
             );
         }
+    }
+
+    // Strings carrying a `uri` marker enforce their string validators together
+    // with the marker check. The import writes them into the marker node's
+    // validator storage, so `string().min(1).format("uri")` re-imports.
+    #[test]
+    fn import_uri_marker_with_string_validators() {
+        let s = from(serde_json::json!({"type": "string", "minLength": 1, "format": "uri"}))
+            .expect("reported shape imports");
+        assert!(validate_zv(&s, ZerxValue::String("a:b".to_string())).is_ok());
+        assert_eq!(
+            validate_zv(&s, ZerxValue::String("nope".to_string()))
+                .unwrap_err()
+                .code,
+            ErrorCode::INVALID_URI
+        );
+        assert_eq!(
+            validate_zv(&s, ZerxValue::I64(5)).unwrap_err().code,
+            ErrorCode::TYPE_MISMATCH
+        );
+
+        let s = from(serde_json::json!({"type": "string", "maxLength": 5, "format": "uri"}))
+            .unwrap();
+        assert!(validate_zv(&s, ZerxValue::String("a:b".to_string())).is_ok());
+        assert_eq!(
+            validate_zv(&s, ZerxValue::String("https://example.com".to_string()))
+                .unwrap_err()
+                .code,
+            ErrorCode::STRING_TOO_LONG
+        );
+        assert_eq!(
+            validate_zv(&s, ZerxValue::String("abc".to_string()))
+                .unwrap_err()
+                .code,
+            ErrorCode::INVALID_URI
+        );
+
+        let s = from(serde_json::json!({
+            "type": "string", "pattern": "^https:", "format": "uri"
+        }))
+        .unwrap();
+        assert!(validate_zv(&s, ZerxValue::String("https://x".to_string())).is_ok());
+        assert_eq!(
+            validate_zv(&s, ZerxValue::String("http://x".to_string()))
+                .unwrap_err()
+                .code,
+            ErrorCode::PATTERN_MISMATCH
+        );
+    }
+
+    // All three string validators apply next to a `url` marker.
+    #[test]
+    fn import_url_marker_with_string_validators() {
+        let s = from(serde_json::json!({
+            "type": "string",
+            "minLength": 12,
+            "maxLength": 40,
+            "pattern": "\\.org/",
+            "format": "url"
+        }))
+        .unwrap();
+        assert!(validate_zv(&s, ZerxValue::String("https://example.org/".to_string())).is_ok());
+        assert_eq!(
+            validate_zv(&s, ZerxValue::String("https://example.com/".to_string()))
+                .unwrap_err()
+                .code,
+            ErrorCode::PATTERN_MISMATCH
+        );
+        assert_eq!(
+            validate_zv(&s, ZerxValue::String("ftp://example.org/".to_string()))
+                .unwrap_err()
+                .code,
+            ErrorCode::INVALID_URL
+        );
+        // Short and long valid URLs surface the length codes: `check_type` runs
+        // first, then the validators in `minLength`, `maxLength`, `pattern` order.
+        assert_eq!(
+            validate_zv(&s, ZerxValue::String("https://a.b".to_string()))
+                .unwrap_err()
+                .code,
+            ErrorCode::STRING_TOO_SHORT
+        );
+        let long = format!("https://{}.org/", "a".repeat(40));
+        assert_eq!(
+            validate_zv(&s, ZerxValue::String(long)).unwrap_err().code,
+            ErrorCode::STRING_TOO_LONG
+        );
+    }
+
+    // The `[T, "null"]` nullable wrap still applies to a marker carrying validators.
+    #[test]
+    fn import_nullable_uri_marker_with_validators() {
+        let s = from(serde_json::json!({
+            "type": ["string", "null"], "maxLength": 10, "format": "uri"
+        }))
+        .unwrap();
+        assert!(validate_zv(&s, ZerxValue::Null).is_ok());
+        assert!(validate_zv(&s, ZerxValue::String("a:b".to_string())).is_ok());
+        assert_eq!(
+            validate_zv(&s, ZerxValue::String("a:bcdefghijkl".to_string()))
+                .unwrap_err()
+                .code,
+            ErrorCode::STRING_TOO_LONG
+        );
+    }
+
+    // A malformed validator next to a marker is refused, not skipped.
+    #[test]
+    fn import_uri_marker_malformed_validator() {
+        assert_eq!(
+            code_of(serde_json::json!({"type": "string", "minLength": -1, "format": "uri"})),
+            ErrorCode::IMPORT_MALFORMED
+        );
+        assert_eq!(
+            code_of(serde_json::json!({"type": "string", "pattern": 5, "format": "uri"})),
+            ErrorCode::IMPORT_MALFORMED
+        );
+    }
+
+    // The export → import → export roundtrip of string validators combined with a
+    // marker-colliding `format` is stable, and the re-imported node enforces both.
+    #[test]
+    fn import_marker_validator_roundtrip_pin() {
+        // `minLength: 1` cannot reject a structurally valid URI/URL (the shortest
+        // URI is three chars), and `^h` cannot reject a URL (both schemes start
+        // with `h`), so those two codes have no rejecting value here; their
+        // enforcement is covered by `import_uri_marker_with_string_validators`
+        // and `import_url_marker_with_string_validators`.
+        let long = format!("https://{}.com", "a".repeat(50));
+        for (fmt, marker_code) in [
+            ("uri", ErrorCode::INVALID_URI),
+            ("url", ErrorCode::INVALID_URL),
+        ] {
+            let schema: Schema = string().min(1).max(50).regex("^h").format(fmt).into();
+            let doc = schema.to_json_schema();
+            let reimported = from(doc.clone()).expect("re-import of marker+validators failed");
+            assert_eq!(reimported.to_json_schema(), doc, "format {fmt}");
+
+            assert!(
+                validate_zv(&reimported, ZerxValue::String("https://x.org".to_string())).is_ok(),
+                "format {fmt}"
+            );
+            assert_eq!(
+                validate_zv(&reimported, ZerxValue::String("nope".to_string()))
+                    .unwrap_err()
+                    .code,
+                marker_code,
+                "format {fmt}"
+            );
+            assert_eq!(
+                validate_zv(&reimported, ZerxValue::String(long.clone()))
+                    .unwrap_err()
+                    .code,
+                ErrorCode::STRING_TOO_LONG,
+                "format {fmt}"
+            );
+        }
+
+        // The `uri` variant additionally exercises `pattern`.
+        let schema: Schema = string().min(1).max(50).regex("^h").format("uri").into();
+        let reimported = from(schema.to_json_schema()).unwrap();
+        assert_eq!(
+            validate_zv(&reimported, ZerxValue::String("ftp://x".to_string()))
+                .unwrap_err()
+                .code,
+            ErrorCode::PATTERN_MISMATCH
+        );
+    }
+
+    // The plain markers keep their roundtrip and carry no validators.
+    #[test]
+    fn import_plain_markers_roundtrip_without_validators() {
+        let schemas: Vec<Schema> = vec![uri().into(), url().into()];
+        for schema in schemas {
+            let doc = schema.to_json_schema();
+            let reimported = from(doc.clone()).unwrap();
+            assert_eq!(reimported.to_json_schema(), doc);
+            assert!(reimported.validators.is_empty());
+        }
+    }
+
+    // `buffer` holds bytes, so string validators are not enforced on it and stay
+    // refused instead of being consumed without effect.
+    #[test]
+    fn import_buffer_marker_keeps_string_validators_refused() {
+        for (key, value) in [
+            ("minLength", serde_json::json!(1)),
+            ("maxLength", serde_json::json!(1)),
+            ("pattern", serde_json::json!("^a")),
+        ] {
+            let mut node = serde_json::json!({"type": "string", "format": "buffer"});
+            node[key] = value;
+            assert_eq!(
+                code_of(node.clone()),
+                ErrorCode::IMPORT_UNSUPPORTED,
+                "input {node}"
+            );
+        }
+
+        // Pinned limitation: the export of a buffer with a string validator
+        // re-imports as a refusal.
+        let exported: Schema = string().min(1).format("buffer").into();
+        let doc = exported.to_json_schema();
+        assert_eq!(doc["minLength"], serde_json::json!(1));
+        assert_eq!(code_of(doc), ErrorCode::IMPORT_UNSUPPORTED);
+
+        let (v1, v2) = roundtrip_str(&buffer().mime("text/plain").into());
+        assert_eq!(v1, v2);
+    }
+
+    // Non-string assertions and the `$ref` sibling rule are untouched by the
+    // marker's string-validator consumption.
+    #[test]
+    fn import_uri_marker_other_siblings_unchanged() {
+        // `minimum` applies to numbers, so it is vacuous on a string node.
+        assert!(from(serde_json::json!({"type": "string", "format": "uri", "minimum": 1})).is_ok());
+
+        // `enum` takes its own branch before the marker dispatch.
+        let s = from(serde_json::json!({"type": "string", "format": "uri", "enum": ["a:b"]}))
+            .unwrap();
+        assert!(validate_zv(&s, ZerxValue::String("a:b".to_string())).is_ok());
+        assert!(validate_zv(&s, ZerxValue::String("c:d".to_string())).is_err());
+
+        // An assertion sibling of `$ref` stays refused, even a string validator.
+        assert_eq!(
+            code_of(serde_json::json!({
+                "$ref": "#/$defs/U",
+                "minLength": 1,
+                "$defs": {"U": {"type": "string", "format": "uri"}}
+            })),
+            ErrorCode::IMPORT_UNSUPPORTED
+        );
     }
 
     // A legacy `anyOf` + `x-oneOf` document keeps its `anyOf` meaning.

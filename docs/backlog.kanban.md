@@ -34,6 +34,20 @@ id: zrx9backlog0col0backlog1
   > PLAN_J5 added a crate-internal `OneOf` kind with exactly-one semantics, built only by JSON
   > Schema import. A public builder would let callers construct it programmatically.
 
+- [ ] Exact vacuity for untyped nodes with trivially-true subschemas
+  > Under `D-import-fail-closed` an untyped node such as `{"properties":{"m":{}}}` is refused,
+  > although its only assertion constrains nothing (`{}` accepts every value). Recognising such
+  > trivially-true subschemas as vacuous would be an exact refinement. Deferred by the supervisor
+  > when commissioning PLAN_J6_marker_string_validators.
+
+- [ ] Marker-name `format` collisions on re-import
+  > A user `format` modifier naming a marker that the node's kind is not does not round-trip:
+  > `string().min(1).format("buffer")` and `string().format("json")` are refused on re-import, and
+  > `format("record")`/`format("jsonschema")` on a string loses the annotation. Two fixes, each
+  > changing a documented contract: (1) export does not emit such a `format` value; (2) import reads
+  > a marker node carrying assertions the marker cannot enforce as a plain string with a `format`
+  > annotation (JSON Schema's own reading). Reported to the supervisor with PLAN_J6.
+
 ## Next
 id: zrx9backlog0col0next0001
 
