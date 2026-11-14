@@ -548,6 +548,185 @@ fn is_bare_null_schema(v: &serde_json::Value) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// `type` parsing — fail-closed
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TypeName {
+    Null,
+    Boolean,
+    Object,
+    Array,
+    Number,
+    Integer,
+    String,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TypeSpec {
+    name: TypeName,
+    nullable: bool,
+}
+
+impl TypeSpec {
+    /// Whether this spec admits the JSON type `name`. Integer values are a subset
+    /// of number; null is admitted only when the type array carried `"null"`.
+    fn admits(&self, name: TypeName) -> bool {
+        name == self.name
+            || (name == TypeName::Integer && self.name == TypeName::Number)
+            || (name == TypeName::Null && self.nullable)
+    }
+}
+
+fn type_name(s: &str) -> Option<TypeName> {
+    Some(match s {
+        "null" => TypeName::Null,
+        "boolean" => TypeName::Boolean,
+        "object" => TypeName::Object,
+        "array" => TypeName::Array,
+        "number" => TypeName::Number,
+        "integer" => TypeName::Integer,
+        "string" => TypeName::String,
+        _ => return None,
+    })
+}
+
+fn type_error(path: &[String], code: ErrorCode, message: impl Into<String>) -> ZerxError {
+    ZerxError::new(code, message).at(path.to_vec())
+}
+
+/// Parse Draft 2020-12 `type`. Only a single known name or exactly one non-null
+/// known name plus `"null"` is accepted; every other well-formed form is
+/// `IMPORT_UNSUPPORTED`, every malformed form `IMPORT_MALFORMED`.
+fn parse_type(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    path: &[String],
+) -> Result<Option<TypeSpec>, ZerxError> {
+    let raw = match obj.get("type") {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+    match raw {
+        serde_json::Value::String(s) => match type_name(s) {
+            Some(name) => Ok(Some(TypeSpec { name, nullable: false })),
+            None => Err(type_error(
+                path,
+                ErrorCode::IMPORT_MALFORMED,
+                format!("unknown `type` name `{s}`"),
+            )),
+        },
+        serde_json::Value::Array(types) => {
+            if types.is_empty() {
+                return Err(type_error(
+                    path,
+                    ErrorCode::IMPORT_MALFORMED,
+                    "`type` array must not be empty",
+                ));
+            }
+            let mut names: Vec<TypeName> = Vec::with_capacity(types.len());
+            for t in types {
+                let s = t.as_str().ok_or_else(|| {
+                    type_error(
+                        path,
+                        ErrorCode::IMPORT_MALFORMED,
+                        "`type` array must contain only strings",
+                    )
+                })?;
+                let name = type_name(s).ok_or_else(|| {
+                    type_error(
+                        path,
+                        ErrorCode::IMPORT_MALFORMED,
+                        format!("unknown `type` name `{s}`"),
+                    )
+                })?;
+                if names.contains(&name) {
+                    return Err(type_error(
+                        path,
+                        ErrorCode::IMPORT_MALFORMED,
+                        "`type` array must not contain duplicates",
+                    ));
+                }
+                names.push(name);
+            }
+            if names.len() == 2 {
+                if let Some(pos) = names.iter().position(|n| *n == TypeName::Null) {
+                    return Ok(Some(TypeSpec {
+                        name: names[1 - pos],
+                        nullable: true,
+                    }));
+                }
+            }
+            Err(type_error(
+                path,
+                ErrorCode::IMPORT_UNSUPPORTED,
+                "only a single `type` name or `[T, \"null\"]` is accepted",
+            ))
+        }
+        _ => Err(type_error(
+            path,
+            ErrorCode::IMPORT_MALFORMED,
+            "`type` must be a string or an array of strings",
+        )),
+    }
+}
+
+fn value_type_name(v: &serde_json::Value) -> TypeName {
+    match v {
+        serde_json::Value::Null => TypeName::Null,
+        serde_json::Value::Bool(_) => TypeName::Boolean,
+        serde_json::Value::Number(n) => {
+            let integral = n.as_i64().is_some()
+                || n.as_u64().is_some()
+                || n.as_f64()
+                    .map(|f| f.is_finite() && f.fract() == 0.0)
+                    .unwrap_or(false);
+            if integral {
+                TypeName::Integer
+            } else {
+                TypeName::Number
+            }
+        }
+        serde_json::Value::String(_) => TypeName::String,
+        serde_json::Value::Array(_) => TypeName::Array,
+        serde_json::Value::Object(_) => TypeName::Object,
+    }
+}
+
+fn admits_value(spec: &TypeSpec, v: &serde_json::Value) -> bool {
+    spec.admits(value_type_name(v))
+}
+
+fn within(inner: &TypeSpec, outer: &TypeSpec) -> bool {
+    outer.admits(inner.name) && (!inner.nullable || outer.admits(TypeName::Null))
+}
+
+/// A union member under an outer `type` must declare its own type within the
+/// outer set, so the intersection is provably the union itself.
+fn ensure_member_within(
+    member: &serde_json::Value,
+    outer: &TypeSpec,
+    keyword: &str,
+    index: usize,
+    path: &[String],
+) -> Result<(), ZerxError> {
+    let member_obj = member.as_object().ok_or_else(|| {
+        type_error(
+            path,
+            ErrorCode::IMPORT_UNSUPPORTED,
+            format!("`{keyword}` member {index} must declare a `type` alongside the outer `type`"),
+        )
+    })?;
+    match parse_type(member_obj, path)? {
+        Some(inner) if within(&inner, outer) => Ok(()),
+        _ => Err(type_error(
+            path,
+            ErrorCode::IMPORT_UNSUPPORTED,
+            format!("`{keyword}` member {index} must declare a `type` within the outer `type`"),
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Import walk — pub(crate) so P1 policy pipeline can wrap it
 // ---------------------------------------------------------------------------
 
@@ -586,11 +765,22 @@ pub(crate) fn import_value(
         }
     };
 
+    // Step 2.5: parse `type`. Runs on every object node, `$ref` included, so a
+    // malformed `type` is never skipped.
+    let spec = parse_type(obj, path)?;
+
     let is_ref = obj.contains_key("$ref");
     let mut base: Option<Schema> = None;
 
     // Step 3: $ref — set base and skip to step 12.
     if is_ref {
+        if spec.is_some() {
+            return Err(ZerxError::new(
+                ErrorCode::IMPORT_UNSUPPORTED,
+                "`type` alongside `$ref` is not supported",
+            )
+            .at(path.to_vec()));
+        }
         let ref_str = obj["$ref"].as_str().unwrap_or("");
         if !ref_str.starts_with("#/$defs/") {
             return Err(ZerxError::new(
@@ -627,7 +817,13 @@ pub(crate) fn import_value(
                     let other_i = 1 - null_i;
                     let mut child_path = path.to_vec();
                     child_path.push("anyOf".to_string());
+                    child_path.push(other_i.to_string());
                     let other = import_value(&any_of_arr[other_i], ctx, &child_path)?;
+                    if let Some(outer) = spec {
+                        for (i, member) in any_of_arr.iter().enumerate() {
+                            ensure_member_within(member, &outer, "anyOf", i, path)?;
+                        }
+                    }
                     base = Some(other.nullable());
                     // Continue to step 12.
                 }
@@ -653,6 +849,12 @@ pub(crate) fn import_value(
                 child_path.push(kw.to_string());
                 child_path.push(i.to_string());
                 variants.push(import_value(v, ctx, &child_path)?);
+            }
+
+            if let Some(outer) = spec {
+                for (i, member) in arr.iter().enumerate() {
+                    ensure_member_within(member, &outer, kw, i, path)?;
+                }
             }
 
             let disc_key = obj
@@ -684,9 +886,46 @@ pub(crate) fn import_value(
         }
     }
 
+    // Step 7/8: `enum`/`const` sibling guard. The enum/literal dispatch below
+    // would drop these validation keywords, so a node carrying one is refused.
+    if base.is_none() && (obj.contains_key("enum") || obj.contains_key("const")) {
+        const DROPPED_BY_ENUM: &[&str] = &[
+            "minLength", "maxLength", "pattern", "minimum", "maximum",
+            "minItems", "maxItems", "items", "prefixItems", "properties",
+            "required", "additionalProperties",
+        ];
+        if let Some(kw) = DROPPED_BY_ENUM.iter().find(|k| obj.contains_key(**k)) {
+            return Err(ZerxError::new(
+                ErrorCode::IMPORT_UNSUPPORTED,
+                format!("`{kw}` alongside `enum`/`const` is not representable; it would be dropped"),
+            )
+            .at(path.to_vec()));
+        }
+        if obj.contains_key("enum") && obj.contains_key("const") {
+            return Err(ZerxError::new(
+                ErrorCode::IMPORT_UNSUPPORTED,
+                "`enum` and `const` on the same node cannot both be represented",
+            )
+            .at(path.to_vec()));
+        }
+    }
+
     // Step 7: enum.
     if base.is_none() {
         if let Some(enum_arr) = obj.get("enum").and_then(|v| v.as_array()) {
+            if let Some(t) = spec {
+                if let Some((i, _)) = enum_arr
+                    .iter()
+                    .enumerate()
+                    .find(|(_, v)| !admits_value(&t, v))
+                {
+                    return Err(ZerxError::new(
+                        ErrorCode::IMPORT_UNSUPPORTED,
+                        format!("`enum` member {i} is outside the declared `type`"),
+                    )
+                    .at(path.to_vec()));
+                }
+            }
             let all_strings = enum_arr.iter().all(|v| v.is_string());
             if all_strings {
                 let strings: Vec<String> = enum_arr
@@ -710,6 +949,15 @@ pub(crate) fn import_value(
     // Step 8: const.
     if base.is_none() {
         if let Some(const_val) = obj.get("const") {
+            if let Some(t) = spec {
+                if !admits_value(&t, const_val) {
+                    return Err(ZerxError::new(
+                        ErrorCode::IMPORT_UNSUPPORTED,
+                        "`const` value is outside the declared `type`",
+                    )
+                    .at(path.to_vec()));
+                }
+            }
             let zv = ZerxValue::from_serialize(const_val)
                 .map_err(|e| e.at(path.to_vec()))?;
             base = Some(literal(zv).into());
@@ -718,144 +966,173 @@ pub(crate) fn import_value(
     }
 
     let fmt = obj.get("format").and_then(|v| v.as_str());
-    let typ = obj.get("type").and_then(|v| v.as_str());
+    let had_base_before_markers = base.is_some();
 
     // Step 9: Format-marker kinds (checked before generic type dispatch).
     if base.is_none() {
         if fmt == Some("json") {
-            base = Some(json().into());
-        } else if typ == Some("object") && fmt == Some("record") {
-            match obj.get("additionalProperties") {
-                Some(serde_json::Value::Bool(false)) => {
-                    return Err(ZerxError::new(
-                        ErrorCode::IMPORT_MALFORMED,
-                        "record with `additionalProperties: false` is meaningless",
-                    )
-                    .at(path.to_vec()));
-                }
-                Some(serde_json::Value::Bool(true)) | None => {
-                    base = Some(record(any()).into());
-                }
-                Some(ap_schema) => {
-                    let mut ap_path = path.to_vec();
-                    ap_path.push("additionalProperties".to_string());
-                    let inner = import_value(ap_schema, ctx, &ap_path)?;
-                    base = Some(record(inner).into());
-                }
+            if spec.is_some() {
+                return Err(ZerxError::new(
+                    ErrorCode::IMPORT_UNSUPPORTED,
+                    "`type` alongside `format: \"json\"` is not supported",
+                )
+                .at(path.to_vec()));
             }
-        } else if typ == Some("object") && fmt == Some("jsonschema") {
-            base = Some(jsonschema().into());
-        } else if typ == Some("string") && fmt == Some("buffer") {
-            base = Some(buffer().into());
-        } else if typ == Some("string") && fmt == Some("uri") {
-            base = Some(uri().into());
-        } else if typ == Some("string") && fmt == Some("url") {
-            base = Some(url().into());
+            base = Some(json().into());
+        } else if let Some(s) = spec {
+            match (s.name, fmt) {
+                (TypeName::Object, Some("record")) => {
+                    match obj.get("additionalProperties") {
+                        Some(serde_json::Value::Bool(false)) => {
+                            return Err(ZerxError::new(
+                                ErrorCode::IMPORT_MALFORMED,
+                                "record with `additionalProperties: false` is meaningless",
+                            )
+                            .at(path.to_vec()));
+                        }
+                        Some(serde_json::Value::Bool(true)) | None => {
+                            base = Some(record(any()).into());
+                        }
+                        Some(ap_schema) => {
+                            let mut ap_path = path.to_vec();
+                            ap_path.push("additionalProperties".to_string());
+                            let inner = import_value(ap_schema, ctx, &ap_path)?;
+                            base = Some(record(inner).into());
+                        }
+                    }
+                }
+                (TypeName::Object, Some("jsonschema")) => {
+                    base = Some(
+                        jsonschema()
+                            .refine(|v| matches!(v, ZerxValue::Object(_)), "expected object")
+                            .into(),
+                    );
+                }
+                (TypeName::String, Some("buffer")) => base = Some(buffer().into()),
+                (TypeName::String, Some("uri")) => base = Some(uri().into()),
+                (TypeName::String, Some("url")) => base = Some(url().into()),
+                _ => {}
+            }
         }
     }
 
-    // Step 10: Type dispatch.
+    // Step 10: Type dispatch. Exhaustive over `TypeName`: every `Some(spec)`
+    // produces a base here (or in step 9) or has already errored.
     if base.is_none() {
-        base = match typ {
-            Some("string") => {
-                let mut sb = string();
-                if let Some(n) = obj.get("minLength").and_then(|v| v.as_u64()) {
-                    sb = sb.min(n as usize);
+        if let Some(s) = spec {
+            let built: Schema = match s.name {
+                TypeName::String => {
+                    let mut sb = string();
+                    if let Some(n) = obj.get("minLength").and_then(|v| v.as_u64()) {
+                        sb = sb.min(n as usize);
+                    }
+                    if let Some(n) = obj.get("maxLength").and_then(|v| v.as_u64()) {
+                        sb = sb.max(n as usize);
+                    }
+                    if let Some(pat) = obj.get("pattern").and_then(|v| v.as_str()) {
+                        sb = sb.regex(pat);
+                    }
+                    match fmt {
+                        Some("email") => sb = sb.email(),
+                        Some("uuid") => sb = sb.uuid(),
+                        _ => {}
+                    }
+                    sb.into()
                 }
-                if let Some(n) = obj.get("maxLength").and_then(|v| v.as_u64()) {
-                    sb = sb.max(n as usize);
+                TypeName::Number => {
+                    let mut nb = number();
+                    if let Some(n) = obj.get("minimum").and_then(|v| v.as_f64()) {
+                        nb = nb.min(n);
+                    }
+                    if let Some(n) = obj.get("maximum").and_then(|v| v.as_f64()) {
+                        nb = nb.max(n);
+                    }
+                    nb.into()
                 }
-                if let Some(pat) = obj.get("pattern").and_then(|v| v.as_str()) {
-                    sb = sb.regex(pat);
+                TypeName::Integer => {
+                    let mut nb = number().int();
+                    if let Some(n) = obj.get("minimum").and_then(|v| v.as_f64()) {
+                        nb = nb.min(n);
+                    }
+                    if let Some(n) = obj.get("maximum").and_then(|v| v.as_f64()) {
+                        nb = nb.max(n);
+                    }
+                    nb.into()
                 }
-                match fmt {
-                    Some("email") => sb = sb.email(),
-                    Some("uuid") => sb = sb.uuid(),
-                    _ => {}
-                }
-                Some(sb.into())
-            }
-            Some("number") => {
-                let mut nb = number();
-                if let Some(n) = obj.get("minimum").and_then(|v| v.as_f64()) {
-                    nb = nb.min(n);
-                }
-                if let Some(n) = obj.get("maximum").and_then(|v| v.as_f64()) {
-                    nb = nb.max(n);
-                }
-                Some(nb.into())
-            }
-            Some("integer") => {
-                let mut nb = number().int();
-                if let Some(n) = obj.get("minimum").and_then(|v| v.as_f64()) {
-                    nb = nb.min(n);
-                }
-                if let Some(n) = obj.get("maximum").and_then(|v| v.as_f64()) {
-                    nb = nb.max(n);
-                }
-                Some(nb.into())
-            }
-            Some("boolean") => Some(boolean().into()),
-            Some("null") => Some(null().into()),
-            Some("array") => {
-                if let Some(prefix) = obj.get("prefixItems").and_then(|v| v.as_array()) {
-                    // Tuple: only when items is Bool(false).
-                    match obj.get("items") {
-                        Some(serde_json::Value::Bool(false)) => {
-                            let mut items: Vec<Schema> = Vec::new();
-                            for (i, pi) in prefix.iter().enumerate() {
-                                let mut pi_path = path.to_vec();
-                                pi_path.push("prefixItems".to_string());
-                                pi_path.push(i.to_string());
-                                items.push(import_value(pi, ctx, &pi_path)?);
+                TypeName::Boolean => boolean().into(),
+                TypeName::Null => null().into(),
+                TypeName::Array => {
+                    if let Some(prefix) = obj.get("prefixItems").and_then(|v| v.as_array()) {
+                        // Tuple: only when items is Bool(false).
+                        match obj.get("items") {
+                            Some(serde_json::Value::Bool(false)) => {
+                                let mut items: Vec<Schema> = Vec::new();
+                                for (i, pi) in prefix.iter().enumerate() {
+                                    let mut pi_path = path.to_vec();
+                                    pi_path.push("prefixItems".to_string());
+                                    pi_path.push(i.to_string());
+                                    items.push(import_value(pi, ctx, &pi_path)?);
+                                }
+                                tuple(items).into()
                             }
-                            Some(tuple(items).into())
+                            _ => {
+                                return Err(ZerxError::new(
+                                    ErrorCode::IMPORT_UNSUPPORTED,
+                                    "`prefixItems` with an open or typed tail is not representable as a zerx tuple",
+                                )
+                                .at(path.to_vec()));
+                            }
                         }
-                        _ => {
-                            return Err(ZerxError::new(
-                                ErrorCode::IMPORT_UNSUPPORTED,
-                                "`prefixItems` with an open or typed tail is not representable as a zerx tuple",
-                            )
-                            .at(path.to_vec()));
-                        }
-                    }
-                } else {
-                    let items_val = match obj.get("items") {
-                        Some(v) => v,
-                        None => {
-                            return Err(ZerxError::new(
-                                ErrorCode::IMPORT_MALFORMED,
-                                "array schema missing `items`",
-                            )
-                            .at(path.to_vec()));
-                        }
-                    };
-                    let item_schema =
-                        if matches!(items_val, serde_json::Value::Bool(true))
-                            || items_val
-                                .as_object()
-                                .map(|o| o.is_empty())
-                                .unwrap_or(false)
-                        {
-                            any().into()
-                        } else {
-                            let mut items_path = path.to_vec();
-                            items_path.push("items".to_string());
-                            import_value(items_val, ctx, &items_path)?
+                    } else {
+                        let items_val = match obj.get("items") {
+                            Some(v) => v,
+                            None => {
+                                return Err(ZerxError::new(
+                                    ErrorCode::IMPORT_MALFORMED,
+                                    "array schema missing `items`",
+                                )
+                                .at(path.to_vec()));
+                            }
                         };
-                    let mut ab = array(item_schema);
-                    if let Some(n) = obj.get("minItems").and_then(|v| v.as_u64()) {
-                        ab = ab.min(n as usize);
+                        let item_schema =
+                            if matches!(items_val, serde_json::Value::Bool(true))
+                                || items_val
+                                    .as_object()
+                                    .map(|o| o.is_empty())
+                                    .unwrap_or(false)
+                            {
+                                any().into()
+                            } else {
+                                let mut items_path = path.to_vec();
+                                items_path.push("items".to_string());
+                                import_value(items_val, ctx, &items_path)?
+                            };
+                        let mut ab = array(item_schema);
+                        if let Some(n) = obj.get("minItems").and_then(|v| v.as_u64()) {
+                            ab = ab.min(n as usize);
+                        }
+                        if let Some(n) = obj.get("maxItems").and_then(|v| v.as_u64()) {
+                            ab = ab.max(n as usize);
+                        }
+                        ab.into()
                     }
-                    if let Some(n) = obj.get("maxItems").and_then(|v| v.as_u64()) {
-                        ab = ab.max(n as usize);
-                    }
-                    Some(ab.into())
+                }
+                TypeName::Object => import_object(obj, ctx, path)?,
+            };
+            base = Some(built);
+        }
+    }
+
+    // A `[T, "null"]` type array adds `.nullable()` only to a base built by
+    // steps 9/10; a base from steps 3/5/6/7/8 already decides null itself.
+    if !had_base_before_markers {
+        if let Some(s) = spec {
+            if s.nullable {
+                if let Some(b) = base.take() {
+                    base = Some(b.nullable());
                 }
             }
-            Some("object") => Some(import_object(obj, ctx, path)?),
-            _ => None,
-        };
+        }
     }
 
     // Step 14: Fallthrough → any().
@@ -2324,6 +2601,441 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&v1).unwrap(),
             serde_json::to_string(&v2).unwrap()
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // `type` import and nullable lazy (J4)
+    // ---------------------------------------------------------------------------
+
+    fn s_defs() -> serde_json::Value {
+        serde_json::json!({
+            "S": {
+                "type": "object",
+                "properties": {"format": {"type": "string"}},
+                "required": ["format"],
+                "additionalProperties": false
+            }
+        })
+    }
+
+    fn code_of(v: serde_json::Value) -> ErrorCode {
+        from(v).unwrap_err().code
+    }
+
+    // Nullable `$ref` keeps admitting null through the collapse.
+    #[test]
+    fn import_nullable_ref_lazy() {
+        let schema = from(serde_json::json!({
+            "type": "object",
+            "properties": {"sig": {"anyOf": [{"$ref": "#/$defs/S"}, {"type": "null"}]}},
+            "additionalProperties": false,
+            "$defs": s_defs()
+        }))
+        .unwrap();
+
+        // Explicit null accepted.
+        assert!(validate_zv(&schema, obj(&[("sig", ZerxValue::Null)])).is_ok());
+        // Omitted, not required, no default → absent from output.
+        let out = validate_zv(&schema, obj(&[])).unwrap();
+        assert!(out.as_object().unwrap().get("sig").is_none());
+        // Wrong content still fails.
+        assert!(validate_zv(
+            &schema,
+            obj(&[("sig", obj(&[("format", ZerxValue::I64(1))]))])
+        )
+        .is_err());
+        assert!(validate_zv(&schema, obj(&[("sig", ZerxValue::I64(5))])).is_err());
+
+        // Required, omitted, no default → REQUIRED.
+        let required = from(serde_json::json!({
+            "type": "object",
+            "properties": {"sig": {"anyOf": [{"$ref": "#/$defs/S"}, {"type": "null"}]}},
+            "required": ["sig"],
+            "additionalProperties": false,
+            "$defs": s_defs()
+        }))
+        .unwrap();
+        assert_eq!(
+            validate_zv(&required, obj(&[])).unwrap_err().code,
+            ErrorCode::REQUIRED
+        );
+
+        // default:null on the property node materialises Null.
+        let defaulted = from(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "sig": {"anyOf": [{"$ref": "#/$defs/S"}, {"type": "null"}], "default": null}
+            },
+            "additionalProperties": false,
+            "$defs": s_defs()
+        }))
+        .unwrap();
+        let out = validate_zv(&defaulted, obj(&[])).unwrap();
+        assert_eq!(out.as_object().unwrap().get("sig"), Some(&ZerxValue::Null));
+
+        // The root nullable `$ref` accepts null and a valid S.
+        let root = from(serde_json::json!({
+            "anyOf": [{"$ref": "#/$defs/S"}, {"type": "null"}],
+            "$defs": s_defs()
+        }))
+        .unwrap();
+        assert_eq!(validate_zv(&root, ZerxValue::Null).unwrap(), ZerxValue::Null);
+        assert!(validate_zv(
+            &root,
+            obj(&[("format", ZerxValue::String("a".to_string()))])
+        )
+        .is_ok());
+
+        // A non-nullable `$ref` refuses null.
+        let plain_ref = from(serde_json::json!({
+            "$ref": "#/$defs/S",
+            "$defs": s_defs()
+        }))
+        .unwrap();
+        assert!(validate_zv(&plain_ref, ZerxValue::Null).is_err());
+
+        // A definition whose own type array admits null accepts null.
+        let nullable_def = from(serde_json::json!({
+            "$ref": "#/$defs/S2",
+            "$defs": {"S2": {"type": ["object", "null"], "properties": {}}}
+        }))
+        .unwrap();
+        assert_eq!(
+            validate_zv(&nullable_def, ZerxValue::Null).unwrap(),
+            ZerxValue::Null
+        );
+    }
+
+    // Export → import → validate keeps accepting null for a nullable lazy.
+    #[test]
+    fn import_nullable_lazy_roundtrip_accepts_null() {
+        let s: Schema = lazy(|| {
+            object([("format", string().into())]).into()
+        })
+        .nullable()
+        .into();
+        let exported = s.to_json_schema();
+        let reimported = from(exported).unwrap();
+        assert_eq!(
+            validate_zv(&reimported, ZerxValue::Null).unwrap(),
+            ZerxValue::Null
+        );
+        assert!(validate_zv(
+            &reimported,
+            obj(&[("format", ZerxValue::String("a".to_string()))])
+        )
+        .is_ok());
+    }
+
+    // `[T, "null"]` imports as T plus nullable, keeping sibling constraints.
+    #[test]
+    fn import_type_array_nullable() {
+        for schema_json in [
+            serde_json::json!({"type": ["string", "null"]}),
+            serde_json::json!({"type": ["null", "string"]}),
+        ] {
+            let schema = from(schema_json).unwrap();
+            assert!(validate_zv(&schema, ZerxValue::String("a".to_string())).is_ok());
+            assert_eq!(
+                validate_zv(&schema, ZerxValue::Null).unwrap(),
+                ZerxValue::Null
+            );
+            assert_eq!(
+                validate_zv(&schema, ZerxValue::I64(5)).unwrap_err().code,
+                ErrorCode::TYPE_MISMATCH
+            );
+        }
+
+        let integer = from(serde_json::json!({"type": ["integer", "null"]})).unwrap();
+        assert!(validate_zv(&integer, ZerxValue::I64(3)).is_ok());
+        assert_eq!(
+            validate_zv(&integer, ZerxValue::Null).unwrap(),
+            ZerxValue::Null
+        );
+        assert_eq!(
+            validate_zv(&integer, ZerxValue::String("x".to_string()))
+                .unwrap_err()
+                .code,
+            ErrorCode::TYPE_MISMATCH
+        );
+        assert!(validate_zv(&integer, ZerxValue::F64(1.5)).is_err());
+
+        // Sibling constraints survive.
+        let min_len = from(serde_json::json!({"type": ["string", "null"], "minLength": 2})).unwrap();
+        assert!(validate_zv(&min_len, ZerxValue::String("a".to_string())).is_err());
+        assert_eq!(
+            validate_zv(&min_len, ZerxValue::Null).unwrap(),
+            ZerxValue::Null
+        );
+
+        let array_items = from(serde_json::json!({
+            "type": ["array", "null"], "items": {"type": "string"}
+        }))
+        .unwrap();
+        assert!(validate_zv(
+            &array_items,
+            ZerxValue::Array(vec![ZerxValue::I64(1)])
+        )
+        .is_err());
+        assert_eq!(
+            validate_zv(&array_items, ZerxValue::Null).unwrap(),
+            ZerxValue::Null
+        );
+
+        let strict_obj = from(serde_json::json!({
+            "type": ["object", "null"],
+            "properties": {"a": {"type": "string"}},
+            "additionalProperties": false
+        }))
+        .unwrap();
+        assert!(validate_zv(&strict_obj, obj(&[("b", ZerxValue::I64(1))])).is_err());
+        assert_eq!(
+            validate_zv(&strict_obj, ZerxValue::Null).unwrap(),
+            ZerxValue::Null
+        );
+
+        let nullable_buffer =
+            from(serde_json::json!({"type": ["string", "null"], "format": "buffer"})).unwrap();
+        assert_eq!(
+            validate_zv(&nullable_buffer, ZerxValue::Null).unwrap(),
+            ZerxValue::Null
+        );
+        assert_eq!(
+            js(&nullable_buffer)["anyOf"][0]["format"],
+            serde_json::json!("buffer")
+        );
+
+        // Absent type still imports as any().
+        let any_schema = from(serde_json::json!({})).unwrap();
+        assert!(validate_zv(&any_schema, ZerxValue::I64(5)).is_ok());
+    }
+
+    // Unknown and malformed `type` forms are refused, with a node path.
+    #[test]
+    fn import_type_malformed_and_unsupported() {
+        assert_eq!(code_of(serde_json::json!({"type": "str"})), ErrorCode::IMPORT_MALFORMED);
+
+        let err = from(serde_json::json!({
+            "type": "object",
+            "properties": {"display_name": {"type": "strin"}}
+        }))
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::IMPORT_MALFORMED);
+        assert!(
+            err.path.iter().any(|p| p == "display_name"),
+            "path {:?}",
+            err.path
+        );
+
+        for bad in [
+            serde_json::json!({"type": 5}),
+            serde_json::json!({"type": null}),
+            serde_json::json!({"type": {}}),
+            serde_json::json!({"type": true}),
+            serde_json::json!({"type": []}),
+            serde_json::json!({"type": ["string", 5]}),
+            serde_json::json!({"type": ["string", "string"]}),
+            serde_json::json!({"type": ["str", "null"]}),
+        ] {
+            assert_eq!(
+                code_of(bad.clone()),
+                ErrorCode::IMPORT_MALFORMED,
+                "input {bad}"
+            );
+        }
+
+        for unsupported in [
+            serde_json::json!({"type": ["string"]}),
+            serde_json::json!({"type": ["null"]}),
+            serde_json::json!({"type": ["string", "number"]}),
+            serde_json::json!({"type": ["string", "number", "null"]}),
+        ] {
+            assert_eq!(
+                code_of(unsupported.clone()),
+                ErrorCode::IMPORT_UNSUPPORTED,
+                "input {unsupported}"
+            );
+        }
+    }
+
+    // `enum`/`const` members must lie inside the declared type.
+    #[test]
+    fn import_enum_const_type_membership() {
+        assert_eq!(
+            code_of(serde_json::json!({"type": "string", "enum": [5]})),
+            ErrorCode::IMPORT_UNSUPPORTED
+        );
+        assert_eq!(
+            code_of(serde_json::json!({"type": "string", "const": 5})),
+            ErrorCode::IMPORT_UNSUPPORTED
+        );
+        assert_eq!(
+            code_of(serde_json::json!({"type": "integer", "enum": [1, 2.5]})),
+            ErrorCode::IMPORT_UNSUPPORTED
+        );
+
+        let integral = from(serde_json::json!({"type": "integer", "enum": [1, 2.0]})).unwrap();
+        assert!(validate_zv(&integral, ZerxValue::I64(2)).is_ok());
+
+        let number_const = from(serde_json::json!({"type": "number", "const": 3})).unwrap();
+        assert!(validate_zv(&number_const, ZerxValue::I64(3)).is_ok());
+
+        for schema_json in [
+            serde_json::json!({"type": ["string", "null"], "enum": ["a"]}),
+            serde_json::json!({"type": ["string", "null"], "const": "a"}),
+        ] {
+            let schema = from(schema_json).unwrap();
+            assert!(validate_zv(&schema, ZerxValue::String("a".to_string())).is_ok());
+            assert!(validate_zv(&schema, ZerxValue::Null).is_err());
+        }
+
+        let with_null =
+            from(serde_json::json!({"type": ["string", "null"], "enum": ["a", null]})).unwrap();
+        assert_eq!(
+            validate_zv(&with_null, ZerxValue::Null).unwrap(),
+            ZerxValue::Null
+        );
+    }
+
+    // Validation keywords next to `enum`/`const` are refused, not dropped.
+    #[test]
+    fn import_enum_const_sibling_guard() {
+        for bad in [
+            serde_json::json!({"type": "string", "enum": ["a", "bb"], "minLength": 2}),
+            serde_json::json!({"enum": ["a"], "pattern": "^a$"}),
+            serde_json::json!({"type": ["string", "null"], "const": "a", "maxLength": 1}),
+            serde_json::json!({"type": "number", "enum": [1, 2], "minimum": 0}),
+            serde_json::json!({"type": "object", "const": {}, "required": ["x"]}),
+            serde_json::json!({"enum": ["a", "b"], "const": "a"}),
+            serde_json::json!({"type": "string", "enum": ["a", "b"], "const": "a"}),
+        ] {
+            assert_eq!(
+                code_of(bad.clone()),
+                ErrorCode::IMPORT_UNSUPPORTED,
+                "input {bad}"
+            );
+        }
+
+        // Annotations and format are not validation constraints.
+        assert!(from(serde_json::json!({
+            "type": "string", "enum": ["a"], "description": "d", "default": "a"
+        }))
+        .is_ok());
+        assert!(from(serde_json::json!({"type": "string", "enum": ["a"], "format": "email"})).is_ok());
+    }
+
+    // An imported `jsonschema` marker rejects non-objects.
+    #[test]
+    fn import_jsonschema_marker_rejects_non_objects() {
+        let schema = from(serde_json::json!({"type": "object", "format": "jsonschema"})).unwrap();
+        assert!(validate_zv(&schema, obj(&[])).is_ok());
+        assert!(validate_zv(&schema, obj(&[("a", ZerxValue::I64(1))])).is_ok());
+        assert_eq!(
+            validate_zv(&schema, ZerxValue::I64(5)).unwrap_err().code,
+            ErrorCode::REFINEMENT_FAILED
+        );
+        assert_eq!(
+            validate_zv(&schema, ZerxValue::String("x".to_string()))
+                .unwrap_err()
+                .code,
+            ErrorCode::REFINEMENT_FAILED
+        );
+
+        let nullable =
+            from(serde_json::json!({"type": ["object", "null"], "format": "jsonschema"})).unwrap();
+        assert_eq!(
+            validate_zv(&nullable, ZerxValue::Null).unwrap(),
+            ZerxValue::Null
+        );
+        assert_eq!(
+            validate_zv(&nullable, ZerxValue::I64(5)).unwrap_err().code,
+            ErrorCode::REFINEMENT_FAILED
+        );
+
+        // Programmatic jsonschema(): export → import → export is unchanged.
+        let original: Schema = jsonschema().into();
+        let exported = js(&original);
+        let reimported = from(exported.clone()).unwrap();
+        assert_eq!(js(&reimported), exported);
+        assert_eq!(
+            validate_zv(&reimported, ZerxValue::I64(5)).unwrap_err().code,
+            ErrorCode::REFINEMENT_FAILED
+        );
+    }
+
+    // `type` next to `$ref` and next to `format:"json"` is refused.
+    #[test]
+    fn import_type_with_ref_or_json_format_refused() {
+        assert_eq!(
+            code_of(serde_json::json!({
+                "$ref": "#/$defs/S", "type": "string", "$defs": {"S": {}}
+            })),
+            ErrorCode::IMPORT_UNSUPPORTED
+        );
+        assert_eq!(
+            code_of(serde_json::json!({"type": "string", "format": "json"})),
+            ErrorCode::IMPORT_UNSUPPORTED
+        );
+
+        let json_schema = from(serde_json::json!({"format": "json"})).unwrap();
+        assert!(validate_zv(&json_schema, ZerxValue::I64(5)).is_ok());
+    }
+
+    // A `type` sibling on `anyOf`/`oneOf` is honoured only when provably exact.
+    #[test]
+    fn import_union_type_sibling() {
+        assert_eq!(
+            code_of(serde_json::json!({
+                "type": "object", "oneOf": [{"type": "string"}, {"type": "number"}]
+            })),
+            ErrorCode::IMPORT_UNSUPPORTED
+        );
+
+        let objects = from(serde_json::json!({
+            "type": "object",
+            "oneOf": [
+                {"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false},
+                {"type":"object","properties":{"b":{"type":"number"}},"required":["b"],"additionalProperties":false}
+            ]
+        }))
+        .unwrap();
+        assert!(validate_zv(
+            &objects,
+            obj(&[("a", ZerxValue::String("x".to_string()))])
+        )
+        .is_ok());
+
+        assert!(from(serde_json::json!({
+            "type": "number",
+            "anyOf": [{"type": "integer"}, {"type": "number", "minimum": 5}]
+        }))
+        .is_ok());
+
+        assert_eq!(
+            code_of(serde_json::json!({
+                "type": "object",
+                "anyOf": [{"$ref": "#/$defs/S"}, {"type": "object", "properties": {}}],
+                "$defs": {"S": {}}
+            })),
+            ErrorCode::IMPORT_UNSUPPORTED
+        );
+        assert_eq!(
+            code_of(serde_json::json!({
+                "type": "object",
+                "anyOf": [{"type": "object", "properties": {}}, {"type": "null"}]
+            })),
+            ErrorCode::IMPORT_UNSUPPORTED
+        );
+
+        let nullable_union = from(serde_json::json!({
+            "type": ["object", "null"],
+            "anyOf": [{"type": "object", "properties": {}}, {"type": "null"}]
+        }))
+        .unwrap();
+        assert_eq!(
+            validate_zv(&nullable_union, ZerxValue::Null).unwrap(),
+            ZerxValue::Null
         );
     }
 }

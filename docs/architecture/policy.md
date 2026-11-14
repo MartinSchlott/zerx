@@ -76,7 +76,9 @@
 
 ### Built-in `sql` policy schema transforms (pre-parse, in order)
 
-- Nullable normalisation: a node with `type` as an array containing `"null"` plus exactly one other type MUST be rewritten to `anyOf:[{…node…, type:T}, {type:"null"}]` (dropping `oneOf`/`allOf` from the rewritten core). A node with `oneOf` of exactly two members where exactly one is `{"type":"null"}` MUST be rewritten to `anyOf:[<other>, {type:"null"}]`.
+- Nullable normalisation, type array: a node whose `type` is an array of exactly two strings, one `"null"` and one other name, and that carries none of `enum`, `const`, `anyOf`, `oneOf`, `allOf`, `not`, `$ref`, `$dynamicRef`, `if`, `then`, `else`, MUST be rewritten to `anyOf:[{…node…, type:T}, {type:"null"}]`, with `$defs` and `$schema` kept on the outer node and no keyword dropped. The split is exact only when no keyword constrains `null` itself.
+- A type-array node that does not meet that condition MUST be left unchanged, so the core import honours or refuses its `type`.
+- Nullable normalisation, `oneOf`: a node with `oneOf` of exactly two members where exactly one is `{"type":"null"}` MUST be rewritten to `anyOf:[<other>, {type:"null"}]` only when every other key is `$defs`, `$schema`, an annotation keyword or an `x-` key; those keys MUST move unchanged to the outer node. A node with any other sibling MUST be left unchanged.
 - Array `items` fallback: a `{"type":"array"}` node without `items` MUST have `"items": {}` added (imports as `array(any())`).
 - pg-type substitution: nodes carrying PostgreSQL type signals MUST be rewritten as follows, with the signal keyword removed:
   - `{"type":"string","format":"bytea"}` (case-insensitive) or `{"type":"string","x-pg-type":"bytea"}` → `{"type":"string","format":"buffer"}`.

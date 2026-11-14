@@ -227,6 +227,30 @@ impl IntoObject for Value {
 // Built-in sql schema transforms
 // ---------------------------------------------------------------------------
 
+// Keywords that can constrain `null` itself. `[T, "null"]` → `(T and K) or null`
+// is exact only when none of these appears in the node.
+const NULL_CONSTRAINING: &[&str] = &[
+    "enum", "const", "anyOf", "oneOf", "allOf", "not",
+    "$ref", "$dynamicRef", "if", "then", "else",
+];
+
+// Siblings the `oneOf` rewrite may move onto the outer node: the definitions
+// container, the dialect, annotations, and vendor extensions.
+fn is_movable_sibling(key: &str) -> bool {
+    matches!(
+        key,
+        "$defs"
+            | "$schema"
+            | "description"
+            | "title"
+            | "default"
+            | "examples"
+            | "deprecated"
+            | "readOnly"
+            | "writeOnly"
+    ) || key.starts_with("x-")
+}
+
 fn sql_nullable_normalise(value: &Value) -> Result<Value, ZerxError> {
     deep_map_schema(value, &|node: &Value| {
         let obj = match node.as_object() {
@@ -234,22 +258,42 @@ fn sql_nullable_normalise(value: &Value) -> Result<Value, ZerxError> {
             None => return Ok(node.clone()),
         };
 
-        // type: ["T", "null"] (exactly one non-null type) → anyOf
+        // type: ["T", "null"] (exactly two strings, one null) → anyOf, but only
+        // when the rewrite is exact: no keyword in the node constrains null.
         if let Some(Value::Array(types)) = obj.get("type") {
-            let type_strs: Vec<&str> = types.iter().filter_map(|v| v.as_str()).collect();
-            let non_null: Vec<&str> = type_strs.iter().copied().filter(|&t| t != "null").collect();
-            if type_strs.contains(&"null") && non_null.len() == 1 {
-                let mut base = obj.clone();
-                base.insert("type".to_owned(), Value::String(non_null[0].to_owned()));
-                base.remove("oneOf");
-                base.remove("allOf");
-                return Ok(serde_json::json!({
-                    "anyOf": [Value::Object(base), {"type": "null"}]
-                }));
+            if types.len() == 2 {
+                let strs: Option<Vec<&str>> = types.iter().map(|v| v.as_str()).collect();
+                if let Some(strs) = strs {
+                    let null_count = strs.iter().filter(|&&t| t == "null").count();
+                    if null_count == 1
+                        && !NULL_CONSTRAINING.iter().any(|k| obj.contains_key(*k))
+                    {
+                        let other = *strs.iter().find(|&&t| t != "null").unwrap();
+                        let mut core = obj.clone();
+                        core.insert("type".to_owned(), Value::String(other.to_owned()));
+                        let mut outer = serde_json::Map::new();
+                        if let Some(defs) = core.remove("$defs") {
+                            outer.insert("$defs".to_owned(), defs);
+                        }
+                        if let Some(schema) = core.remove("$schema") {
+                            outer.insert("$schema".to_owned(), schema);
+                        }
+                        outer.insert(
+                            "anyOf".to_owned(),
+                            Value::Array(vec![
+                                Value::Object(core),
+                                serde_json::json!({"type": "null"}),
+                            ]),
+                        );
+                        return Ok(Value::Object(outer));
+                    }
+                }
             }
         }
 
-        // oneOf([X, {"type":"null"}]) (exactly 2 members, exactly one null) → anyOf
+        // oneOf([X, {"type":"null"}]) (exactly 2 members, exactly one null) → anyOf.
+        // Only when every other key is movable: the rewrite keeps those keys on
+        // the outer node and drops nothing.
         if let Some(Value::Array(one_of)) = obj.get("oneOf") {
             if one_of.len() == 2 {
                 let null_idx = one_of.iter().position(|v| {
@@ -260,10 +304,23 @@ fn sql_nullable_normalise(value: &Value) -> Result<Value, ZerxError> {
                         && v.as_object().map(|o| o.len() == 1).unwrap_or(false)
                 });
                 if let Some(null_i) = null_idx {
-                    let other = one_of[1 - null_i].clone();
-                    return Ok(serde_json::json!({
-                        "anyOf": [other, {"type": "null"}]
-                    }));
+                    let only_movable = obj
+                        .keys()
+                        .all(|k| k == "oneOf" || is_movable_sibling(k));
+                    if only_movable {
+                        let other = one_of[1 - null_i].clone();
+                        let mut outer = serde_json::Map::new();
+                        for (k, v) in obj {
+                            if k != "oneOf" {
+                                outer.insert(k.clone(), v.clone());
+                            }
+                        }
+                        outer.insert(
+                            "anyOf".to_owned(),
+                            Value::Array(vec![other, serde_json::json!({"type": "null"})]),
+                        );
+                        return Ok(Value::Object(outer));
+                    }
                 }
             }
         }
@@ -982,6 +1039,159 @@ mod tests {
         let obj = ok.as_object().unwrap();
         assert!(obj.get("amount").is_some());
         assert!(obj.get("stale").is_none());
+    }
+
+    // 17. Exact sql nullable normalisation — type array split.
+
+    #[test]
+    fn test_sql_nullable_array_accepts_base_and_null() {
+        let s = import_sql(json!({"type": ["string", "null"]})).unwrap();
+        assert!(s.validate(&json!("a")).is_ok());
+        assert!(s.validate(&json!(null)).is_ok());
+        assert!(s.validate(&json!(5)).is_err());
+
+        let i = import_sql(json!({"type": ["integer", "null"]})).unwrap();
+        assert!(i.validate(&json!(3)).is_ok());
+        assert!(i.validate(&json!(null)).is_ok());
+        assert!(i.validate(&json!("x")).is_err());
+    }
+
+    #[test]
+    fn test_sql_nullable_bytea_becomes_nullable_buffer() {
+        let s = import_sql(json!({"type": ["string", "null"], "format": "bytea"})).unwrap();
+        assert!(s.validate(&json!(null)).is_ok());
+        assert_eq!(re_export(&s)["anyOf"][0]["format"], json!("buffer"));
+    }
+
+    #[test]
+    fn test_sql_nullable_array_items_fallback() {
+        let s = import_sql(json!({"type": ["array", "null"]})).unwrap();
+        assert!(s.validate(&json!(null)).is_ok());
+        assert!(s.validate(&json!([])).is_ok());
+    }
+
+    #[test]
+    fn test_sql_nullable_enum_rejects_null_unless_member() {
+        let s = import_sql(json!({"type": ["string", "null"], "enum": ["a"]})).unwrap();
+        assert!(s.validate(&json!("a")).is_ok());
+        assert!(s.validate(&json!(null)).is_err());
+
+        let with_null =
+            import_sql(json!({"type": ["string", "null"], "enum": ["a", null]})).unwrap();
+        assert!(with_null.validate(&json!(null)).is_ok());
+    }
+
+    #[test]
+    fn test_sql_nullable_all_of_not_silently_dropped() {
+        assert_eq!(
+            import_sql(json!({"type": ["object", "null"], "allOf": [{"type": "object"}]}))
+                .unwrap_err()
+                .code,
+            ErrorCode::IMPORT_UNSUPPORTED
+        );
+    }
+
+    #[test]
+    fn test_sql_malformed_nullable_type_array() {
+        assert_eq!(
+            import_sql(json!({"type": ["string", 5, "null"]}))
+                .unwrap_err()
+                .code,
+            ErrorCode::IMPORT_MALFORMED
+        );
+    }
+
+    #[test]
+    fn test_sql_nullable_keeps_defs_reachable() {
+        let s = import_sql(json!({
+            "type": ["object", "null"],
+            "properties": {"a": {"$ref": "#/$defs/A"}},
+            "additionalProperties": false,
+            "$defs": {"A": {"type": "string"}}
+        }))
+        .unwrap();
+        assert!(s.validate(&json!(null)).is_ok());
+        assert!(s.validate(&json!({"a": "x"})).is_ok());
+        assert!(s.validate(&json!({"a": 1})).is_err());
+    }
+
+    // Exact sql nullable normalisation — oneOf branch.
+
+    #[test]
+    fn test_sql_nullable_one_of_with_type_sibling_refused() {
+        assert_eq!(
+            import_sql(json!({
+                "type": ["string", "null"],
+                "oneOf": [{"type": "number"}, {"type": "null"}]
+            }))
+            .unwrap_err()
+            .code,
+            ErrorCode::IMPORT_UNSUPPORTED
+        );
+        assert_eq!(
+            import_sql(json!({
+                "type": "string",
+                "oneOf": [{"type": "number"}, {"type": "null"}]
+            }))
+            .unwrap_err()
+            .code,
+            ErrorCode::IMPORT_UNSUPPORTED
+        );
+    }
+
+    #[test]
+    fn test_sql_nullable_one_of_within_outer_type_imports() {
+        let s = import_sql(json!({
+            "type": ["string", "null"],
+            "oneOf": [{"type": "string"}, {"type": "null"}]
+        }))
+        .unwrap();
+        assert!(s.validate(&json!("a")).is_ok());
+        assert!(s.validate(&json!(null)).is_ok());
+        assert!(s.validate(&json!(5)).is_err());
+    }
+
+    #[test]
+    fn test_sql_nullable_one_of_keeps_annotations_and_default() {
+        let s = import_sql(json!({
+            "oneOf": [{"type": "number"}, {"type": "null"}],
+            "description": "d",
+            "default": null
+        }))
+        .unwrap();
+        let exported = re_export(&s);
+        let branch = &exported["anyOf"][0];
+        assert_eq!(branch["description"], json!("d"));
+        assert_eq!(branch["default"], json!(null));
+
+        let obj_schema = import_sql(json!({
+            "type": "object",
+            "properties": {
+                "n": {
+                    "oneOf": [{"type": "number"}, {"type": "null"}],
+                    "description": "d",
+                    "default": null
+                }
+            },
+            "additionalProperties": false
+        }))
+        .unwrap();
+        let out = obj_schema.validate(&json!({})).unwrap();
+        assert_eq!(
+            out.as_object().unwrap().get("n"),
+            Some(&crate::ZerxValue::Null)
+        );
+    }
+
+    #[test]
+    fn test_sql_nullable_one_of_keeps_defs_reachable() {
+        let s = import_sql(json!({
+            "oneOf": [{"type": "number"}, {"type": "null"}],
+            "$defs": {"A": {"type": "string"}}
+        }))
+        .unwrap();
+        assert!(s.validate(&json!(null)).is_ok());
+        assert_eq!(re_export(&s)["anyOf"][0]["type"], json!("number"));
     }
 
     // The driving use case, end to end, as a permanent test: a root-level and a

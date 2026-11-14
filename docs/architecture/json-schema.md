@@ -108,8 +108,19 @@
 
 ### Import pipeline order
 
-- The import walk (`import_value`) MUST follow this fixed dispatch order: (1) boolean schema, (2) non-object guard, (3) `$ref`, (4) `allOf`/`not` error, (5) nullable `anyOf` collapse, (6) `oneOf`/`anyOf` union or discriminated union, (7) `enum`, (8) `const`, (9) format-marker kinds, (10) `type` dispatch, (11) object reconstruction, (12) annotation/modifier reconstruction, (13) remaining keyword classification.
+- The import walk (`import_value`) MUST follow this fixed dispatch order: (1) boolean schema, (2) non-object guard, (2.5) `type` parsing, (3) `$ref`, (4) `allOf`/`not` error, (5) nullable `anyOf` collapse, (6) `oneOf`/`anyOf` union or discriminated union, (7) `enum`, (8) `const`, (9) format-marker kinds, (10) `type` dispatch, (11) object reconstruction, (12) annotation/modifier reconstruction, (13) remaining keyword classification.
 - A node with `$ref` MUST skip steps 4–11 and proceed directly to step 12.
+- `type` parsing MUST run on every object node, `$ref` nodes included, so a malformed `type` is never skipped.
+
+### `type` import
+
+- An absent `type` MUST impose no type restriction; a node with no other base-producing keyword imports as `any()`.
+- A single string naming one of the seven Draft 2020-12 types MUST import as that type; `integer` imports as `number().int()`.
+- An array of exactly two distinct type names, one of them `"null"`, in either order, MUST import as the non-null type with `.nullable()` applied, keeping that type's sibling constraints.
+- `.nullable()` from a type array MUST be applied only to a base built by format-marker or `type` dispatch; a base from `$ref`, `anyOf`/`oneOf` or `enum`/`const` MUST NOT receive it, so `null` passes there only where the members admit it.
+- An unknown type name, an empty array, an array holding a non-string, an unknown name or a duplicate, and any `type` that is neither a string nor an array MUST raise `IMPORT_MALFORMED`.
+- Every other well-formed type array (one element, two non-null names, three or more names) MUST raise `IMPORT_UNSUPPORTED`; only a single type name or `[T, "null"]` is accepted, even where zerx could represent the form.
+- `integer` MUST be treated as a subset of `number` wherever type sets are compared.
 
 ### Import keyword→modifier mapping (inverse of export)
 
@@ -134,6 +145,7 @@
 ### Nullable collapse
 
 - An `anyOf` of exactly two members where exactly one is a bare null schema (`{"type":"null"}` with no other structural keyword) MUST import as the other member with `.nullable()` applied.
+- A `type` sibling of a nullable collapse MUST be honoured by the `anyOf`/`oneOf` `type` rule below; the bare null member counts as a member of type `null`.
 - Any other `anyOf` MUST import as `union(variants)`.
 
 ### `oneOf` / `anyOf` / discriminator import
@@ -141,6 +153,7 @@
 - `oneOf` with a `discriminator.propertyName` where all variants reconstruct to valid discriminated-union objects (per the full `build_discriminator_state` invariant) MUST import as `discriminated_union(key, variants)`.
 - If the discriminator invariant fails for any reason, `oneOf` MUST fall back to `union(variants)` with `meta("x-oneOf", true)` so the original `oneOf` intent survives re-export.
 - `anyOf` (after nullable-collapse check) MUST import as `union(variants)`; a `discriminator` alongside `anyOf` is honoured the same way as on `oneOf`.
+- A `type` sibling of `anyOf`/`oneOf` MUST be honoured only when every member is an object declaring its own `type` within the outer type set; otherwise the node MUST raise `IMPORT_UNSUPPORTED`. Under that condition the union equals the intersection, so no extra `.nullable()` is applied.
 
 ### `allOf` / `not` import
 
@@ -149,12 +162,13 @@
 
 ### Format-marker kind mapping
 
-- `format:"json"` → `json()` (regardless of `type`).
+- `format:"json"` without `type` → `json()`; `format:"json"` with any `type` MUST raise `IMPORT_UNSUPPORTED`, because `json()` accepts every value.
 - `type:"object"` + `format:"record"` → `record(import(additionalProperties))` where `true`/absent maps to `any()` and `false` raises `IMPORT_MALFORMED`.
-- `type:"object"` + `format:"jsonschema"` → `jsonschema()`.
+- `type:"object"` + `format:"jsonschema"` → `jsonschema()` with an import-side refinement accepting only objects; the refinement is not exported.
 - `type:"string"` + `format:"buffer"` → `buffer()` (`contentMediaType` applied as `.mime_format()` in step 12).
 - `type:"string"` + `format:"uri"` → `uri()`.
 - `type:"string"` + `format:"url"` → `url()`.
+- The markers MUST match on the non-null type name of a `[T, "null"]` type array, with `.nullable()` applied to the marker kind.
 
 ### `enum` / `const` import
 
@@ -162,6 +176,10 @@
 - `enum` containing any non-string → `union([literal(v), …])`.
 - `const` → `literal(ZerxValue::from_serialize(value))`.
 - `enum`/`const` MUST be dispatched before `type` so `{"type":"string","enum":[…]}` reconstructs the enum.
+- With a `type` present, every `enum` member and the `const` value MUST be an instance of the declared type set; otherwise the node MUST raise `IMPORT_UNSUPPORTED`. A member is never filtered out silently.
+- A `[T, "null"]` type array MUST NOT add `null` to an `enum`/`const`; `null` passes only if it is a member.
+- An `enum`/`const` node carrying any of `minLength`, `maxLength`, `pattern`, `minimum`, `maximum`, `minItems`, `maxItems`, `items`, `prefixItems`, `properties`, `required` or `additionalProperties` MUST raise `IMPORT_UNSUPPORTED`, with or without `type`; the enum/literal reconstruction would drop the constraint.
+- A node carrying both `enum` and `const` MUST raise `IMPORT_UNSUPPORTED`; the enum reconstruction would drop the `const`.
 
 ### Boolean schema import
 
@@ -171,6 +189,7 @@
 ### `$ref` import with memoised lazy
 
 - A `$ref` value MUST start with `#/$defs/`; any other form MUST raise `IMPORT_MALFORMED`.
+- A `type` sibling of `$ref` MUST raise `IMPORT_UNSUPPORTED`; the `$ref` path skips `type` dispatch.
 - All `$ref`s to the same `$defs` id MUST share one `lazy` instance (clones share one resolution cell), so re-export emits a single `$defs` entry per id.
 - Structural errors in a referenced `$defs` entry MUST be surfaced eagerly (via `ensure_resolved`) before `from_json_schema` returns; the thunk MUST only clone an already-resolved schema and MUST NOT fail.
 - A self- or mutual-reference detected by the cycle guard (`importing` id-set) MUST return the existing placeholder and NOT recurse.
@@ -178,13 +197,18 @@
 ### Import fallibility and error codes
 
 - `from_json_schema` MUST return `Result<Schema, ZerxError>` (C7); every error MUST carry the failing node's `path`.
-- `IMPORT_UNSUPPORTED` — well-formed JSON Schema feature outside zerx's model (`allOf`, `not`, `false` schema, unsupported applicators, other).
-- `IMPORT_MALFORMED` — structurally invalid input (non-object/bool node, array missing `items`, record with `additionalProperties:false`, `$ref` to missing or non-local target).
+- `IMPORT_UNSUPPORTED` — well-formed JSON Schema feature outside zerx's model (`allOf`, `not`, `false` schema, unsupported applicators, non-canonical `type` arrays, `type` not honourable at its site, other).
+- `IMPORT_MALFORMED` — structurally invalid input (non-object/bool node, array missing `items`, record with `additionalProperties:false`, `$ref` to missing or non-local target, `type` outside the Draft 2020-12 grammar).
 - Unsupported applicators that are NOT `allOf`/`not` (`if`, `then`, `else`, `contains`, `minContains`, `maxContains`, `patternProperties`, `propertyNames`, `dependentSchemas`, `dependentRequired`, `unevaluatedProperties`, `unevaluatedItems`, `$dynamicRef`) MUST raise `IMPORT_UNSUPPORTED` rather than being silently routed to `meta`.
 
 ### Accepted import limitation — `x-ui-multiline`
 
 - `x-ui-multiline` is imported as a `meta` entry, NOT as a reconstructed `multiline` validator. The JSON document roundtrips exactly; only the runtime validator is not rebuilt. This is deliberate: external schemas without markers import best-effort.
+
+## Splitting Rationale
+
+- Export and import stay one concern: they are inverse mappings of the single JSON Schema boundary, and each import rule is checked against the export rule it inverts.
+- The import constraints are the first extraction candidate; they move to their own concern once they can no longer be held as one rule per bullet within this file's ceiling.
 
 ## Related Decisions
 

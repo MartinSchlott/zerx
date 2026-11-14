@@ -337,16 +337,17 @@ impl Schema {
         value: &ZerxValue,
         ctx: &mut ParseContext,
     ) -> Result<ZerxValue, ZerxError> {
-        // Lazy: resolve and delegate; outer lazy's refine still runs on the result
+        // nullable: explicit null accepted without type check, validators or refine.
+        // This precedes lazy resolution so the outer lazy's own nullable is honoured.
+        if value.is_null() && self.modifiers.nullable {
+            return Ok(ZerxValue::Null);
+        }
+
+        // Lazy: resolve and delegate; the outer lazy's refine runs on the non-null result
         if let SchemaKind::Lazy(lzy) = &self.kind {
             let inner = lzy.resolve()?;
             let output = inner.parse_present(value, ctx)?;
             return self.run_refine(output);
-        }
-
-        // nullable: explicit null accepted without type check or validators
-        if value.is_null() && self.modifiers.nullable {
-            return Ok(ZerxValue::Null);
         }
 
         // type check → validators → type-specific logic → refine
@@ -782,5 +783,82 @@ mod tests {
         } else {
             panic!("expected Lazy kind");
         }
+    }
+
+    // 11. A lazy's own nullable is honoured before resolution and delegation
+    #[test]
+    fn lazy_nullable_honours_outer_nullable() {
+        let nullable: Schema =
+            lazy(|| crate::object([("a", crate::string().into())]).into())
+                .nullable()
+                .into();
+        assert_eq!(nullable.validate(&ZerxValue::Null).unwrap(), ZerxValue::Null);
+        // A non-null value still goes through the inner schema.
+        assert!(nullable.validate(&serde_json::json!({"a": 1})).is_err());
+        assert!(nullable.validate(&serde_json::json!({"a": "x"})).is_ok());
+
+        let plain: Schema = lazy(|| crate::object([("a", crate::string().into())]).into()).into();
+        assert_eq!(
+            plain.validate(&ZerxValue::Null).unwrap_err().code,
+            ErrorCode::TYPE_MISMATCH
+        );
+    }
+
+    // 12. Refine parity on a nullable lazy: null short-circuits before refinement
+    #[test]
+    fn lazy_nullable_refine_parity() {
+        let nullable_string: Schema = crate::string()
+            .nullable()
+            .refine(|_| false, "never")
+            .into();
+        let nullable_lazy: Schema = lazy(|| any().into())
+            .nullable()
+            .refine(|_| false, "never")
+            .into();
+
+        assert_eq!(
+            nullable_string.validate(&ZerxValue::Null).unwrap(),
+            ZerxValue::Null
+        );
+        assert_eq!(
+            nullable_lazy.validate(&ZerxValue::Null).unwrap(),
+            ZerxValue::Null
+        );
+
+        assert_eq!(
+            nullable_string.validate("x").unwrap_err().code,
+            ErrorCode::REFINEMENT_FAILED
+        );
+        assert_eq!(
+            nullable_lazy.validate("x").unwrap_err().code,
+            ErrorCode::REFINEMENT_FAILED
+        );
+    }
+
+    // 13. A nullable lazy default of null materialises as Null when omitted
+    #[test]
+    fn lazy_nullable_default_null() {
+        let field: Schema = lazy(|| any().into())
+            .nullable()
+            .default(ZerxValue::Null)
+            .into();
+        let s: Schema = crate::object([("sig", field)]).into();
+        let out = s.validate(&serde_json::json!({})).unwrap();
+        assert_eq!(out.as_object().unwrap().get("sig"), Some(&ZerxValue::Null));
+
+        // A non-null default still parses through the inner schema.
+        let mut ctx = ParseContext::new();
+        let non_null: Schema = lazy(|| crate::string().into()).default("x").into();
+        assert_eq!(
+            non_null.parse_field(None, &mut ctx).unwrap(),
+            Some(ZerxValue::String("x".to_string()))
+        );
+    }
+
+    // 14. A non-nullable lazy over a nullable inner accepts null via the inner node
+    #[test]
+    fn lazy_over_nullable_inner_accepts_null() {
+        let s: Schema = lazy(|| crate::string().nullable().into()).into();
+        assert_eq!(s.validate(&ZerxValue::Null).unwrap(), ZerxValue::Null);
     }
 }

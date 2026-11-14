@@ -798,6 +798,20 @@ mod tests {
         assert_eq!(err.code, ErrorCode::TYPE_MISMATCH);
     }
 
+    #[test]
+    fn nil_under_nullable_lazy() {
+        let schema: Schema = lazy(|| object([("a", string().into())]).into())
+            .nullable()
+            .into();
+        assert_eq!(schema.validate_lua(&LuaValue::Nil).unwrap(), ZerxValue::Null);
+
+        let plain: Schema = lazy(|| object([("a", string().into())]).into()).into();
+        assert_eq!(
+            plain.validate_lua(&LuaValue::Nil).unwrap_err().code,
+            ErrorCode::TYPE_MISMATCH
+        );
+    }
+
     // --- nested: object containing buffer and string fields ---
 
     #[test]

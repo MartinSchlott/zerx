@@ -51,6 +51,7 @@ None.
 - The `Validator` trait and the validator storage field on `Schema` are owned by this concern; this concern provides the storage contract only. All concrete `Validator` implementations are owned by `types`.
 - `Schema::validate` MUST accept any serialisable value, convert it via `ZerxValue::from_serialize`, and then run the parse flow on the resulting `ZerxValue`.
 - The parse flow for a **present** value MUST proceed in this fixed order: depth guard → `nullable` null short-circuit → type check (`check_type`) → validators in storage order → type-specific logic (`parse_inner`) → refinement predicates.
+- For a `lazy` schema the outer lazy's own `nullable` null short-circuit MUST run before resolution; the resolved inner schema then MUST run its own full present-value parse flow, followed by the outer lazy's refinement predicates. A `lazy` carries its own modifiers like every other schema; delegating before the short-circuit would discard the outer `nullable`.
 - The parse flow for a **missing** value MUST proceed in this fixed order: if `default` is set, parse the default and return it; else if `optional` is set, omit the field from output; else return `Err(REQUIRED)`.
 - A missing optional field MUST be omitted from output; it MUST NOT be emitted as `Null`.
 - An explicit `Null` value MUST NOT trigger `default`; `default` applies only when the value is absent.
