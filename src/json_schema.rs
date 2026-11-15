@@ -1064,6 +1064,33 @@ impl ImportContext {
     }
 }
 
+// Decodes the single JSON Pointer segment after `#/$defs/` (RFC 6901). A
+// further `/` would point into a def rather than name one, and a `%` would need
+// URI-fragment decoding; both are refused rather than looked up as a literal
+// name, which could bind the ref to a different def.
+fn decode_defs_ref(raw: &str, path: &[String]) -> Result<String, ZerxError> {
+    if raw.contains('/') || raw.contains('%') {
+        return Err(ZerxError::new(
+            ErrorCode::IMPORT_UNSUPPORTED,
+            format!(
+                "`$ref` `#/$defs/{raw}` must name a single `$defs` entry without percent-encoding"
+            ),
+        )
+        .at(path.to_vec()));
+    }
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c == '~' && !matches!(chars.next(), Some('0') | Some('1')) {
+            return Err(ZerxError::new(
+                ErrorCode::IMPORT_MALFORMED,
+                format!("`$ref` `#/$defs/{raw}` has an invalid JSON Pointer `~` escape"),
+            )
+            .at(path.to_vec()));
+        }
+    }
+    Ok(raw.replace("~1", "/").replace("~0", "~"))
+}
+
 // ---------------------------------------------------------------------------
 // is_bare_null_schema — helper for nullable collapse
 // ---------------------------------------------------------------------------
@@ -1416,8 +1443,8 @@ pub(crate) fn import_value(
             )
             .at(path.to_vec()));
         }
-        let id = &ref_str["#/$defs/".len()..];
-        base = Some(ctx.ref_schema(id, path)?);
+        let id = decode_defs_ref(&ref_str["#/$defs/".len()..], path)?;
+        base = Some(ctx.ref_schema(&id, path)?);
         consumed.insert("$ref".to_string());
     }
 
@@ -4570,5 +4597,38 @@ mod tests {
         assert!(validate_zv(&s, ZerxValue::Null).is_ok());
         assert!(validate_zv(&s, ZerxValue::String("a".into())).is_ok());
         assert!(validate_zv(&s, ZerxValue::I64(1)).is_err());
+    }
+
+    #[test]
+    fn import_ref_decodes_json_pointer_escapes() {
+        // `#/$defs/a~1b` names the def `a/b` (RFC 6901), not `a~1b`.
+        let doc = serde_json::json!({
+            "$defs": {"a/b": {"type": "string"}, "a~1b": {"type": "number"}},
+            "$ref": "#/$defs/a~1b"
+        });
+        let s = from(doc).unwrap();
+        assert!(validate_zv(&s, ZerxValue::I64(5)).is_err());
+        assert!(validate_zv(&s, ZerxValue::String("x".into())).is_ok());
+
+        let tilde =
+            serde_json::json!({"$defs": {"m~n": {"type": "string"}}, "$ref": "#/$defs/m~0n"});
+        let s = from(tilde).unwrap();
+        assert!(validate_zv(&s, ZerxValue::I64(5)).is_err());
+
+        // A pointer deeper than one `$defs` entry is not followed by name lookup.
+        let deep = serde_json::json!({
+            "$defs": {
+                "A": {"type": "object", "properties": {"x": {"type": "string"}}},
+                "A/properties/x": {}
+            },
+            "$ref": "#/$defs/A/properties/x"
+        });
+        assert_eq!(from(deep).unwrap_err().code, ErrorCode::IMPORT_UNSUPPORTED);
+
+        // Malformed escapes and percent-encoded fragments are refused.
+        for r in ["#/$defs/a~2", "#/$defs/a~", "#/$defs/a%20b"] {
+            let doc = serde_json::json!({"$defs": {"a~2": {}, "a~": {}, "a%20b": {}}, "$ref": r});
+            assert!(from(doc).is_err(), "{r}");
+        }
     }
 }
