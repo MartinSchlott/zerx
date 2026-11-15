@@ -80,7 +80,7 @@ impl Schema {
             SchemaKind::String | SchemaKind::Enum(_) | SchemaKind::Uri | SchemaKind::Url => {
                 match lua {
                     LuaValue::Bytes(b) => Ok(bytes_to_string_or_bytes(b)),
-                    LuaValue::Table(_) => free_convert(lua),
+                    LuaValue::Table(_) => free_convert(lua, ctx),
                     _ => Ok(base_convert(lua)),
                 }
             }
@@ -90,12 +90,12 @@ impl Schema {
                 if matches!(c, ZerxValue::String(_)) {
                     match lua {
                         LuaValue::Bytes(b) => Ok(bytes_to_string_or_bytes(b)),
-                        LuaValue::Table(_) => free_convert(lua),
+                        LuaValue::Table(_) => free_convert(lua, ctx),
                         _ => Ok(base_convert(lua)),
                     }
                 } else {
                     match lua {
-                        LuaValue::Table(_) => free_convert(lua),
+                        LuaValue::Table(_) => free_convert(lua, ctx),
                         _ => Ok(base_convert(lua)),
                     }
                 }
@@ -104,16 +104,16 @@ impl Schema {
             // Buffer: keep Bytes raw (no decode). Table → free-convert.
             SchemaKind::Buffer => match lua {
                 LuaValue::Bytes(b) => Ok(ZerxValue::Bytes(b.clone())),
-                LuaValue::Table(_) => free_convert(lua),
+                LuaValue::Table(_) => free_convert(lua, ctx),
                 _ => Ok(base_convert(lua)),
             },
 
             // Free-convert kinds: any Lua value goes through free_convert.
-            SchemaKind::Any | SchemaKind::Json | SchemaKind::JsonSchema => free_convert(lua),
+            SchemaKind::Any | SchemaKind::Json | SchemaKind::JsonSchema => free_convert(lua, ctx),
 
             // Scalar kinds: non-Table → base-convert; Table → free-convert (TYPE_MISMATCH from parse).
             SchemaKind::Number | SchemaKind::Boolean | SchemaKind::Null => match lua {
-                LuaValue::Table(_) => free_convert(lua),
+                LuaValue::Table(_) => free_convert(lua, ctx),
                 _ => Ok(base_convert(lua)),
             },
 
@@ -284,7 +284,7 @@ impl Schema {
                                     continue;
                                 }
                                 if !body.shape.iter().any(|(sk, _)| sk == key) {
-                                    match free_convert(lua_val) {
+                                    match free_convert(lua_val, ctx) {
                                         Ok(v) => output.insert(key.clone(), v),
                                         Err(e) => return Err(prepend(e, key.clone())),
                                     }
@@ -467,7 +467,20 @@ fn base_convert(lua: &LuaValue) -> ZerxValue {
 // Step 13: free_convert — schema-independent recursive mapping
 // ---------------------------------------------------------------------------
 
-fn free_convert(lua: &LuaValue) -> Result<ZerxValue, ZerxError> {
+// Every table level counts against the same depth limit as the schema-directed
+// pass: under `any`/`json` or an unknown passthrough key no schema bounds the
+// recursion, and an unbounded table tree would overflow the stack.
+fn free_convert(lua: &LuaValue, ctx: &mut ParseContext) -> Result<ZerxValue, ZerxError> {
+    if let LuaValue::Table(_) = lua {
+        ctx.enter()?;
+        let result = free_convert_inner(lua, ctx);
+        ctx.exit();
+        return result;
+    }
+    free_convert_inner(lua, ctx)
+}
+
+fn free_convert_inner(lua: &LuaValue, ctx: &mut ParseContext) -> Result<ZerxValue, ZerxError> {
     match lua {
         LuaValue::Nil => Ok(ZerxValue::Null),
         LuaValue::Boolean(b) => Ok(ZerxValue::Bool(*b)),
@@ -489,7 +502,7 @@ fn free_convert(lua: &LuaValue) -> Result<ZerxValue, ZerxError> {
                 let mut output = Map::new();
                 for (idx, (k, v)) in t.hash.iter().enumerate() {
                     let key = decode_key(k).map_err(|e| prepend(e, idx.to_string()))?;
-                    match free_convert(v) {
+                    match free_convert(v, ctx) {
                         Ok(val) => output.insert(key.clone(), val),
                         Err(e) => return Err(prepend(e, key)),
                     }
@@ -499,7 +512,7 @@ fn free_convert(lua: &LuaValue) -> Result<ZerxValue, ZerxError> {
                 // Array-only or empty → Array (empty table bias: empty → empty Array).
                 let mut out = Vec::with_capacity(t.array.len());
                 for (idx, elem) in t.array.iter().enumerate() {
-                    match free_convert(elem) {
+                    match free_convert(elem, ctx) {
                         Ok(v) => out.push(v),
                         Err(e) => return Err(prepend(e, idx.to_string())),
                     }
@@ -534,8 +547,8 @@ fn prepend(mut e: ZerxError, segment: impl Into<String>) -> ZerxError {
 mod tests {
     use super::*;
     use crate::{
-        array, boolean, buffer, discriminated_union, json, lazy, literal, null, number, object,
-        record, string, tuple, union, Modify, Schema, MAX_PARSE_DEPTH,
+        any, array, boolean, buffer, discriminated_union, json, lazy, literal, null, number,
+        object, record, string, tuple, union, Modify, Schema, MAX_PARSE_DEPTH,
     };
 
     fn bytes(b: &[u8]) -> LuaValue {
@@ -1334,5 +1347,34 @@ mod tests {
         expected.insert("x".to_string(), ZerxValue::I64(5));
         expected.insert("extra".to_string(), ZerxValue::I64(99));
         assert_eq!(result, ZerxValue::Object(expected));
+    }
+
+    #[test]
+    fn free_convert_is_depth_guarded() {
+        // No schema bounds the recursion under any/json or at an unknown
+        // passthrough key; the table tree itself must hit the depth limit.
+        fn nest(depth: usize) -> LuaValue {
+            let mut v = LuaValue::Integer(1);
+            for _ in 0..depth {
+                v = table(vec![v], vec![]);
+            }
+            v
+        }
+        let deep = nest(MAX_PARSE_DEPTH + 50);
+        for schema in [Schema::from(any()), Schema::from(json())] {
+            let err = schema.validate_lua(&deep).unwrap_err();
+            assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+            assert!(schema.validate_lua(&nest(10)).is_ok());
+        }
+        let obj: Schema = object([("x", number().into())]).passthrough().into();
+        let input = table(
+            vec![],
+            vec![
+                hash_entry("x", LuaValue::Integer(1)),
+                hash_entry("extra", deep),
+            ],
+        );
+        let err = obj.validate_lua(&input).unwrap_err();
+        assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
     }
 }
