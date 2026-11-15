@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::schema::{Schema, SchemaKind};
+use crate::schema::{Schema, SchemaKind, MAX_PARSE_DEPTH};
 use crate::types::{DiscriminatorState, ObjectBody, ObjectMode, StringSchema};
 use crate::{ErrorCode, Modify, ZerxError, ZerxValue};
 
@@ -994,6 +994,7 @@ pub(crate) struct ImportContext {
     placeholders: RefCell<HashMap<String, Schema>>,
     importing: RefCell<HashSet<String>>,
     strip_unknown: bool,
+    depth: std::cell::Cell<usize>,
 }
 
 impl ImportContext {
@@ -1009,6 +1010,7 @@ impl ImportContext {
             placeholders: RefCell::new(HashMap::new()),
             importing: RefCell::new(HashSet::new()),
             strip_unknown,
+            depth: std::cell::Cell::new(0),
         }
     }
 
@@ -1366,6 +1368,28 @@ fn ensure_member_within(
 // ---------------------------------------------------------------------------
 
 pub(crate) fn import_value(
+    node: &serde_json::Value,
+    ctx: &ImportContext,
+    path: &[String],
+) -> Result<Schema, ZerxError> {
+    // Nesting and `$defs` resolution both recurse through here; a flat chain of
+    // refs nests once per link although the document stays shallow, so serde's
+    // parse limit does not bound it. Cap it at the parse-depth limit.
+    let depth = ctx.depth.get();
+    if depth >= MAX_PARSE_DEPTH {
+        return Err(ZerxError::new(
+            ErrorCode::IMPORT_UNSUPPORTED,
+            format!("schema nesting exceeds the import depth limit of {MAX_PARSE_DEPTH}"),
+        )
+        .at(path.to_vec()));
+    }
+    ctx.depth.set(depth + 1);
+    let result = import_node(node, ctx, path);
+    ctx.depth.set(depth);
+    result
+}
+
+fn import_node(
     node: &serde_json::Value,
     ctx: &ImportContext,
     path: &[String],
@@ -4630,5 +4654,45 @@ mod tests {
             let doc = serde_json::json!({"$defs": {"a~2": {}, "a~": {}, "a%20b": {}}, "$ref": r});
             assert!(from(doc).is_err(), "{r}");
         }
+    }
+
+    #[test]
+    fn import_depth_is_bounded() {
+        // A flat `$defs` chain D0 -> D1 -> ... nests the import once per link
+        // although the document itself is shallow; the import must stop with
+        // an error rather than exhaust the stack. Run on a large stack so the
+        // assertion checks the bound, not the build's frame sizes.
+        let handle = std::thread::Builder::new()
+            .stack_size(512 * 1024 * 1024)
+            .spawn(|| {
+                let links = MAX_PARSE_DEPTH + 50;
+                let mut defs = serde_json::Map::new();
+                for i in 0..links {
+                    defs.insert(
+                        format!("D{i}"),
+                        serde_json::json!({"$ref": format!("#/$defs/D{}", i + 1)}),
+                    );
+                }
+                defs.insert(format!("D{links}"), serde_json::json!({"type": "string"}));
+                let doc = serde_json::json!({"$defs": defs, "$ref": "#/$defs/D0"});
+                let long = from(doc).map(|_| ()).map_err(|e| e.code);
+
+                let mut defs = serde_json::Map::new();
+                for i in 0..10 {
+                    defs.insert(
+                        format!("D{i}"),
+                        serde_json::json!({"$ref": format!("#/$defs/D{}", i + 1)}),
+                    );
+                }
+                defs.insert("D10".to_string(), serde_json::json!({"type": "string"}));
+                let short = from(serde_json::json!({"$defs": defs, "$ref": "#/$defs/D0"}))
+                    .map(|_| ())
+                    .map_err(|e| e.code);
+                (long, short)
+            })
+            .unwrap();
+        let (long, short) = handle.join().unwrap();
+        assert_eq!(long.unwrap_err(), ErrorCode::IMPORT_UNSUPPORTED);
+        assert!(short.is_ok());
     }
 }
