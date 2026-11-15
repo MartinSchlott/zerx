@@ -267,12 +267,13 @@ fn export_node(schema: &Schema, ctx: &mut ExportContext) -> serde_json::Value {
             {
                 return never_export(schema);
             }
-            let keep_existing = match (core.get(&k).and_then(|e| e.as_f64()), val.as_f64()) {
-                (Some(old), Some(new)) => match k.as_str() {
-                    "minLength" | "minItems" | "minimum" => old >= new,
-                    "maxLength" | "maxItems" | "maximum" => old <= new,
-                    _ => false,
-                },
+            // Exact comparison: neighbouring integers beyond 2^53 share one
+            // f64, so an f64 comparison could keep the wider bound.
+            use std::cmp::Ordering;
+            let order = core.get(&k).and_then(|old| compare_json_numbers(old, &val));
+            let keep_existing = match (k.as_str(), order) {
+                ("minLength" | "minItems" | "minimum", Some(o)) => o != Ordering::Less,
+                ("maxLength" | "maxItems" | "maximum", Some(o)) => o != Ordering::Greater,
                 _ => false,
             };
             if !keep_existing {
@@ -5463,5 +5464,33 @@ mod tests {
                 .code,
             ErrorCode::IMPORT_UNSUPPORTED
         );
+    }
+
+    #[test]
+    fn export_repeated_bounds_merge_exactly() {
+        // Neighbouring bounds beyond 2^53 share one f64; the merge must still
+        // keep the tighter one, in either call order, so the re-imported
+        // export rejects the value the runtime rejects.
+        let p53 = 1i64 << 53;
+        let cases: [(i64, i64, &str, i64); 3] = [
+            (i64::MAX, i64::MAX - 1, "maximum", i64::MAX),
+            (p53 + 1, p53, "maximum", p53 + 1),
+            (i64::MIN, i64::MIN + 1, "minimum", i64::MIN),
+        ];
+        for (wide, tight, key, excluded) in cases {
+            for (a, b) in [(wide, tight), (tight, wide)] {
+                let s: Schema = if key == "maximum" {
+                    number().int().max(a).max(b).into()
+                } else {
+                    number().int().min(a).min(b).into()
+                };
+                assert!(s.validate(&excluded).is_err(), "{key} {a} {b}");
+                let v = js(&s);
+                assert_eq!(v[key], serde_json::json!(tight), "{key} {a} {b}");
+                let re = from_json_schema(&v).unwrap();
+                assert!(re.validate(&excluded).is_err(), "{key} {a} {b}");
+                assert!(re.validate(&tight).is_ok(), "{key} {a} {b}");
+            }
+        }
     }
 }
