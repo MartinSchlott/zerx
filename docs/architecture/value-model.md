@@ -18,7 +18,7 @@
 
 - `schema-core`: `ZerxValue` (the validated dynamic value produced by the parse flow)
 - `schema-core`: `Map` (the ordered object map carried inside `ZerxValue::Object`)
-- `lua`: `ZerxValue` (the output produced by `validate_lua` after the schema-directed transform pass)
+- `lua`: `ZerxValue` (the output of `validate_lua`)
 
 ## External Contracts
 

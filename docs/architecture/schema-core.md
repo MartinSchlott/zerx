@@ -22,7 +22,7 @@
 ## Provides to
 
 - `types`: `Schema` (core representation that type variants extend by adding `SchemaKind` variants)
-- `types`: `Validator` (trait contract that concrete type validators implement; storage field owned here, implementations in `types`)
+- `types`: `Validator` (trait contract that concrete type validators implement)
 - `json-schema`: `Schema` (schema value that export reads and import reconstructs)
 - `policy`: `Schema` (the value the pipeline produces and type transforms receive)
 - `lua`: `Schema` + parse flow (`validate_lua` feeds `parse_present` after the transform pass)

@@ -19,7 +19,7 @@
 
 ## Provides to
 
-- `json-schema`: validator `json_schema()` fragment contributions (per-validator JSON Schema keyword map; established at `PLAN_J1_export`)
+- `json-schema`: validator `json_schema()` fragment contributions (per-validator JSON Schema keyword maps merged during export)
 - `json-schema`: type constructors (the builder/constructor surface import reconstructs)
 
 ## External Contracts
@@ -36,7 +36,7 @@ None.
 
 ## Constraints
 
-### Basic types (PLAN_T1)
+### Basic types
 
 - The five basic-type variants (`String`, `Number`, `Boolean`, `Enum(Vec<String>)`, `Null`) MUST be members of `SchemaKind`; each MUST add exactly one delegating arm to `check_type`, `parse_inner`, and the `Debug` match — no new parse-flow control logic MAY be introduced per type.
 - `string()` MUST accept only `ZerxValue::String`; any other kind MUST yield `Err(TYPE_MISMATCH)` with `expected = "string"` and `received = type_tag(value)`.
@@ -53,7 +53,7 @@ None.
 - `BooleanSchema` and `NullSchema` MUST NOT expose any inherent validator methods.
 - `EnumSchema` MUST NOT expose inherent validator methods; the value set is fixed at construction.
 
-### String validators (PLAN_T1)
+### String validators
 
 - `StringSchema::min(n: usize)` MUST push a `MinLength(n)` validator; a string whose Unicode scalar count is less than `n` MUST yield `Err(STRING_TOO_SHORT)`.
 - `StringSchema::max(n: usize)` MUST push a `MaxLength(n)` validator; a string whose Unicode scalar count exceeds `n` MUST yield `Err(STRING_TOO_LONG)`.
@@ -63,18 +63,18 @@ None.
 - `StringSchema::email()` MUST push a hand-rolled `Email` validator (no regex engine); a string failing the structural form check MUST yield `Err(INVALID_EMAIL)`; the JSON Schema fragment MUST be `{"format": "email"}`.
 - `StringSchema::uuid()` MUST push a hand-rolled `Uuid` validator; a string not matching the 8-4-4-4-12 hex-with-dashes form MUST yield `Err(INVALID_UUID)`; the JSON Schema fragment MUST be `{"format": "uuid"}`.
 
-### `multiline` meta hint (PLAN_T1)
+### `multiline` meta hint
 
 - `StringSchema::multiline(lines: u32)` MUST write `x-ui-multiline → ZerxValue::U64(lines)` into the schema's `meta` map; it MUST NOT push any `Validator` and MUST have no validation effect.
 
-### Number validators (PLAN_T1)
+### Number validators
 
 - `NumberSchema::min(n: impl Into<f64>)` MUST push a `MinValue(n)` validator; a numeric value whose `f64` representation is less than `n` MUST yield `Err(NUMBER_TOO_SMALL)`.
 - `NumberSchema::max(n: impl Into<f64>)` MUST push a `MaxValue(n)` validator; a numeric value whose `f64` representation exceeds `n` MUST yield `Err(NUMBER_TOO_LARGE)`.
 - `NumberSchema::int()` MUST push an `IntValidator`; `I64`/`U64`/`I128`/`U128` MUST always pass; a `F64` with `fract() != 0.0` MUST yield `Err(NOT_INTEGER)`.
 - Bound comparison is performed in `f64`; precision loss at `i128`/`u128` magnitudes beyond 2^53 is accepted for v1.
 
-### JSON Schema fragments (PLAN_T1)
+### JSON Schema fragments
 
 - `MinLength(n).json_schema()` MUST return `{"minLength": n}`.
 - `MaxLength(n).json_schema()` MUST return `{"maxLength": n}`.
@@ -85,12 +85,12 @@ None.
 - `MaxValue(n).json_schema()` MUST return `{"maximum": n}`.
 - `IntValidator.json_schema()` MUST return `{"type": "integer"}`.
 
-### Error codes (PLAN_T1)
+### Error codes — basic types
 
 - Error codes introduced by this concern MUST be declared as associated constants in a separate `impl ErrorCode` block in `src/types.rs`; no edit to `src/error.rs` is permitted.
-- Codes introduced by PLAN_T1: `STRING_TOO_SHORT`, `STRING_TOO_LONG`, `PATTERN_MISMATCH`, `PATTERN_INVALID`, `INVALID_EMAIL`, `INVALID_UUID`, `NUMBER_TOO_SMALL`, `NUMBER_TOO_LARGE`, `NOT_INTEGER`, `INVALID_ENUM_VALUE`.
+- Codes: `STRING_TOO_SHORT`, `STRING_TOO_LONG`, `PATTERN_MISMATCH`, `PATTERN_INVALID`, `INVALID_EMAIL`, `INVALID_UUID`, `NUMBER_TOO_SMALL`, `NUMBER_TOO_LARGE`, `NOT_INTEGER`, `INVALID_ENUM_VALUE`.
 
-### Complex types (PLAN_T2)
+### Complex types
 
 - The seven complex-type variants (`Object`, `Array`, `Record`, `Tuple`, `Union`, `DiscriminatedUnion`, `Literal`) MUST each add exactly one delegating arm to `check_type`, `parse_inner`, and the `Debug` match; no new parse-flow control logic MAY be introduced per variant.
 - Container `parse_*` delegates MUST prepend their path segment to every child error via `e.path.insert(0, segment)` as the stack unwinds; object/record delegates MUST prepend the field key; array/tuple delegates MUST prepend the decimal-string element index.
@@ -105,7 +105,7 @@ None.
 - In `Strip` mode, unknown keys MUST be silently dropped.
 - Per-field delegation MUST invoke `Schema::parse_field` for each `(key, field_schema)` pair in `shape` order; a missing required field MUST yield `Err(REQUIRED)` with the key prepended to `path`; any field error MUST have the field key prepended to `path`.
 
-#### `array` (PLAN_T2)
+#### `array`
 
 - `check_array` MUST accept `ZerxValue::Array`; any other kind MUST yield `Err(TYPE_MISMATCH)` with `expected = "array"`.
 - Each element MUST be validated with `item.parse_present`; an element error MUST have its decimal-string index prepended to `path`.
@@ -113,18 +113,18 @@ None.
 - `ArraySchema::max(n)` MUST push an `ArrayMaxLength(n)` validator; an array whose length exceeds `n` MUST yield `Err(ARRAY_TOO_LONG)`; the JSON Schema fragment MUST be `{"maxItems": n}`.
 - Array-length validators run in the `validators` step, before element descent in `parse_inner`.
 
-#### `record` (PLAN_T2)
+#### `record`
 
 - `check_record` MUST accept `ZerxValue::Object`; any other kind MUST yield `Err(TYPE_MISMATCH)` with `expected = "object"`.
 - Every value in the input map MUST be validated against the single `value_schema` via `parse_present`; a value error MUST have its key prepended to `path`; the output map MUST preserve input key order.
 
-#### `tuple` (PLAN_T2)
+#### `tuple`
 
 - `check_tuple` MUST accept `ZerxValue::Array`; any other kind MUST yield `Err(TYPE_MISMATCH)` with `expected = "array"`.
 - If the input array length differs from `items.len()`, `parse_tuple` MUST yield `Err(TUPLE_LENGTH_MISMATCH)` with `expected = "array of length <n>"` and `received = "array of length <m>"`.
 - Each position `i` MUST be validated with `items[i].parse_present`; a position error MUST have `i.to_string()` prepended to `path`.
 
-#### `union` (PLAN_T2)
+#### `union`
 
 - `check_union` MUST always return `Ok(())`; variant matching is deferred to `parse_union`.
 - `parse_union` MUST attempt each variant via `parse_present` in declaration order and return the first `Ok`.
@@ -137,7 +137,7 @@ None.
 - When no variant accepts the value, `parse_one_of` MUST return `Err(ZerxError::union([], inner_errors))`.
 - When two or more variants accept the value, `parse_one_of` MUST return `Err(ONE_OF_AMBIGUOUS)` without embedding the value.
 
-#### `discriminated_union` (PLAN_T2)
+#### `discriminated_union`
 
 - A variant is well-formed for `discriminated_union` only if: its kind is `Object`; the `shape` contains the discriminator key; the discriminator field's kind is `Literal`; the discriminator field is required, non-defaulted, and non-nullable (`optional == false`, `default.is_none()`, `nullable == false`); the literal const is keyable (`Bool`, `i128`-range integer, or `String`); and the discriminant key is unique across all variants.
 - `discriminated_union(key, variants)` MUST be infallible; any structural defect MUST be recorded as `DiscriminatorState::Invalid(message)` and raised as `Err(INVALID_DISCRIMINATED_UNION)` in `check_discriminated_union` — the first step of the parse flow — so the schema-defect error wins over `TYPE_MISMATCH` for any input.
@@ -147,7 +147,7 @@ None.
 - An integral `F64` discriminator argument in `i128` range MUST key as its integer, while float literals MUST stay non-keyable, so import classification and export do not depend on the argument-side rule.
 - When a variant is matched, `parse_present` MUST be called on the whole input object; no path segment is added at the discriminated-union level.
 
-#### `literal` (PLAN_T2)
+#### `literal`
 
 - `check_literal` MUST accept input only when the value equals the constant under the literal equality rules below; any non-matching value MUST yield `Err(INVALID_LITERAL)` with `expected = literal_descriptor(constant)` and `received = type_tag(value)`.
 - `literal_descriptor` MUST NOT embed a raw `ZerxValue` in any error field; it MUST return a compact string form of the constant.
@@ -157,11 +157,11 @@ None.
 - `ZerxValue` `PartialEq` MUST stay variant-strict, because tests and consumers use it to assert exact variants; literal equality MUST NOT change it.
 - A matched literal MUST return the input value in its own form, not in the form of the constant.
 
-### Error codes (PLAN_T2)
+### Error codes — complex types
 
-- Codes introduced by PLAN_T2: `UNKNOWN_PROPERTY`, `ARRAY_TOO_SHORT`, `ARRAY_TOO_LONG`, `TUPLE_LENGTH_MISMATCH`, `INVALID_LITERAL`, `INVALID_DISCRIMINANT`, `INVALID_DISCRIMINATED_UNION`, `ONE_OF_AMBIGUOUS`.
+- Codes: `UNKNOWN_PROPERTY`, `ARRAY_TOO_SHORT`, `ARRAY_TOO_LONG`, `TUPLE_LENGTH_MISMATCH`, `INVALID_LITERAL`, `INVALID_DISCRIMINANT`, `INVALID_DISCRIMINATED_UNION`, `ONE_OF_AMBIGUOUS`.
 
-### Special types (PLAN_T4)
+### Special types
 
 - The five special-type variants (`Buffer`, `Uri`, `Url`, `Json`, `JsonSchema`) MUST each add exactly one delegating arm to `check_type`, `parse_inner`, and the `Debug` match; no new parse-flow control logic MAY be introduced per variant; all five are leaves with identity `parse_inner`.
 
@@ -171,13 +171,13 @@ None.
 - `buffer()` MUST NOT coerce a number array, an object shape, or any other representation into bytes; silent coercion of any other shape is prohibited (`D-buffer-fidelity`).
 - `BufferSchema::mime(mime_type)` MUST write the MIME string to `modifiers.mime`; this is the same field written by the blanket `mime_format` method; `J1` reads `modifiers.mime` to emit `contentMediaType`.
 
-#### `uri` (PLAN_T4)
+#### `uri`
 
 - `uri()` with a non-string value MUST yield `Err(TYPE_MISMATCH)` with `expected = "uri"` and `received = type_tag(value)`.
 - `uri()` with a string failing the structural check MUST yield `Err(INVALID_URI)` with `expected = "uri"`.
 - Structural URI rule: the string MUST contain `':'`; the part before `':'` (scheme) MUST be non-empty and start with an ASCII alphabetic character with every subsequent character ASCII alphanumeric or one of `+`, `-`, `.`; the part after `':'` (rest) MUST be non-empty.
 
-#### `url` (PLAN_T4)
+#### `url`
 
 - `url()` with a non-string value MUST yield `Err(TYPE_MISMATCH)` with `expected = "url"` and `received = type_tag(value)`.
 - `url()` with a string failing the structural check MUST yield `Err(INVALID_URL)` with `expected = "url"`.
@@ -185,23 +185,23 @@ None.
 - After the regex match, the extracted hostname MUST NOT be empty, MUST NOT contain `".."`, MUST NOT start or end with `'.'`, and MUST either contain a `'.'` or equal `"localhost"`.
 - If a port is present (`:` + decimal digits before the path), it MUST parse to a value in `1..=65535`.
 
-#### `json` / `jsonschema` (PLAN_T4)
+#### `json` / `jsonschema`
 
 - `json()` MUST accept any serde-bridgeable `ZerxValue` variant with identity parse (`parse_inner` returns `Ok(value.clone())`).
 - `jsonschema()` MUST accept only `ZerxValue::Object`, failing with `TYPE_MISMATCH` otherwise, with identity parse; its runtime check MUST agree with its exported form `type:"object"`.
 - No structural JSON Schema document validation is performed by `jsonschema()`.
 - Neither `json()` nor `jsonschema()` exposes any inherent validator methods.
 
-#### Negative compile-guarantee (PLAN_T4)
+#### Negative compile-guarantee — special types
 
 - `BufferSchema`, `UriSchema`, `UrlSchema`, `JsonSchema`, and `JsonschemaSchema` MUST NOT expose any inherent string or number validator methods.
 - A `uri()` or `url()` reconstructed by JSON Schema import MAY carry string-length and pattern validators attached by the import; they run after the structural check.
 
-### Error codes (PLAN_T4)
+### Error codes — special types
 
-- Codes introduced by PLAN_T4: `INVALID_URI`, `INVALID_URL`.
+- Codes: `INVALID_URI`, `INVALID_URL`.
 
-### Object utilities (PLAN_T3)
+### Object utilities
 
 - All T3 logic MUST reside within the `object` delegate; T3 introduces no new `SchemaKind` variant, no new dispatch arm, no new parse-flow control logic, and no new error code.
 - `ObjectBody` carries four utility-governing fields: `all_optional` (partial mode), `prestrip_keys` (explicit prestrip list), `prestrip_read_only` (prestrip by read-only modifier), and `prestrip_write_only` (prestrip by write-only modifier).
@@ -213,7 +213,7 @@ None.
 - `extend` MUST merge incoming fields with last-write-wins / first-occurrence-order semantics; mode and all other `ObjectBody` state MUST be preserved.
 - `omit`, `omit_read_only`, and `omit_write_only` remove fields from `shape` (by name, by `read_only` modifier, and by `write_only` modifier respectively); an omitted field becomes an unknown key under the unchanged strict mode (per C4); omitting a key absent from `shape` MUST be a no-op.
 - All eight utility methods MUST be infallible and MUST clone-and-return per C1 immutability; no utility returns a `Result`.
-- `all_optional` is the source of truth for the exported `required` set, consumed by `PLAN_J1_export`.
+- `all_optional` is the source of truth for the exported `required` set, consumed by the JSON Schema export.
 
 ## Splitting Rationale
 
