@@ -1,23 +1,34 @@
 //! zerx — structured schema validation for Rust.
 
-mod error;
-mod value;
-mod schema;
-mod types;
-mod json_schema;
 mod delta;
-mod policy;
+mod error;
+mod json_schema;
 #[cfg(feature = "lua")]
 pub mod lua;
+mod policy;
+mod schema;
+mod types;
+mod value;
 
 pub use error::{ErrorCode, ZerxError};
-pub use value::{Map, ZerxValue};
-pub use schema::{Schema, Modify, Validator, AnySchema, LazySchema, any, lazy, MAX_PARSE_DEPTH};
-pub use types::{string, number, boolean, enumerate, null, StringSchema, NumberSchema, BooleanSchema, EnumSchema, NullSchema};
-pub use types::{object, array, record, tuple, union, discriminated_union, literal, ObjectSchema, ArraySchema, RecordSchema, TupleSchema, UnionSchema, DiscriminatedUnionSchema, LiteralSchema};
-pub use types::{buffer, uri, url, json, jsonschema, BufferSchema, UriSchema, UrlSchema, JsonSchema, JsonschemaSchema};
-pub use json_schema::{ExportOptions, DRAFT_2020_12, from_json_schema};
-pub use policy::{register_policy, from_json_schema_with, apply_type_transforms,
-    Policy, ImportOptions, SchemaTransform, TypeTransform, RefResolver};
+pub use json_schema::{from_json_schema, ExportOptions, DRAFT_2020_12};
 #[cfg(feature = "lua")]
-pub use lua::{LuaValue, LuaTable};
+pub use lua::{LuaTable, LuaValue};
+pub use policy::{
+    apply_type_transforms, from_json_schema_with, register_policy, ImportOptions, Policy,
+    RefResolver, SchemaTransform, TypeTransform,
+};
+pub use schema::{any, lazy, AnySchema, LazySchema, Modify, Schema, Validator, MAX_PARSE_DEPTH};
+pub use types::{
+    array, discriminated_union, literal, object, record, tuple, union, ArraySchema,
+    DiscriminatedUnionSchema, LiteralSchema, ObjectSchema, RecordSchema, TupleSchema, UnionSchema,
+};
+pub use types::{
+    boolean, enumerate, null, number, string, BooleanSchema, EnumSchema, NullSchema, NumberSchema,
+    StringSchema,
+};
+pub use types::{
+    buffer, json, jsonschema, uri, url, BufferSchema, JsonSchema, JsonschemaSchema, UriSchema,
+    UrlSchema,
+};
+pub use value::{Map, ZerxValue};

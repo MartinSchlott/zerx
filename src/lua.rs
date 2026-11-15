@@ -46,7 +46,11 @@ impl Schema {
     }
 
     // Resolve Lazy layers, then depth-guard the transform body (R3).
-    fn lua_transform(&self, lua: &LuaValue, ctx: &mut ParseContext) -> Result<ZerxValue, ZerxError> {
+    fn lua_transform(
+        &self,
+        lua: &LuaValue,
+        ctx: &mut ParseContext,
+    ) -> Result<ZerxValue, ZerxError> {
         // Resolve Lazy layers (mirrors delta.rs:resolve_lazy)
         let mut current = self.clone();
         while let SchemaKind::Lazy(lzy) = &current.kind {
@@ -212,9 +216,9 @@ impl Schema {
                             // Unknown-key gate: if any non-stripped decoded key is unknown,
                             // build Object of all decoded keys → Null without converting any value.
                             // parse_object then raises UNKNOWN_PROPERTY on the first unknown key.
-                            let has_unknown = decoded
-                                .iter()
-                                .any(|(k, _)| !is_stripped(k) && !body.shape.iter().any(|(sk, _)| sk == k));
+                            let has_unknown = decoded.iter().any(|(k, _)| {
+                                !is_stripped(k) && !body.shape.iter().any(|(sk, _)| sk == k)
+                            });
                             if has_unknown {
                                 let mut obj = Map::new();
                                 for (k, _) in &decoded {
@@ -228,7 +232,9 @@ impl Schema {
                                 if is_stripped(key) {
                                     continue;
                                 }
-                                if let Some(lua_val) = decoded.iter().find(|(k, _)| k == key).map(|(_, v)| *v) {
+                                if let Some(lua_val) =
+                                    decoded.iter().find(|(k, _)| k == key).map(|(_, v)| *v)
+                                {
                                     match field_schema.lua_transform(lua_val, ctx) {
                                         Ok(v) => output.insert(key.clone(), v),
                                         Err(e) => return Err(prepend(e, key.clone())),
@@ -245,7 +251,9 @@ impl Schema {
                                 if is_stripped(key) {
                                     continue;
                                 }
-                                if let Some(lua_val) = decoded.iter().find(|(k, _)| k == key).map(|(_, v)| *v) {
+                                if let Some(lua_val) =
+                                    decoded.iter().find(|(k, _)| k == key).map(|(_, v)| *v)
+                                {
                                     match field_schema.lua_transform(lua_val, ctx) {
                                         Ok(v) => output.insert(key.clone(), v),
                                         Err(e) => return Err(prepend(e, key.clone())),
@@ -262,7 +270,9 @@ impl Schema {
                                 if is_stripped(key) {
                                     continue;
                                 }
-                                if let Some(lua_val) = decoded.iter().find(|(k, _)| k == key).map(|(_, v)| *v) {
+                                if let Some(lua_val) =
+                                    decoded.iter().find(|(k, _)| k == key).map(|(_, v)| *v)
+                                {
                                     match field_schema.lua_transform(lua_val, ctx) {
                                         Ok(v) => output.insert(key.clone(), v),
                                         Err(e) => return Err(prepend(e, key.clone())),
@@ -524,8 +534,8 @@ fn prepend(mut e: ZerxError, segment: impl Into<String>) -> ZerxError {
 mod tests {
     use super::*;
     use crate::{
-        array, boolean, buffer, discriminated_union, json, lazy, literal, null,
-        number, object, record, string, tuple, union, Modify, Schema, MAX_PARSE_DEPTH,
+        array, boolean, buffer, discriminated_union, json, lazy, literal, null, number, object,
+        record, string, tuple, union, Modify, Schema, MAX_PARSE_DEPTH,
     };
 
     fn bytes(b: &[u8]) -> LuaValue {
@@ -596,7 +606,11 @@ mod tests {
         );
         let err = schema.validate_lua(&t).unwrap_err();
         assert_eq!(err.code, ErrorCode::LUA_SHAPE_MISMATCH);
-        assert!(err.path.is_empty(), "shape mismatch at root has empty path, got {:?}", err.path);
+        assert!(
+            err.path.is_empty(),
+            "shape mismatch at root has empty path, got {:?}",
+            err.path
+        );
     }
 
     // --- table → object / record ---
@@ -620,20 +634,26 @@ mod tests {
         );
         let err = schema.validate_lua(&t).unwrap_err();
         assert_eq!(err.code, ErrorCode::LUA_SHAPE_MISMATCH);
-        assert!(err.path.is_empty(), "shape mismatch at root has empty path, got {:?}", err.path);
+        assert!(
+            err.path.is_empty(),
+            "shape mismatch at root has empty path, got {:?}",
+            err.path
+        );
     }
 
     #[test]
     fn object_non_string_hash_key_yields_invalid_key() {
         let schema: Schema = object([("x", number().into())]).into();
-        let t = table(
-            vec![],
-            vec![(LuaValue::Integer(1), LuaValue::Integer(42))],
-        );
+        let t = table(vec![], vec![(LuaValue::Integer(1), LuaValue::Integer(42))]);
         let err = schema.validate_lua(&t).unwrap_err();
         assert_eq!(err.code, ErrorCode::LUA_INVALID_KEY);
         // Position 0 in the hash is prepended as the path segment.
-        assert_eq!(err.path, vec!["0"], "invalid key at hash[0] has path [\"0\"], got {:?}", err.path);
+        assert_eq!(
+            err.path,
+            vec!["0"],
+            "invalid key at hash[0] has path [\"0\"], got {:?}",
+            err.path
+        );
     }
 
     #[test]
@@ -645,7 +665,12 @@ mod tests {
         );
         let err = schema.validate_lua(&t).unwrap_err();
         assert_eq!(err.code, ErrorCode::LUA_INVALID_KEY);
-        assert_eq!(err.path, vec!["0"], "invalid key at hash[0] has path [\"0\"], got {:?}", err.path);
+        assert_eq!(
+            err.path,
+            vec!["0"],
+            "invalid key at hash[0] has path [\"0\"], got {:?}",
+            err.path
+        );
     }
 
     #[test]
@@ -653,7 +678,10 @@ mod tests {
         let schema: Schema = record(number()).into();
         let t = table(
             vec![],
-            vec![hash_entry("a", LuaValue::Integer(1)), hash_entry("b", LuaValue::Integer(2))],
+            vec![
+                hash_entry("a", LuaValue::Integer(1)),
+                hash_entry("b", LuaValue::Integer(2)),
+            ],
         );
         let result = schema.validate_lua(&t).unwrap();
         let mut expected = crate::Map::new();
@@ -691,8 +719,7 @@ mod tests {
 
     #[test]
     fn missing_defaulted_field_gets_default() {
-        let schema: Schema =
-            object([("x", number().default(ZerxValue::I64(99)).into())]).into();
+        let schema: Schema = object([("x", number().default(ZerxValue::I64(99)).into())]).into();
         let t = table(vec![], vec![]);
         let result = schema.validate_lua(&t).unwrap();
         let mut expected = crate::Map::new();
@@ -716,12 +743,17 @@ mod tests {
         let t = table(
             vec![],
             vec![
-                hash_entry("x", LuaValue::Integer(99)),  // unknown key
-                hash_entry("a", mixed_table),             // value is unrepresentable
+                hash_entry("x", LuaValue::Integer(99)), // unknown key
+                hash_entry("a", mixed_table),           // value is unrepresentable
             ],
         );
         let err = schema.validate_lua(&t).unwrap_err();
-        assert_eq!(err.code, ErrorCode::UNKNOWN_PROPERTY, "expected UNKNOWN_PROPERTY on 'x', got {:?}", err);
+        assert_eq!(
+            err.code,
+            ErrorCode::UNKNOWN_PROPERTY,
+            "expected UNKNOWN_PROPERTY on 'x', got {:?}",
+            err
+        );
         assert_eq!(err.path, vec!["x"]);
     }
 
@@ -736,12 +768,20 @@ mod tests {
             vec![
                 bytes(b"hello"),
                 LuaValue::Integer(1),
-                table(vec![LuaValue::Integer(1)], vec![hash_entry("x", LuaValue::Integer(2))]), // mixed — unrepresentable
+                table(
+                    vec![LuaValue::Integer(1)],
+                    vec![hash_entry("x", LuaValue::Integer(2))],
+                ), // mixed — unrepresentable
             ],
             vec![],
         );
         let err = schema.validate_lua(&t).unwrap_err();
-        assert_eq!(err.code, ErrorCode::TUPLE_LENGTH_MISMATCH, "expected TUPLE_LENGTH_MISMATCH, got {:?}", err);
+        assert_eq!(
+            err.code,
+            ErrorCode::TUPLE_LENGTH_MISMATCH,
+            "expected TUPLE_LENGTH_MISMATCH, got {:?}",
+            err
+        );
     }
 
     // --- precedence: discriminator beats body error (Finding 3-iii) ---
@@ -752,13 +792,7 @@ mod tests {
         // unrepresentable (mixed) field value — INVALID_DISCRIMINANT must win.
         let schema: Schema = discriminated_union(
             "kind",
-            [
-                object([
-                    ("kind", literal("a").into()),
-                    ("data", number().into()),
-                ])
-                .into(),
-            ],
+            [object([("kind", literal("a").into()), ("data", number().into())]).into()],
         )
         .into();
         let mixed = table(
@@ -773,7 +807,12 @@ mod tests {
             ],
         );
         let err = schema.validate_lua(&t).unwrap_err();
-        assert_eq!(err.code, ErrorCode::INVALID_DISCRIMINANT, "expected INVALID_DISCRIMINANT, got {:?}", err);
+        assert_eq!(
+            err.code,
+            ErrorCode::INVALID_DISCRIMINANT,
+            "expected INVALID_DISCRIMINANT, got {:?}",
+            err
+        );
     }
 
     // --- scalars ---
@@ -825,7 +864,10 @@ mod tests {
         let schema: Schema = lazy(|| object([("a", string().into())]).into())
             .nullable()
             .into();
-        assert_eq!(schema.validate_lua(&LuaValue::Nil).unwrap(), ZerxValue::Null);
+        assert_eq!(
+            schema.validate_lua(&LuaValue::Nil).unwrap(),
+            ZerxValue::Null
+        );
 
         let plain: Schema = lazy(|| object([("a", string().into())]).into()).into();
         assert_eq!(
@@ -838,17 +880,16 @@ mod tests {
 
     #[test]
     fn nested_buffer_and_string_fields() {
-        let schema: Schema = object([
-            ("name", string().into()),
-            ("data", buffer().into()),
-        ])
-        .into();
+        let schema: Schema = object([("name", string().into()), ("data", buffer().into())]).into();
         let raw = vec![0xFF, 0xFE];
         let t = table(
             vec![],
             vec![
                 hash_entry("name", bytes(b"alice")),
-                (LuaValue::Bytes(b"data".to_vec()), LuaValue::Bytes(raw.clone())),
+                (
+                    LuaValue::Bytes(b"data".to_vec()),
+                    LuaValue::Bytes(raw.clone()),
+                ),
             ],
         );
         let result = schema.validate_lua(&t).unwrap();
@@ -889,10 +930,7 @@ mod tests {
             ErrorCode::UNION_MISMATCH
         );
 
-        let two = crate::types::one_of([
-            number().into(),
-            number().int().into(),
-        ]);
+        let two = crate::types::one_of([number().into(), number().int().into()]);
         assert_eq!(
             two.validate_lua(&LuaValue::Integer(1)).unwrap_err().code,
             ErrorCode::ONE_OF_AMBIGUOUS
@@ -906,16 +944,8 @@ mod tests {
         let schema: Schema = discriminated_union(
             "kind",
             [
-                object([
-                    ("kind", literal("foo").into()),
-                    ("val", number().into()),
-                ])
-                .into(),
-                object([
-                    ("kind", literal("bar").into()),
-                    ("val", string().into()),
-                ])
-                .into(),
+                object([("kind", literal("foo").into()), ("val", number().into())]).into(),
+                object([("kind", literal("bar").into()), ("val", string().into())]).into(),
             ],
         )
         .into();
@@ -938,16 +968,8 @@ mod tests {
         let schema: Schema = discriminated_union(
             "active",
             [
-                object([
-                    ("active", literal(true).into()),
-                    ("val", number().into()),
-                ])
-                .into(),
-                object([
-                    ("active", literal(false).into()),
-                    ("val", string().into()),
-                ])
-                .into(),
+                object([("active", literal(true).into()), ("val", number().into())]).into(),
+                object([("active", literal(false).into()), ("val", string().into())]).into(),
             ],
         )
         .into();
@@ -970,16 +992,8 @@ mod tests {
         let schema: Schema = discriminated_union(
             "code",
             [
-                object([
-                    ("code", literal(1i64).into()),
-                    ("msg", string().into()),
-                ])
-                .into(),
-                object([
-                    ("code", literal(2i64).into()),
-                    ("msg", string().into()),
-                ])
-                .into(),
+                object([("code", literal(1i64).into()), ("msg", string().into())]).into(),
+                object([("code", literal(2i64).into()), ("msg", string().into())]).into(),
             ],
         )
         .into();
@@ -1062,14 +1076,15 @@ mod tests {
     fn discriminated_union_wrong_discriminator_yields_invalid_discriminant() {
         let schema: Schema = discriminated_union(
             "kind",
-            [
-                object([("kind", literal("foo").into()), ("val", number().into())]).into(),
-            ],
+            [object([("kind", literal("foo").into()), ("val", number().into())]).into()],
         )
         .into();
         let t = table(
             vec![],
-            vec![hash_entry("kind", bytes(b"bar")), hash_entry("val", LuaValue::Integer(1))],
+            vec![
+                hash_entry("kind", bytes(b"bar")),
+                hash_entry("val", LuaValue::Integer(1)),
+            ],
         );
         let err = schema.validate_lua(&t).unwrap_err();
         assert_eq!(err.code, ErrorCode::INVALID_DISCRIMINANT);
@@ -1077,11 +1092,8 @@ mod tests {
 
     #[test]
     fn discriminated_union_absent_discriminator_yields_invalid_discriminant() {
-        let schema: Schema = discriminated_union(
-            "kind",
-            [object([("kind", literal("foo").into())]).into()],
-        )
-        .into();
+        let schema: Schema =
+            discriminated_union("kind", [object([("kind", literal("foo").into())]).into()]).into();
         let t = table(vec![], vec![]);
         let err = schema.validate_lua(&t).unwrap_err();
         assert_eq!(err.code, ErrorCode::INVALID_DISCRIMINANT);
@@ -1101,21 +1113,20 @@ mod tests {
             vec![LuaValue::Integer(1)],
             vec![hash_entry("x", LuaValue::Integer(2))],
         );
-        let t = table(
-            vec![],
-            vec![(LuaValue::Bytes(b"kind".to_vec()), mixed)],
-        );
+        let t = table(vec![], vec![(LuaValue::Bytes(b"kind".to_vec()), mixed)]);
         let err = schema.validate_lua(&t).unwrap_err();
-        assert_eq!(err.code, ErrorCode::INVALID_DISCRIMINANT, "expected INVALID_DISCRIMINANT, got {:?}", err);
+        assert_eq!(
+            err.code,
+            ErrorCode::INVALID_DISCRIMINANT,
+            "expected INVALID_DISCRIMINANT, got {:?}",
+            err
+        );
     }
 
     #[test]
     fn discriminator_float_value_yields_invalid_discriminant() {
-        let schema: Schema = discriminated_union(
-            "kind",
-            [object([("kind", literal("foo").into())]).into()],
-        )
-        .into();
+        let schema: Schema =
+            discriminated_union("kind", [object([("kind", literal("foo").into())]).into()]).into();
         let t = table(
             vec![],
             vec![(LuaValue::Bytes(b"kind".to_vec()), LuaValue::Float(1.5))],
@@ -1128,10 +1139,7 @@ mod tests {
 
     #[test]
     fn lazy_wrapped_object_validates() {
-        let schema: Schema = lazy(|| {
-            object([("x", number().into())]).into()
-        })
-        .into();
+        let schema: Schema = lazy(|| object([("x", number().into())]).into()).into();
         let t = table(vec![], vec![hash_entry("x", LuaValue::Integer(5))]);
         let result = schema.validate_lua(&t).unwrap();
         let mut expected = crate::Map::new();
@@ -1154,7 +1162,12 @@ mod tests {
         }
 
         let err = schema.validate_lua(&val).unwrap_err();
-        assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED, "expected PARSE_DEPTH_EXCEEDED, got {:?}", err);
+        assert_eq!(
+            err.code,
+            ErrorCode::PARSE_DEPTH_EXCEEDED,
+            "expected PARSE_DEPTH_EXCEEDED, got {:?}",
+            err
+        );
     }
 
     // --- any / json free-convert ---
@@ -1168,23 +1181,22 @@ mod tests {
         let mut inner_expected = crate::Map::new();
         inner_expected.insert("n".to_string(), ZerxValue::I64(1));
         let mut expected = crate::Map::new();
-        expected.insert(
-            "inner".to_string(),
-            ZerxValue::Object(inner_expected),
-        );
+        expected.insert("inner".to_string(), ZerxValue::Object(inner_expected));
         assert_eq!(result, ZerxValue::Object(expected));
     }
 
     #[test]
     fn any_bytes_key_table_yields_invalid_key() {
         let schema: Schema = json().into();
-        let t = table(
-            vec![],
-            vec![(LuaValue::Integer(1), LuaValue::Integer(2))],
-        );
+        let t = table(vec![], vec![(LuaValue::Integer(1), LuaValue::Integer(2))]);
         let err = schema.validate_lua(&t).unwrap_err();
         assert_eq!(err.code, ErrorCode::LUA_INVALID_KEY);
-        assert_eq!(err.path, vec!["0"], "invalid key at hash[0] has path [\"0\"], got {:?}", err.path);
+        assert_eq!(
+            err.path,
+            vec!["0"],
+            "invalid key at hash[0] has path [\"0\"], got {:?}",
+            err.path
+        );
     }
 
     #[test]
@@ -1196,7 +1208,11 @@ mod tests {
         );
         let err = schema.validate_lua(&t).unwrap_err();
         assert_eq!(err.code, ErrorCode::LUA_SHAPE_MISMATCH);
-        assert!(err.path.is_empty(), "shape mismatch at root has empty path, got {:?}", err.path);
+        assert!(
+            err.path.is_empty(),
+            "shape mismatch at root has empty path, got {:?}",
+            err.path
+        );
     }
 
     #[test]
@@ -1252,10 +1268,7 @@ mod tests {
     fn port_strict_rejects_non_string_key() {
         // R1: zerx errors on non-string keys; Zex silently ignores them
         let schema: Schema = object([("x", number().into())]).into();
-        let t = table(
-            vec![],
-            vec![(LuaValue::Integer(1), LuaValue::Integer(42))],
-        );
+        let t = table(vec![], vec![(LuaValue::Integer(1), LuaValue::Integer(42))]);
         let err = schema.validate_lua(&t).unwrap_err();
         assert_eq!(err.code, ErrorCode::LUA_INVALID_KEY);
     }
@@ -1268,13 +1281,21 @@ mod tests {
         // directly to a ZerxValue::Array preserving element order.
         let schema: Schema = array(number()).into();
         let t = table(
-            vec![LuaValue::Integer(10), LuaValue::Integer(20), LuaValue::Integer(30)],
+            vec![
+                LuaValue::Integer(10),
+                LuaValue::Integer(20),
+                LuaValue::Integer(30),
+            ],
             vec![],
         );
         let result = schema.validate_lua(&t).unwrap();
         assert_eq!(
             result,
-            ZerxValue::Array(vec![ZerxValue::I64(10), ZerxValue::I64(20), ZerxValue::I64(30)])
+            ZerxValue::Array(vec![
+                ZerxValue::I64(10),
+                ZerxValue::I64(20),
+                ZerxValue::I64(30)
+            ])
         );
     }
 

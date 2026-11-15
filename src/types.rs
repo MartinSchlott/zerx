@@ -104,11 +104,12 @@ pub(crate) fn check_enum(value: &ZerxValue, set: &[String]) -> Result<(), ZerxEr
                 Ok(())
             } else {
                 let allowed = set.join(", ");
-                Err(
-                    ZerxError::new(ErrorCode::INVALID_ENUM_VALUE, "value is not an allowed enum value")
-                        .expected(allowed)
-                        .received(type_tag(value)),
+                Err(ZerxError::new(
+                    ErrorCode::INVALID_ENUM_VALUE,
+                    "value is not an allowed enum value",
                 )
+                .expected(allowed)
+                .received(type_tag(value)))
             }
         }
         _ => Err(
@@ -150,7 +151,10 @@ impl Validator for MinLength {
 
     fn json_schema(&self) -> serde_json::Map<String, serde_json::Value> {
         let mut m = serde_json::Map::new();
-        m.insert("minLength".to_owned(), serde_json::Value::Number(self.0.into()));
+        m.insert(
+            "minLength".to_owned(),
+            serde_json::Value::Number(self.0.into()),
+        );
         m
     }
 }
@@ -170,7 +174,10 @@ impl Validator for MaxLength {
 
     fn json_schema(&self) -> serde_json::Map<String, serde_json::Value> {
         let mut m = serde_json::Map::new();
-        m.insert("maxLength".to_owned(), serde_json::Value::Number(self.0.into()));
+        m.insert(
+            "maxLength".to_owned(),
+            serde_json::Value::Number(self.0.into()),
+        );
         m
     }
 }
@@ -357,8 +364,7 @@ impl Validator for MinValue {
 
     fn json_schema(&self) -> serde_json::Map<String, serde_json::Value> {
         let mut m = serde_json::Map::new();
-        let n = serde_json::Number::from_f64(self.0)
-            .unwrap_or_else(|| serde_json::Number::from(0));
+        let n = serde_json::Number::from_f64(self.0).unwrap_or_else(|| serde_json::Number::from(0));
         m.insert("minimum".to_owned(), serde_json::Value::Number(n));
         m
     }
@@ -379,8 +385,7 @@ impl Validator for MaxValue {
 
     fn json_schema(&self) -> serde_json::Map<String, serde_json::Value> {
         let mut m = serde_json::Map::new();
-        let n = serde_json::Number::from_f64(self.0)
-            .unwrap_or_else(|| serde_json::Number::from(0));
+        let n = serde_json::Number::from_f64(self.0).unwrap_or_else(|| serde_json::Number::from(0));
         m.insert("maximum".to_owned(), serde_json::Value::Number(n));
         m
     }
@@ -574,14 +579,15 @@ impl NumberSchema {
 // ---------------------------------------------------------------------------
 
 impl ErrorCode {
-    pub const UNKNOWN_PROPERTY: ErrorCode            = ErrorCode::new("unknown_property");
-    pub const ARRAY_TOO_SHORT: ErrorCode             = ErrorCode::new("array_too_short");
-    pub const ARRAY_TOO_LONG: ErrorCode              = ErrorCode::new("array_too_long");
-    pub const TUPLE_LENGTH_MISMATCH: ErrorCode       = ErrorCode::new("tuple_length_mismatch");
-    pub const INVALID_LITERAL: ErrorCode             = ErrorCode::new("invalid_literal");
-    pub const INVALID_DISCRIMINANT: ErrorCode        = ErrorCode::new("invalid_discriminant");
-    pub const INVALID_DISCRIMINATED_UNION: ErrorCode = ErrorCode::new("invalid_discriminated_union");
-    pub const ONE_OF_AMBIGUOUS: ErrorCode       = ErrorCode::new("one_of_ambiguous");
+    pub const UNKNOWN_PROPERTY: ErrorCode = ErrorCode::new("unknown_property");
+    pub const ARRAY_TOO_SHORT: ErrorCode = ErrorCode::new("array_too_short");
+    pub const ARRAY_TOO_LONG: ErrorCode = ErrorCode::new("array_too_long");
+    pub const TUPLE_LENGTH_MISMATCH: ErrorCode = ErrorCode::new("tuple_length_mismatch");
+    pub const INVALID_LITERAL: ErrorCode = ErrorCode::new("invalid_literal");
+    pub const INVALID_DISCRIMINANT: ErrorCode = ErrorCode::new("invalid_discriminant");
+    pub const INVALID_DISCRIMINATED_UNION: ErrorCode =
+        ErrorCode::new("invalid_discriminated_union");
+    pub const ONE_OF_AMBIGUOUS: ErrorCode = ErrorCode::new("one_of_ambiguous");
 }
 
 // ---------------------------------------------------------------------------
@@ -761,7 +767,10 @@ pub(crate) fn check_discriminated_union(
     body: &DiscriminatedUnionBody,
 ) -> Result<(), ZerxError> {
     if let DiscriminatorState::Invalid(msg) = &body.state {
-        return Err(ZerxError::new(ErrorCode::INVALID_DISCRIMINATED_UNION, msg.clone()));
+        return Err(ZerxError::new(
+            ErrorCode::INVALID_DISCRIMINATED_UNION,
+            msg.clone(),
+        ));
     }
     match value {
         ZerxValue::Object(_) => Ok(()),
@@ -775,9 +784,12 @@ pub(crate) fn check_literal(value: &ZerxValue, constant: &ZerxValue) -> Result<(
     if literal_eq(value, constant) {
         Ok(())
     } else {
-        Err(ZerxError::new(ErrorCode::INVALID_LITERAL, "value does not match literal constant")
-            .expected(literal_descriptor(constant))
-            .received(type_tag(value)))
+        Err(ZerxError::new(
+            ErrorCode::INVALID_LITERAL,
+            "value does not match literal constant",
+        )
+        .expected(literal_descriptor(constant))
+        .received(type_tag(value)))
     }
 }
 
@@ -839,7 +851,11 @@ pub(crate) fn parse_object(
     let mut output = crate::Map::new();
 
     for (key, field_schema) in &body.shape {
-        let raw = if is_stripped(key) { None } else { input.get(key) };
+        let raw = if is_stripped(key) {
+            None
+        } else {
+            input.get(key)
+        };
         match field_schema.parse_field(raw, ctx) {
             Ok(Some(v)) => output.insert(key.clone(), v),
             Ok(None) => {}
@@ -920,7 +936,11 @@ pub(crate) fn parse_tuple(
     if arr.len() != items.len() {
         return Err(ZerxError::new(
             ErrorCode::TUPLE_LENGTH_MISMATCH,
-            format!("expected array of length {}, got {}", items.len(), arr.len()),
+            format!(
+                "expected array of length {}, got {}",
+                items.len(),
+                arr.len()
+            ),
         )
         .expected(format!("array of length {}", items.len()))
         .received(format!("array of length {}", arr.len())));
@@ -987,7 +1007,10 @@ pub(crate) fn parse_discriminated_union(
     let (map, allowed) = match &body.state {
         DiscriminatorState::Ok { map, allowed } => (map, allowed),
         DiscriminatorState::Invalid(msg) => {
-            return Err(ZerxError::new(ErrorCode::INVALID_DISCRIMINATED_UNION, msg.clone()));
+            return Err(ZerxError::new(
+                ErrorCode::INVALID_DISCRIMINATED_UNION,
+                msg.clone(),
+            ));
         }
     };
 
@@ -1060,7 +1083,10 @@ impl Validator for ArrayMinLength {
 
     fn json_schema(&self) -> serde_json::Map<String, serde_json::Value> {
         let mut m = serde_json::Map::new();
-        m.insert("minItems".to_owned(), serde_json::Value::Number(self.0.into()));
+        m.insert(
+            "minItems".to_owned(),
+            serde_json::Value::Number(self.0.into()),
+        );
         m
     }
 }
@@ -1080,7 +1106,10 @@ impl Validator for ArrayMaxLength {
 
     fn json_schema(&self) -> serde_json::Map<String, serde_json::Value> {
         let mut m = serde_json::Map::new();
-        m.insert("maxItems".to_owned(), serde_json::Value::Number(self.0.into()));
+        m.insert(
+            "maxItems".to_owned(),
+            serde_json::Value::Number(self.0.into()),
+        );
         m
     }
 }
@@ -1111,47 +1140,75 @@ pub struct DiscriminatedUnionSchema(Schema);
 pub struct LiteralSchema(Schema);
 
 impl BuilderInner for ObjectSchema {
-    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+    fn schema_mut(&mut self) -> &mut Schema {
+        &mut self.0
+    }
 }
 impl BuilderInner for ArraySchema {
-    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+    fn schema_mut(&mut self) -> &mut Schema {
+        &mut self.0
+    }
 }
 impl BuilderInner for RecordSchema {
-    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+    fn schema_mut(&mut self) -> &mut Schema {
+        &mut self.0
+    }
 }
 impl BuilderInner for TupleSchema {
-    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+    fn schema_mut(&mut self) -> &mut Schema {
+        &mut self.0
+    }
 }
 impl BuilderInner for UnionSchema {
-    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+    fn schema_mut(&mut self) -> &mut Schema {
+        &mut self.0
+    }
 }
 impl BuilderInner for DiscriminatedUnionSchema {
-    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+    fn schema_mut(&mut self) -> &mut Schema {
+        &mut self.0
+    }
 }
 impl BuilderInner for LiteralSchema {
-    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+    fn schema_mut(&mut self) -> &mut Schema {
+        &mut self.0
+    }
 }
 
 impl From<ObjectSchema> for Schema {
-    fn from(b: ObjectSchema) -> Schema { b.0 }
+    fn from(b: ObjectSchema) -> Schema {
+        b.0
+    }
 }
 impl From<ArraySchema> for Schema {
-    fn from(b: ArraySchema) -> Schema { b.0 }
+    fn from(b: ArraySchema) -> Schema {
+        b.0
+    }
 }
 impl From<RecordSchema> for Schema {
-    fn from(b: RecordSchema) -> Schema { b.0 }
+    fn from(b: RecordSchema) -> Schema {
+        b.0
+    }
 }
 impl From<TupleSchema> for Schema {
-    fn from(b: TupleSchema) -> Schema { b.0 }
+    fn from(b: TupleSchema) -> Schema {
+        b.0
+    }
 }
 impl From<UnionSchema> for Schema {
-    fn from(b: UnionSchema) -> Schema { b.0 }
+    fn from(b: UnionSchema) -> Schema {
+        b.0
+    }
 }
 impl From<DiscriminatedUnionSchema> for Schema {
-    fn from(b: DiscriminatedUnionSchema) -> Schema { b.0 }
+    fn from(b: DiscriminatedUnionSchema) -> Schema {
+        b.0
+    }
 }
 impl From<LiteralSchema> for Schema {
-    fn from(b: LiteralSchema) -> Schema { b.0 }
+    fn from(b: LiteralSchema) -> Schema {
+        b.0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1319,7 +1376,9 @@ pub fn union<I>(variants: I) -> UnionSchema
 where
     I: IntoIterator<Item = Schema>,
 {
-    UnionSchema(Schema::new(SchemaKind::Union(variants.into_iter().collect())))
+    UnionSchema(Schema::new(SchemaKind::Union(
+        variants.into_iter().collect(),
+    )))
 }
 
 /// Crate-internal exactly-one union. Built only by JSON Schema import; there is
@@ -1339,7 +1398,11 @@ where
     let key: String = key.into();
     let variants: Vec<Schema> = variants.into_iter().collect();
     let state = build_discriminator_state(&key, &variants);
-    let body = DiscriminatedUnionBody { key, variants, state };
+    let body = DiscriminatedUnionBody {
+        key,
+        variants,
+        state,
+    };
     DiscriminatedUnionSchema(Schema::new(SchemaKind::DiscriminatedUnion(body)))
 }
 
@@ -1557,8 +1620,10 @@ pub(crate) fn check_uri(value: &ZerxValue) -> Result<(), ZerxError> {
             if is_valid_uri(s) {
                 Ok(())
             } else {
-                Err(ZerxError::new(ErrorCode::INVALID_URI, "string is not a valid URI")
-                    .expected("uri"))
+                Err(
+                    ZerxError::new(ErrorCode::INVALID_URI, "string is not a valid URI")
+                        .expected("uri"),
+                )
             }
         }
         _ => Err(ZerxError::new(ErrorCode::TYPE_MISMATCH, "expected uri")
@@ -1573,8 +1638,10 @@ pub(crate) fn check_url(value: &ZerxValue) -> Result<(), ZerxError> {
             if is_valid_url(s) {
                 Ok(())
             } else {
-                Err(ZerxError::new(ErrorCode::INVALID_URL, "string is not a valid URL")
-                    .expected("url"))
+                Err(
+                    ZerxError::new(ErrorCode::INVALID_URL, "string is not a valid URL")
+                        .expected("url"),
+                )
             }
         }
         _ => Err(ZerxError::new(ErrorCode::TYPE_MISMATCH, "expected url")
@@ -1647,35 +1714,55 @@ pub struct JsonSchema(Schema);
 pub struct JsonschemaSchema(Schema);
 
 impl BuilderInner for BufferSchema {
-    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+    fn schema_mut(&mut self) -> &mut Schema {
+        &mut self.0
+    }
 }
 impl BuilderInner for UriSchema {
-    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+    fn schema_mut(&mut self) -> &mut Schema {
+        &mut self.0
+    }
 }
 impl BuilderInner for UrlSchema {
-    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+    fn schema_mut(&mut self) -> &mut Schema {
+        &mut self.0
+    }
 }
 impl BuilderInner for JsonSchema {
-    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+    fn schema_mut(&mut self) -> &mut Schema {
+        &mut self.0
+    }
 }
 impl BuilderInner for JsonschemaSchema {
-    fn schema_mut(&mut self) -> &mut Schema { &mut self.0 }
+    fn schema_mut(&mut self) -> &mut Schema {
+        &mut self.0
+    }
 }
 
 impl From<BufferSchema> for Schema {
-    fn from(b: BufferSchema) -> Schema { b.0 }
+    fn from(b: BufferSchema) -> Schema {
+        b.0
+    }
 }
 impl From<UriSchema> for Schema {
-    fn from(b: UriSchema) -> Schema { b.0 }
+    fn from(b: UriSchema) -> Schema {
+        b.0
+    }
 }
 impl From<UrlSchema> for Schema {
-    fn from(b: UrlSchema) -> Schema { b.0 }
+    fn from(b: UrlSchema) -> Schema {
+        b.0
+    }
 }
 impl From<JsonSchema> for Schema {
-    fn from(b: JsonSchema) -> Schema { b.0 }
+    fn from(b: JsonSchema) -> Schema {
+        b.0
+    }
 }
 impl From<JsonschemaSchema> for Schema {
-    fn from(b: JsonschemaSchema) -> Schema { b.0 }
+    fn from(b: JsonschemaSchema) -> Schema {
+        b.0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1726,7 +1813,10 @@ mod tests {
     use crate::{Modify, Schema};
 
     // Helper: validate a builder against a serializable value
-    fn val<B: Into<Schema>>(builder: B, v: &(impl serde::Serialize + ?Sized)) -> Result<ZerxValue, ZerxError> {
+    fn val<B: Into<Schema>>(
+        builder: B,
+        v: &(impl serde::Serialize + ?Sized),
+    ) -> Result<ZerxValue, ZerxError> {
         let s: Schema = builder.into();
         s.validate(v)
     }
@@ -1819,7 +1909,9 @@ mod tests {
             ErrorCode::INVALID_UUID
         );
         assert_eq!(
-            val(string().uuid(), "550e8400-e29b-41d4-a716-44665544000X").unwrap_err().code,
+            val(string().uuid(), "550e8400-e29b-41d4-a716-44665544000X")
+                .unwrap_err()
+                .code,
             ErrorCode::INVALID_UUID
         );
         assert_eq!(Uuid.json_schema()["format"], serde_json::json!("uuid"));
@@ -2019,7 +2111,10 @@ mod tests {
         assert_eq!(err.code, ErrorCode::TYPE_MISMATCH);
         assert_eq!(err.expected.as_deref(), Some("object"));
 
-        assert_eq!(val(o.clone(), "hi").unwrap_err().code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(
+            val(o.clone(), "hi").unwrap_err().code,
+            ErrorCode::TYPE_MISMATCH
+        );
         assert_eq!(val(o, &true).unwrap_err().code, ErrorCode::TYPE_MISMATCH);
     }
 
@@ -2031,15 +2126,21 @@ mod tests {
         let o: Schema = object([
             ("a", string().into()),
             ("b", number().into()),
-            ("a", number().into()),  // replaces the string() at first-occurrence position
-        ]).into();
+            ("a", number().into()), // replaces the string() at first-occurrence position
+        ])
+        .into();
 
         // Valid: a=1 (number), b=2 — the string() schema was replaced
         assert!(o.validate(&serde_json::json!({"a": 1, "b": 2})).is_ok());
 
         // Key order: "a" at first-occurrence position (0), "b" at position 1
         let ok = o.validate(&serde_json::json!({"a": 1, "b": 2})).unwrap();
-        let keys: Vec<&str> = ok.as_object().unwrap().iter().map(|(k, _)| k.as_str()).collect();
+        let keys: Vec<&str> = ok
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .collect();
         assert_eq!(keys, vec!["a", "b"]);
 
         // Shape has only two entries (the duplicate was merged)
@@ -2052,9 +2153,14 @@ mod tests {
     #[test]
     fn object_strict_default() {
         #[derive(serde::Serialize)]
-        struct WithExtra { a: i64, extra: i64 }
+        struct WithExtra {
+            a: i64,
+            extra: i64,
+        }
         #[derive(serde::Serialize)]
-        struct JustA { a: i64 }
+        struct JustA {
+            a: i64,
+        }
 
         let o = object([("a", number().into())]);
         let err = val(o.clone(), &WithExtra { a: 1, extra: 2 }).unwrap_err();
@@ -2073,7 +2179,10 @@ mod tests {
         use serde_json::json;
 
         #[derive(serde::Serialize)]
-        struct Input { a: i64, extra: &'static str }
+        struct Input {
+            a: i64,
+            extra: &'static str,
+        }
 
         let o = object([("a", number().into())]).passthrough();
         let ok = val(o, &Input { a: 1, extra: "x" }).unwrap();
@@ -2084,14 +2193,20 @@ mod tests {
         let keys: Vec<&str> = map.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(keys, vec!["a", "extra"]);
         // Extra field preserved verbatim
-        assert_eq!(map.get("extra"), Some(&ZerxValue::from_serialize(&json!("x")).unwrap()));
+        assert_eq!(
+            map.get("extra"),
+            Some(&ZerxValue::from_serialize(&json!("x")).unwrap())
+        );
     }
 
     // T2-4: object strip
     #[test]
     fn object_strip() {
         #[derive(serde::Serialize)]
-        struct Input { a: i64, extra: &'static str }
+        struct Input {
+            a: i64,
+            extra: &'static str,
+        }
 
         let o = object([("a", number().into())]).strip();
         let ok = val(o, &Input { a: 1, extra: "x" }).unwrap();
@@ -2104,7 +2219,9 @@ mod tests {
     #[test]
     fn object_field_error_path() {
         #[derive(serde::Serialize)]
-        struct AgeInput { age: &'static str }
+        struct AgeInput {
+            age: &'static str,
+        }
 
         let o = object([("age", number().into())]);
         let err = val(o, &AgeInput { age: "x" }).unwrap_err();
@@ -2113,9 +2230,17 @@ mod tests {
 
         // Nested
         #[derive(serde::Serialize)]
-        struct Nested { user: AgeInput }
+        struct Nested {
+            user: AgeInput,
+        }
         let nested = object([("user", object([("age", number().into())]).into())]);
-        let err2 = val(nested, &Nested { user: AgeInput { age: "x" } }).unwrap_err();
+        let err2 = val(
+            nested,
+            &Nested {
+                user: AgeInput { age: "x" },
+            },
+        )
+        .unwrap_err();
         assert_eq!(err2.path, vec!["user", "age"]);
     }
 
@@ -2132,11 +2257,16 @@ mod tests {
         ]);
 
         #[derive(serde::Serialize)]
-        struct JustC { c: i64 }
+        struct JustC {
+            c: i64,
+        }
 
         let ok = val(schema.clone(), &JustC { c: 1 }).unwrap();
         let map = ok.as_object().unwrap();
-        assert!(map.get("a").is_none(), "optional absent field should be omitted");
+        assert!(
+            map.get("a").is_none(),
+            "optional absent field should be omitted"
+        );
         assert_eq!(map.get("b"), Some(&ZerxValue::I64(5)));
         assert_eq!(map.get("c"), Some(&ZerxValue::I64(1)));
 
@@ -2183,8 +2313,14 @@ mod tests {
         let err2 = val(array(number()).max(2), &vec![1i64, 2, 3]).unwrap_err();
         assert_eq!(err2.code, ErrorCode::ARRAY_TOO_LONG);
 
-        assert_eq!(ArrayMinLength(2).json_schema()["minItems"], serde_json::json!(2));
-        assert_eq!(ArrayMaxLength(2).json_schema()["maxItems"], serde_json::json!(2));
+        assert_eq!(
+            ArrayMinLength(2).json_schema()["minItems"],
+            serde_json::json!(2)
+        );
+        assert_eq!(
+            ArrayMaxLength(2).json_schema()["maxItems"],
+            serde_json::json!(2)
+        );
     }
 
     // T2-9: record
@@ -2216,7 +2352,11 @@ mod tests {
         assert!(val(t.clone(), &ok_input).is_ok());
 
         // Wrong length
-        let err = val(tuple([string().into(), number().into()]), &vec![serde_json::json!("a")]).unwrap_err();
+        let err = val(
+            tuple([string().into(), number().into()]),
+            &vec![serde_json::json!("a")],
+        )
+        .unwrap_err();
         assert_eq!(err.code, ErrorCode::TUPLE_LENGTH_MISMATCH);
 
         // Element type error
@@ -2247,11 +2387,20 @@ mod tests {
     #[test]
     fn literal_matching() {
         assert!(val(literal("human"), "human").is_ok());
-        assert_eq!(val(literal("human"), "tool").unwrap_err().code, ErrorCode::INVALID_LITERAL);
-        assert_eq!(val(literal("human"), &7i32).unwrap_err().code, ErrorCode::INVALID_LITERAL);
+        assert_eq!(
+            val(literal("human"), "tool").unwrap_err().code,
+            ErrorCode::INVALID_LITERAL
+        );
+        assert_eq!(
+            val(literal("human"), &7i32).unwrap_err().code,
+            ErrorCode::INVALID_LITERAL
+        );
 
         assert!(val(literal(true), &true).is_ok());
-        assert_eq!(val(literal(true), &false).unwrap_err().code, ErrorCode::INVALID_LITERAL);
+        assert_eq!(
+            val(literal(true), &false).unwrap_err().code,
+            ErrorCode::INVALID_LITERAL
+        );
 
         // Numbers compare by value: literal(5i64) matches I64(5) and U64(5)
         let v_i64 = ZerxValue::from_serialize(&5i64).unwrap();
@@ -2342,10 +2491,17 @@ mod tests {
     // T2-13: discriminated_union happy path
     #[test]
     fn discriminated_union_happy_path() {
-        let du = discriminated_union("kind", [
-            object([("kind", literal("human").into()), ("session", string().into())]).into(),
-            object([("kind", literal("tool").into()), ("tool", string().into())]).into(),
-        ]);
+        let du = discriminated_union(
+            "kind",
+            [
+                object([
+                    ("kind", literal("human").into()),
+                    ("session", string().into()),
+                ])
+                .into(),
+                object([("kind", literal("tool").into()), ("tool", string().into())]).into(),
+            ],
+        );
 
         use serde_json::json;
         assert!(val(du.clone(), &json!({"kind": "human", "session": "s"})).is_ok());
@@ -2371,46 +2527,83 @@ mod tests {
     fn discriminated_union_config_errors() {
         // (a) variant not an object
         let du_a = discriminated_union("kind", [number().into()]);
-        assert_eq!(val(du_a.clone(), &7i32).unwrap_err().code, ErrorCode::INVALID_DISCRIMINATED_UNION);
         assert_eq!(
-            val(du_a, &serde_json::json!({"kind": "x"})).unwrap_err().code,
+            val(du_a.clone(), &7i32).unwrap_err().code,
+            ErrorCode::INVALID_DISCRIMINATED_UNION
+        );
+        assert_eq!(
+            val(du_a, &serde_json::json!({"kind": "x"}))
+                .unwrap_err()
+                .code,
             ErrorCode::INVALID_DISCRIMINATED_UNION
         );
 
         // (b) discriminator field not a literal
-        let du_b = discriminated_union("kind", [
-            object([("kind", string().into())]).into(),
-        ]);
-        assert_eq!(val(du_b, &serde_json::json!({"kind": "x"})).unwrap_err().code, ErrorCode::INVALID_DISCRIMINATED_UNION);
+        let du_b = discriminated_union("kind", [object([("kind", string().into())]).into()]);
+        assert_eq!(
+            val(du_b, &serde_json::json!({"kind": "x"}))
+                .unwrap_err()
+                .code,
+            ErrorCode::INVALID_DISCRIMINATED_UNION
+        );
 
         // (c) discriminator optional
-        let du_c = discriminated_union("kind", [
-            object([("kind", literal("human").optional().into())]).into(),
-        ]);
-        assert_eq!(val(du_c, &serde_json::json!({"kind": "human"})).unwrap_err().code, ErrorCode::INVALID_DISCRIMINATED_UNION);
+        let du_c = discriminated_union(
+            "kind",
+            [object([("kind", literal("human").optional().into())]).into()],
+        );
+        assert_eq!(
+            val(du_c, &serde_json::json!({"kind": "human"}))
+                .unwrap_err()
+                .code,
+            ErrorCode::INVALID_DISCRIMINATED_UNION
+        );
 
         // (c2) discriminator with default
-        let du_c2 = discriminated_union("kind", [
-            object([("kind", literal("human").default("human").into())]).into(),
-        ]);
-        assert_eq!(val(du_c2, &serde_json::json!({"kind": "human"})).unwrap_err().code, ErrorCode::INVALID_DISCRIMINATED_UNION);
+        let du_c2 = discriminated_union(
+            "kind",
+            [object([("kind", literal("human").default("human").into())]).into()],
+        );
+        assert_eq!(
+            val(du_c2, &serde_json::json!({"kind": "human"}))
+                .unwrap_err()
+                .code,
+            ErrorCode::INVALID_DISCRIMINATED_UNION
+        );
 
         // (c3) discriminator nullable
-        let du_c3 = discriminated_union("kind", [
-            object([("kind", literal("human").nullable().into())]).into(),
-        ]);
-        assert_eq!(val(du_c3, &serde_json::json!({"kind": "human"})).unwrap_err().code, ErrorCode::INVALID_DISCRIMINATED_UNION);
+        let du_c3 = discriminated_union(
+            "kind",
+            [object([("kind", literal("human").nullable().into())]).into()],
+        );
+        assert_eq!(
+            val(du_c3, &serde_json::json!({"kind": "human"}))
+                .unwrap_err()
+                .code,
+            ErrorCode::INVALID_DISCRIMINATED_UNION
+        );
 
         // (d) duplicate discriminator value
-        let du_d = discriminated_union("kind", [
-            object([("kind", literal("human").into())]).into(),
-            object([("kind", literal("human").into())]).into(),
-        ]);
-        assert_eq!(val(du_d, &serde_json::json!({"kind": "human"})).unwrap_err().code, ErrorCode::INVALID_DISCRIMINATED_UNION);
+        let du_d = discriminated_union(
+            "kind",
+            [
+                object([("kind", literal("human").into())]).into(),
+                object([("kind", literal("human").into())]).into(),
+            ],
+        );
+        assert_eq!(
+            val(du_d, &serde_json::json!({"kind": "human"}))
+                .unwrap_err()
+                .code,
+            ErrorCode::INVALID_DISCRIMINATED_UNION
+        );
 
         // Non-object input against mis-configured DU → INVALID_DISCRIMINATED_UNION, not TYPE_MISMATCH
         let du_e = discriminated_union("kind", [number().into()]);
-        assert_eq!(val(du_e, &7i32).unwrap_err().code, ErrorCode::INVALID_DISCRIMINATED_UNION);
+        assert_eq!(
+            val(du_e, &7i32).unwrap_err().code,
+            ErrorCode::INVALID_DISCRIMINATED_UNION
+        );
     }
 
     // T2-15: nesting and composition with deep path
@@ -2422,22 +2615,31 @@ mod tests {
             ("tags", array(string()).max(2).into()),
             ("pair", tuple([number().into(), number().into()]).into()),
             ("meta", record(number()).into()),
-        ]).strip();
+        ])
+        .strip();
 
-        let ok = val(schema.clone(), &json!({
-            "tags": ["a", "b"],
-            "pair": [1, 2],
-            "meta": {"x": 1},
-            "extra": "dropped"
-        })).unwrap();
+        let ok = val(
+            schema.clone(),
+            &json!({
+                "tags": ["a", "b"],
+                "pair": [1, 2],
+                "meta": {"x": 1},
+                "extra": "dropped"
+            }),
+        )
+        .unwrap();
         assert!(ok.as_object().unwrap().get("extra").is_none());
 
         // Deep error path: pair[1] is wrong type
-        let err = val(schema, &json!({
-            "tags": ["a", "b"],
-            "pair": [1, "x"],
-            "meta": {"x": 1}
-        })).unwrap_err();
+        let err = val(
+            schema,
+            &json!({
+                "tags": ["a", "b"],
+                "pair": [1, "x"],
+                "meta": {"x": 1}
+            }),
+        )
+        .unwrap_err();
         assert_eq!(err.path, vec!["pair", "1"]);
     }
 
@@ -2450,9 +2652,10 @@ mod tests {
             ("Record", record(number()).into()),
             ("Tuple", tuple([number().into()]).into()),
             ("Union", union([number().into()]).into()),
-            ("DiscriminatedUnion", discriminated_union("k", [
-                object([("k", literal("v").into())]).into()
-            ]).into()),
+            (
+                "DiscriminatedUnion",
+                discriminated_union("k", [object([("k", literal("v").into())]).into()]).into(),
+            ),
             ("Literal", literal("x").into()),
         ];
         for (expected, s) in cases {
@@ -2483,7 +2686,9 @@ mod tests {
         // Same context not poisoned
         let mut ctx = ParseContext::new();
         let shallow: Schema = array(number()).into();
-        assert!(shallow.parse_present(&ZerxValue::Array(vec![ZerxValue::I64(1)]), &mut ctx).is_ok());
+        assert!(shallow
+            .parse_present(&ZerxValue::Array(vec![ZerxValue::I64(1)]), &mut ctx)
+            .is_ok());
     }
 
     // T2-18: clone immutability with object modes
@@ -2495,7 +2700,10 @@ mod tests {
 
         // passthrough accepts unknown keys
         #[derive(serde::Serialize)]
-        struct WithExtra { a: i64, x: i64 }
+        struct WithExtra {
+            a: i64,
+            x: i64,
+        }
         assert!(passthrough.validate(&WithExtra { a: 1, x: 2 }).is_ok());
         // strict rejects them
         assert_eq!(
@@ -2537,10 +2745,7 @@ mod tests {
     #[test]
     fn partial_preserves_default_precedence() {
         use serde_json::json;
-        let s = object([
-            ("a", number().default(5i64).into()),
-            ("b", number().into()),
-        ]).partial();
+        let s = object([("a", number().default(5i64).into()), ("b", number().into())]).partial();
         // a has a default → applied; b is plain required → omitted under partial
         let ok = val(s, &json!({})).unwrap();
         let m = ok.as_object().unwrap();
@@ -2577,7 +2782,9 @@ mod tests {
     #[test]
     fn extend_preserves_mode() {
         use serde_json::json;
-        let s = object([("a", number().into())]).strip().extend([("b", string().into())]);
+        let s = object([("a", number().into())])
+            .strip()
+            .extend([("b", string().into())]);
         let ok = val(s, &json!({"a": 1, "b": "x", "extra": 9})).unwrap();
         let m = ok.as_object().unwrap();
         assert!(m.get("extra").is_none());
@@ -2605,13 +2812,15 @@ mod tests {
     fn omit_read_only_write_only() {
         use serde_json::json;
         // read_only
-        let s_ro = object([("a", number().into()), ("ro", string().read_only().into())]).omit_read_only();
+        let s_ro =
+            object([("a", number().into()), ("ro", string().read_only().into())]).omit_read_only();
         assert!(val(s_ro.clone(), &json!({"a": 1})).is_ok());
         let err = val(s_ro, &json!({"a": 1, "ro": "x"})).unwrap_err();
         assert_eq!(err.code, ErrorCode::UNKNOWN_PROPERTY);
         assert_eq!(err.path, vec!["ro"]);
         // write_only
-        let s_wo = object([("a", number().into()), ("wo", string().write_only().into())]).omit_write_only();
+        let s_wo = object([("a", number().into()), ("wo", string().write_only().into())])
+            .omit_write_only();
         assert!(val(s_wo.clone(), &json!({"a": 1})).is_ok());
         let err2 = val(s_wo, &json!({"a": 1, "wo": "x"})).unwrap_err();
         assert_eq!(err2.code, ErrorCode::UNKNOWN_PROPERTY);
@@ -2658,7 +2867,8 @@ mod tests {
         let s_ro = object([
             ("a", number().into()),
             ("ro", string().read_only().optional().into()),
-        ]).strip_read_only();
+        ])
+        .strip_read_only();
         let ok = val(s_ro, &json!({"a": 1, "ro": "x"})).unwrap();
         let m = ok.as_object().unwrap();
         assert!(m.get("ro").is_none());
@@ -2667,7 +2877,8 @@ mod tests {
         let s_wo = object([
             ("a", number().into()),
             ("wo", string().write_only().optional().into()),
-        ]).strip_write_only();
+        ])
+        .strip_write_only();
         let ok2 = val(s_wo, &json!({"a": 1, "wo": "x"})).unwrap();
         let m2 = ok2.as_object().unwrap();
         assert!(m2.get("wo").is_none());
@@ -2679,18 +2890,16 @@ mod tests {
     fn omit_read_only_then_strip_read_only_no_auto_strip() {
         use serde_json::json;
         // ro removed from shape by omit_read_only → strip_read_only has nothing to strip
-        let s = object([
-            ("a", number().into()),
-            ("ro", string().read_only().into()),
-        ]).omit_read_only().strip_read_only();
+        let s = object([("a", number().into()), ("ro", string().read_only().into())])
+            .omit_read_only()
+            .strip_read_only();
         let err = val(s, &json!({"a": 1, "ro": "x"})).unwrap_err();
         assert_eq!(err.code, ErrorCode::UNKNOWN_PROPERTY);
         assert_eq!(err.path, vec!["ro"]);
         // explicit escape hatch: strip_only names the key directly
-        let s2 = object([
-            ("a", number().into()),
-            ("ro", string().read_only().into()),
-        ]).omit_read_only().strip_only(["ro"]);
+        let s2 = object([("a", number().into()), ("ro", string().read_only().into())])
+            .omit_read_only()
+            .strip_only(["ro"]);
         let ok = val(s2, &json!({"a": 1, "ro": "x"})).unwrap();
         assert!(ok.as_object().unwrap().get("ro").is_none());
         assert!(ok.as_object().unwrap().get("a").is_some());
@@ -2791,7 +3000,12 @@ mod tests {
         let sad_cases = &["not a uri", "://nohost", ":path"];
         for s in sad_cases {
             let err = val(uri(), *s).unwrap_err();
-            assert_eq!(err.code, ErrorCode::INVALID_URI, "expected INVALID_URI for {:?}", s);
+            assert_eq!(
+                err.code,
+                ErrorCode::INVALID_URI,
+                "expected INVALID_URI for {:?}",
+                s
+            );
             assert_eq!(err.expected.as_deref(), Some("uri"));
         }
 
@@ -2809,14 +3023,19 @@ mod tests {
         assert!(val(url(), "http://localhost").is_ok());
 
         let sad_cases: &[&str] = &[
-            "ftp://example.com",       // wrong scheme
-            "http://exa..mple.com",    // consecutive dots
-            "http://nodot",            // no dot and not localhost
+            "ftp://example.com",        // wrong scheme
+            "http://exa..mple.com",     // consecutive dots
+            "http://nodot",             // no dot and not localhost
             "http://example.com:99999", // port out of range
         ];
         for s in sad_cases {
             let err = val(url(), *s).unwrap_err();
-            assert_eq!(err.code, ErrorCode::INVALID_URL, "expected INVALID_URL for {:?}", s);
+            assert_eq!(
+                err.code,
+                ErrorCode::INVALID_URL,
+                "expected INVALID_URL for {:?}",
+                s
+            );
             assert_eq!(err.expected.as_deref(), Some("url"));
         }
 
@@ -2829,11 +3048,26 @@ mod tests {
     // T4-6: json accepts any serde-bridgeable value, identity parse
     #[test]
     fn json_accepts_anything() {
-        assert_eq!(val(json(), &7i32).unwrap(), ZerxValue::from_serialize(&7i32).unwrap());
-        assert_eq!(val(json(), "hi").unwrap(), ZerxValue::from_serialize("hi").unwrap());
-        assert_eq!(val(json(), &true).unwrap(), ZerxValue::from_serialize(&true).unwrap());
-        assert_eq!(val(json(), &()).unwrap(), ZerxValue::from_serialize(&()).unwrap());
-        assert_eq!(val(json(), &vec![1i64, 2, 3]).unwrap(), ZerxValue::from_serialize(&vec![1i64, 2, 3]).unwrap());
+        assert_eq!(
+            val(json(), &7i32).unwrap(),
+            ZerxValue::from_serialize(&7i32).unwrap()
+        );
+        assert_eq!(
+            val(json(), "hi").unwrap(),
+            ZerxValue::from_serialize("hi").unwrap()
+        );
+        assert_eq!(
+            val(json(), &true).unwrap(),
+            ZerxValue::from_serialize(&true).unwrap()
+        );
+        assert_eq!(
+            val(json(), &()).unwrap(),
+            ZerxValue::from_serialize(&()).unwrap()
+        );
+        assert_eq!(
+            val(json(), &vec![1i64, 2, 3]).unwrap(),
+            ZerxValue::from_serialize(&vec![1i64, 2, 3]).unwrap()
+        );
         // Bytes (via Blob) also accepted
         let b_ok = val(json(), &Blob(vec![9, 8])).unwrap();
         assert_eq!(b_ok, ZerxValue::Bytes(vec![9, 8]));
@@ -2950,11 +3184,7 @@ mod tests {
         assert!(m.get("home").is_some());
 
         // Malformed home URL → INVALID_URL with path = ["home"]
-        let err = val(
-            schema,
-            &json!({"home": "ftp://bad", "meta": {}}),
-        )
-        .unwrap_err();
+        let err = val(schema, &json!({"home": "ftp://bad", "meta": {}})).unwrap_err();
         assert_eq!(err.code, ErrorCode::INVALID_URL);
         assert_eq!(err.path, vec!["home"]);
     }

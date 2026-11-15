@@ -82,26 +82,24 @@ fn navigate_schema(root: &Schema, segments: &[std::string::String]) -> Result<Sc
 
         // Closed match — no `_` arm so a future SchemaKind variant is a compile error here.
         let next = match &resolved.kind {
-            SchemaKind::Object(body) => {
-                match body.shape.iter().find(|(k, _)| k == seg) {
-                    Some((_, field)) => {
-                        let field = field.clone();
-                        consumed.push(seg.clone());
-                        field
-                    }
-                    None => {
-                        let mut path = consumed;
-                        path.push(seg.clone());
-                        return Err(ZerxError::new(
-                            ErrorCode::UNKNOWN_PROPERTY,
-                            format!("property {seg:?} is not defined in schema"),
-                        )
-                        .at(path)
-                        .expected("property defined in schema")
-                        .received(seg.clone()));
-                    }
+            SchemaKind::Object(body) => match body.shape.iter().find(|(k, _)| k == seg) {
+                Some((_, field)) => {
+                    let field = field.clone();
+                    consumed.push(seg.clone());
+                    field
                 }
-            }
+                None => {
+                    let mut path = consumed;
+                    path.push(seg.clone());
+                    return Err(ZerxError::new(
+                        ErrorCode::UNKNOWN_PROPERTY,
+                        format!("property {seg:?} is not defined in schema"),
+                    )
+                    .at(path)
+                    .expected("property defined in schema")
+                    .received(seg.clone()));
+                }
+            },
             SchemaKind::Record(vs) => {
                 let item = *vs.clone();
                 consumed.push(seg.clone());
@@ -266,12 +264,7 @@ impl Schema {
     ///
     /// An empty `path` replaces the whole root. Does not mutate the supplied
     /// instance (clone-and-return, C1). Does not insert absent object keys.
-    pub fn replace<I, T>(
-        &self,
-        instance: &I,
-        path: &str,
-        value: &T,
-    ) -> Result<ZerxValue, ZerxError>
+    pub fn replace<I, T>(&self, instance: &I, path: &str, value: &T) -> Result<ZerxValue, ZerxError>
     where
         I: serde::Serialize + ?Sized,
         T: serde::Serialize + ?Sized,
@@ -319,7 +312,10 @@ mod tests {
 
     #[test]
     fn pointer_root() {
-        assert_eq!(parse_pointer("").unwrap(), Vec::<std::string::String>::new());
+        assert_eq!(
+            parse_pointer("").unwrap(),
+            Vec::<std::string::String>::new()
+        );
     }
 
     #[test]
@@ -486,16 +482,8 @@ mod tests {
         let schema: Schema = discriminated_union(
             "type",
             [
-                object([
-                    ("type", literal("cat").into()),
-                    ("name", string().into()),
-                ])
-                .into(),
-                object([
-                    ("type", literal("dog").into()),
-                    ("breed", string().into()),
-                ])
-                .into(),
+                object([("type", literal("cat").into()), ("name", string().into())]).into(),
+                object([("type", literal("dog").into()), ("breed", string().into())]).into(),
             ],
         )
         .into();
@@ -550,7 +538,10 @@ mod tests {
         let result = schema.replace(&instance, "/age", &31i32).unwrap();
         let obj = result.as_object().unwrap();
         assert_eq!(obj.get("age"), Some(&ZerxValue::I64(31)));
-        assert_eq!(obj.get("name"), Some(&ZerxValue::String("Alice".to_string())));
+        assert_eq!(
+            obj.get("name"),
+            Some(&ZerxValue::String("Alice".to_string()))
+        );
         // order preserved: name first, then age
         let keys: Vec<&str> = obj.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(keys, vec!["name", "age"]);
@@ -570,7 +561,9 @@ mod tests {
                 ("zip", ZerxValue::String("75000".to_string())),
             ]),
         )]);
-        let result = schema.replace(&instance, "/profile/city", &"Berlin").unwrap();
+        let result = schema
+            .replace(&instance, "/profile/city", &"Berlin")
+            .unwrap();
         let city = result.get("profile").and_then(|v| v.get("city")).unwrap();
         assert_eq!(city, &ZerxValue::String("Berlin".to_string()));
         let zip = result.get("profile").and_then(|v| v.get("zip")).unwrap();
@@ -580,7 +573,11 @@ mod tests {
     #[test]
     fn replace_array_element() {
         let schema: Schema = array(number()).into();
-        let instance = make_arr(vec![ZerxValue::I64(1), ZerxValue::I64(2), ZerxValue::I64(3)]);
+        let instance = make_arr(vec![
+            ZerxValue::I64(1),
+            ZerxValue::I64(2),
+            ZerxValue::I64(3),
+        ]);
         let result = schema.replace(&instance, "/1", &99i32).unwrap();
         let arr = result.as_array().unwrap();
         assert_eq!(arr[0], ZerxValue::I64(1));
@@ -623,8 +620,7 @@ mod tests {
 
     #[test]
     fn replace_missing_parent_intermediate() {
-        let schema: Schema =
-            object([("a", object([("b", number().into())]).into())]).into();
+        let schema: Schema = object([("a", object([("b", number().into())]).into())]).into();
         // "a" is present but has no "b"
         let instance = make_obj(&[("a", make_obj(&[]))]);
         let err = schema.replace(&instance, "/a/b", &42i32).unwrap_err();
@@ -769,14 +765,18 @@ mod tests {
 
         // Compliant replacement (no extra key) succeeds
         let good_profile = make_obj(&[("city", ZerxValue::String("Berlin".to_string()))]);
-        let ok = schema.replace(&instance, "/profile", &good_profile).unwrap();
+        let ok = schema
+            .replace(&instance, "/profile", &good_profile)
+            .unwrap();
         assert_eq!(
             ok.get("profile").and_then(|p| p.get("city")),
             Some(&ZerxValue::String("Berlin".to_string()))
         );
 
         // Replacing a scalar leaf with a value of the wrong type → TYPE_MISMATCH at the leaf path
-        let err2 = schema.replace(&instance, "/profile/city", &42i32).unwrap_err();
+        let err2 = schema
+            .replace(&instance, "/profile/city", &42i32)
+            .unwrap_err();
         assert_eq!(err2.code, ErrorCode::TYPE_MISMATCH);
         assert_eq!(err2.path, vec!["profile", "city"]);
     }

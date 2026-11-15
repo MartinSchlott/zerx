@@ -115,8 +115,9 @@ impl ZerxError {
     /// Serialise to a [`serde_json::Value`].  Infallible because every field
     /// is a plain serialisable type (C8 guarantee).
     pub fn to_json(&self) -> serde_json::Value {
-        serde_json::to_value(self)
-            .expect("ZerxError serialization is infallible: all fields are plain serialisable types")
+        serde_json::to_value(self).expect(
+            "ZerxError serialization is infallible: all fields are plain serialisable types",
+        )
     }
 
     /// Aggregate multiple per-variant errors into a single `UNION_MISMATCH`
@@ -193,13 +194,19 @@ mod tests {
         let v = e.to_json();
         let obj = v.as_object().unwrap();
         // Exactly the six approved keys — no more, no less.
-        let keys: std::collections::BTreeSet<&str> =
-            obj.keys().map(String::as_str).collect();
+        let keys: std::collections::BTreeSet<&str> = obj.keys().map(String::as_str).collect();
         assert_eq!(
             keys,
-            ["code", "expected", "inner_errors", "message", "path", "received"]
-                .into_iter()
-                .collect::<std::collections::BTreeSet<_>>()
+            [
+                "code",
+                "expected",
+                "inner_errors",
+                "message",
+                "path",
+                "received"
+            ]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
         );
         assert_eq!(obj["code"], serde_json::json!("type_mismatch"));
         assert_eq!(obj["path"], serde_json::json!(["x"]));
@@ -237,8 +244,11 @@ mod tests {
         let e_root = ZerxError::new(ErrorCode::TYPE_MISMATCH, "bad type");
         assert_eq!(e_root.to_string(), "(root): bad type");
 
-        let e_path = ZerxError::new(ErrorCode::TYPE_MISMATCH, "bad type")
-            .at(vec!["a".into(), "b".into(), "0".into()]);
+        let e_path = ZerxError::new(ErrorCode::TYPE_MISMATCH, "bad type").at(vec![
+            "a".into(),
+            "b".into(),
+            "0".into(),
+        ]);
         assert_eq!(e_path.to_string(), "a/b/0: bad type");
     }
 

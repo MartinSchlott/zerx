@@ -185,7 +185,9 @@ impl SchemaKind {
             SchemaKind::Tuple(_) => crate::types::check_tuple(value),
             SchemaKind::Union(_) => crate::types::check_union(),
             SchemaKind::OneOf(_) => crate::types::check_union(),
-            SchemaKind::DiscriminatedUnion(body) => crate::types::check_discriminated_union(value, body),
+            SchemaKind::DiscriminatedUnion(body) => {
+                crate::types::check_discriminated_union(value, body)
+            }
             SchemaKind::Literal(c) => crate::types::check_literal(value, c),
             SchemaKind::Buffer => crate::types::check_buffer(value),
             SchemaKind::Uri => crate::types::check_uri(value),
@@ -220,7 +222,9 @@ impl SchemaKind {
             SchemaKind::Tuple(items) => crate::types::parse_tuple(items, value, ctx),
             SchemaKind::Union(variants) => crate::types::parse_union(variants, value, ctx),
             SchemaKind::OneOf(variants) => crate::types::parse_one_of(variants, value, ctx),
-            SchemaKind::DiscriminatedUnion(body) => crate::types::parse_discriminated_union(body, value, ctx),
+            SchemaKind::DiscriminatedUnion(body) => {
+                crate::types::parse_discriminated_union(body, value, ctx)
+            }
             SchemaKind::Literal(_) => Ok(value.clone()),
         }
     }
@@ -319,7 +323,10 @@ impl Schema {
     }
 
     /// Public entry: serialize value and run the parse flow.
-    pub fn validate<T: serde::Serialize + ?Sized>(&self, value: &T) -> Result<ZerxValue, ZerxError> {
+    pub fn validate<T: serde::Serialize + ?Sized>(
+        &self,
+        value: &T,
+    ) -> Result<ZerxValue, ZerxError> {
         let v = ZerxValue::from_serialize(value)?;
         self.parse_present(&v, &mut ParseContext::new())
     }
@@ -366,7 +373,10 @@ impl Schema {
     fn run_refine(&self, value: ZerxValue) -> Result<ZerxValue, ZerxError> {
         for r in &self.modifiers.refine {
             if !(r.check)(&value) {
-                return Err(ZerxError::new(ErrorCode::REFINEMENT_FAILED, r.message.clone()));
+                return Err(ZerxError::new(
+                    ErrorCode::REFINEMENT_FAILED,
+                    r.message.clone(),
+                ));
             }
         }
         Ok(value)
@@ -389,7 +399,10 @@ impl Schema {
                 } else if self.modifiers.optional {
                     Ok(None)
                 } else {
-                    Err(ZerxError::new(ErrorCode::REQUIRED, "required field is missing"))
+                    Err(ZerxError::new(
+                        ErrorCode::REQUIRED,
+                        "required field is missing",
+                    ))
                 }
             }
             // Explicit null does NOT trigger default; handled by nullable in parse_present
@@ -481,7 +494,10 @@ impl<T: BuilderInner> Modify for T {
         self
     }
     fn meta(mut self, key: impl Into<String>, value: impl Into<ZerxValue>) -> Self {
-        self.schema_mut().modifiers.meta.insert(key.into(), value.into());
+        self.schema_mut()
+            .modifiers
+            .meta
+            .insert(key.into(), value.into());
         self
     }
     fn example(mut self, value: impl Into<ZerxValue>) -> Self {
@@ -662,20 +678,31 @@ mod tests {
     fn validators_order_and_before_refine() {
         // Single validator rejects
         let mut s = Schema::new(SchemaKind::Any);
-        s.validators.push(Rc::new(RejectAll { code: ErrorCode::new("v1") }));
+        s.validators.push(Rc::new(RejectAll {
+            code: ErrorCode::new("v1"),
+        }));
         assert_eq!(s.validate(&42i32).unwrap_err().code, ErrorCode::new("v1"));
 
         // Two validators: first failure wins
         let mut s2 = Schema::new(SchemaKind::Any);
-        s2.validators.push(Rc::new(RejectAll { code: ErrorCode::new("first") }));
-        s2.validators.push(Rc::new(RejectAll { code: ErrorCode::new("second") }));
-        assert_eq!(s2.validate(&42i32).unwrap_err().code, ErrorCode::new("first"));
+        s2.validators.push(Rc::new(RejectAll {
+            code: ErrorCode::new("first"),
+        }));
+        s2.validators.push(Rc::new(RejectAll {
+            code: ErrorCode::new("second"),
+        }));
+        assert_eq!(
+            s2.validate(&42i32).unwrap_err().code,
+            ErrorCode::new("first")
+        );
 
         // Validator short-circuits before refine
         let flag = Rc::new(Cell::new(false));
         let flag_clone = flag.clone();
         let mut s3 = Schema::new(SchemaKind::Any);
-        s3.validators.push(Rc::new(RejectAll { code: ErrorCode::new("v3") }));
+        s3.validators.push(Rc::new(RejectAll {
+            code: ErrorCode::new("v3"),
+        }));
         s3.modifiers.refine.push(Refinement {
             check: Rc::new(move |_| {
                 flag_clone.set(true);
@@ -792,11 +819,13 @@ mod tests {
     // 11. A lazy's own nullable is honoured before resolution and delegation
     #[test]
     fn lazy_nullable_honours_outer_nullable() {
-        let nullable: Schema =
-            lazy(|| crate::object([("a", crate::string().into())]).into())
-                .nullable()
-                .into();
-        assert_eq!(nullable.validate(&ZerxValue::Null).unwrap(), ZerxValue::Null);
+        let nullable: Schema = lazy(|| crate::object([("a", crate::string().into())]).into())
+            .nullable()
+            .into();
+        assert_eq!(
+            nullable.validate(&ZerxValue::Null).unwrap(),
+            ZerxValue::Null
+        );
         // A non-null value still goes through the inner schema.
         assert!(nullable.validate(&serde_json::json!({"a": 1})).is_err());
         assert!(nullable.validate(&serde_json::json!({"a": "x"})).is_ok());
@@ -811,10 +840,7 @@ mod tests {
     // 12. Refine parity on a nullable lazy: null short-circuits before refinement
     #[test]
     fn lazy_nullable_refine_parity() {
-        let nullable_string: Schema = crate::string()
-            .nullable()
-            .refine(|_| false, "never")
-            .into();
+        let nullable_string: Schema = crate::string().nullable().refine(|_| false, "never").into();
         let nullable_lazy: Schema = lazy(|| any().into())
             .nullable()
             .refine(|_| false, "never")

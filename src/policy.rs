@@ -230,8 +230,17 @@ impl IntoObject for Value {
 // Keywords that can constrain `null` itself. `[T, "null"]` → `(T and K) or null`
 // is exact only when none of these appears in the node.
 const NULL_CONSTRAINING: &[&str] = &[
-    "enum", "const", "anyOf", "oneOf", "allOf", "not",
-    "$ref", "$dynamicRef", "if", "then", "else",
+    "enum",
+    "const",
+    "anyOf",
+    "oneOf",
+    "allOf",
+    "not",
+    "$ref",
+    "$dynamicRef",
+    "if",
+    "then",
+    "else",
 ];
 
 fn sql_nullable_normalise(value: &Value) -> Result<Value, ZerxError> {
@@ -248,9 +257,7 @@ fn sql_nullable_normalise(value: &Value) -> Result<Value, ZerxError> {
                 let strs: Option<Vec<&str>> = types.iter().map(|v| v.as_str()).collect();
                 if let Some(strs) = strs {
                     let null_count = strs.iter().filter(|&&t| t == "null").count();
-                    if null_count == 1
-                        && !NULL_CONSTRAINING.iter().any(|k| obj.contains_key(*k))
-                    {
+                    if null_count == 1 && !NULL_CONSTRAINING.iter().any(|k| obj.contains_key(*k)) {
                         let other = *strs.iter().find(|&&t| t != "null").unwrap();
                         let mut core = obj.clone();
                         core.insert("type".to_owned(), Value::String(other.to_owned()));
@@ -288,9 +295,7 @@ fn sql_array_items_fallback(value: &Value) -> Result<Value, ZerxError> {
             Some(o) => o,
             None => return Ok(node.clone()),
         };
-        if obj.get("type").and_then(|v| v.as_str()) == Some("array")
-            && !obj.contains_key("items")
-        {
+        if obj.get("type").and_then(|v| v.as_str()) == Some("array") && !obj.contains_key("items") {
             let mut new_obj = obj.clone();
             new_obj.insert("items".to_owned(), Value::Object(serde_json::Map::new()));
             return Ok(Value::Object(new_obj));
@@ -312,7 +317,10 @@ fn sql_pg_type_substitute(value: &Value) -> Result<Value, ZerxError> {
 
         if typ == Some("string") {
             // bytea → buffer  (format check is case-insensitive; also remove x-pg-type)
-            if fmt.map(|s| s.eq_ignore_ascii_case("bytea")).unwrap_or(false) {
+            if fmt
+                .map(|s| s.eq_ignore_ascii_case("bytea"))
+                .unwrap_or(false)
+            {
                 let mut new_obj = obj.clone();
                 new_obj.remove("x-pg-type");
                 new_obj.insert("format".to_owned(), Value::String("buffer".to_owned()));
@@ -413,10 +421,7 @@ pub fn apply_type_transforms(
 }
 
 /// Import a JSON Schema with policy and transform options.
-pub fn from_json_schema_with(
-    value: &Value,
-    opts: &ImportOptions,
-) -> Result<Schema, ZerxError> {
+pub fn from_json_schema_with(value: &Value, opts: &ImportOptions) -> Result<Schema, ZerxError> {
     // Step 1: Resolve named policy.
     let policy = if let Some(name) = &opts.policy {
         lookup_policy(name).ok_or_else(|| {
@@ -523,7 +528,10 @@ mod tests {
             },
         );
         let exported = re_export(&result.unwrap());
-        assert_eq!(exported.get("type").and_then(|v| v.as_str()), Some("string"));
+        assert_eq!(
+            exported.get("type").and_then(|v| v.as_str()),
+            Some("string")
+        );
     }
 
     // 3. apply_type_transforms fold + ordering
@@ -536,7 +544,10 @@ mod tests {
             if exported.get("type").and_then(|v| v.as_str()) == Some("string") {
                 Ok(s)
             } else {
-                Err(ZerxError::new(ErrorCode::UNKNOWN_ERROR, "t1 did not run first"))
+                Err(ZerxError::new(
+                    ErrorCode::UNKNOWN_ERROR,
+                    "t1 did not run first",
+                ))
             }
         });
         assert!(apply_type_transforms(crate::any().into(), &[t1, t2]).is_ok());
@@ -544,17 +555,15 @@ mod tests {
 
     #[test]
     fn test_apply_type_transforms_error_propagates() {
-        let t_err: TypeTransform = Arc::new(|_s: Schema| {
-            Err(ZerxError::new(ErrorCode::UNKNOWN_ERROR, "transform error"))
-        });
+        let t_err: TypeTransform =
+            Arc::new(|_s: Schema| Err(ZerxError::new(ErrorCode::UNKNOWN_ERROR, "transform error")));
         assert!(apply_type_transforms(crate::any().into(), &[t_err]).is_err());
     }
 
     // 4. deref hook + sibling merge
     #[test]
     fn test_deref_external_ref_resolves_to_string() {
-        let resolver: RefResolver =
-            Arc::new(|_r: &str| Ok(json!({"type": "string"})));
+        let resolver: RefResolver = Arc::new(|_r: &str| Ok(json!({"type": "string"})));
         let result = from_json_schema_with(
             &json!({"$ref": "https://x/y"}),
             &ImportOptions {
@@ -563,13 +572,15 @@ mod tests {
             },
         );
         let exported = re_export(&result.unwrap());
-        assert_eq!(exported.get("type").and_then(|v| v.as_str()), Some("string"));
+        assert_eq!(
+            exported.get("type").and_then(|v| v.as_str()),
+            Some("string")
+        );
     }
 
     #[test]
     fn test_deref_sibling_description_survives() {
-        let resolver: RefResolver =
-            Arc::new(|_r: &str| Ok(json!({"type": "string"})));
+        let resolver: RefResolver = Arc::new(|_r: &str| Ok(json!({"type": "string"})));
         let result = from_json_schema_with(
             &json!({"$ref": "https://x/y", "description": "d"}),
             &ImportOptions {
@@ -588,7 +599,10 @@ mod tests {
     fn test_deref_local_ref_left_to_core_importer() {
         // Deref must NOT be called for local #/$defs/… refs.
         let resolver: RefResolver = Arc::new(|_r: &str| {
-            Err(ZerxError::new(ErrorCode::UNKNOWN_ERROR, "should not be called"))
+            Err(ZerxError::new(
+                ErrorCode::UNKNOWN_ERROR,
+                "should not be called",
+            ))
         });
         let result = from_json_schema_with(
             &json!({
@@ -605,9 +619,8 @@ mod tests {
 
     #[test]
     fn test_deref_resolver_error_propagates() {
-        let resolver: RefResolver = Arc::new(|_r: &str| {
-            Err(ZerxError::new(ErrorCode::UNKNOWN_ERROR, "resolver error"))
-        });
+        let resolver: RefResolver =
+            Arc::new(|_r: &str| Err(ZerxError::new(ErrorCode::UNKNOWN_ERROR, "resolver error")));
         let result = from_json_schema_with(
             &json!({"$ref": "https://x/y"}),
             &ImportOptions {
@@ -754,24 +767,30 @@ mod tests {
             "additionalProperties": false
         }));
         let exported = re_export(&result.unwrap());
-        let props = exported
-            .get("properties")
-            .unwrap()
-            .as_object()
-            .unwrap();
+        let props = exported.get("properties").unwrap().as_object().unwrap();
         // data: buffer (was bytea)
         assert_eq!(
-            props.get("data").unwrap().get("format").and_then(|v| v.as_str()),
+            props
+                .get("data")
+                .unwrap()
+                .get("format")
+                .and_then(|v| v.as_str()),
             Some("buffer")
         );
         // count: string (was int64 number), optional
         assert_eq!(
-            props.get("count").unwrap().get("type").and_then(|v| v.as_str()),
+            props
+                .get("count")
+                .unwrap()
+                .get("type")
+                .and_then(|v| v.as_str()),
             Some("string")
         );
         // strict mode preserved
         assert_eq!(
-            exported.get("additionalProperties").and_then(|v| v.as_bool()),
+            exported
+                .get("additionalProperties")
+                .and_then(|v| v.as_bool()),
             Some(false)
         );
     }
@@ -814,7 +833,10 @@ mod tests {
     #[test]
     fn test_schema_transform_error_propagates() {
         let failing: SchemaTransform = Arc::new(|_v: &Value| {
-            Err(ZerxError::new(ErrorCode::UNKNOWN_ERROR, "schema transform error"))
+            Err(ZerxError::new(
+                ErrorCode::UNKNOWN_ERROR,
+                "schema transform error",
+            ))
         });
         let result = from_json_schema_with(
             &json!({"type": "string"}),
@@ -829,7 +851,10 @@ mod tests {
     #[test]
     fn test_type_transform_error_propagates() {
         let failing: TypeTransform = Arc::new(|_s: Schema| {
-            Err(ZerxError::new(ErrorCode::UNKNOWN_ERROR, "type transform error"))
+            Err(ZerxError::new(
+                ErrorCode::UNKNOWN_ERROR,
+                "type transform error",
+            ))
         });
         let result = from_json_schema_with(
             &json!({"type": "string"}),
@@ -888,11 +913,7 @@ mod tests {
         }));
         assert!(result.is_ok(), "{result:?}");
         let exported = re_export(&result.unwrap());
-        let member_fmt = exported
-            .get("prefixItems")
-            .unwrap()
-            .as_array()
-            .unwrap()[0]
+        let member_fmt = exported.get("prefixItems").unwrap().as_array().unwrap()[0]
             .get("format")
             .and_then(|v| v.as_str());
         assert_eq!(member_fmt, Some("buffer"));
@@ -922,8 +943,14 @@ mod tests {
         // Both format:"bytea" and x-pg-type:"bytea" present; x-pg-type must be consumed.
         let result = import_sql(json!({"type": "string", "format": "bytea", "x-pg-type": "bytea"}));
         let exported = re_export(&result.unwrap());
-        assert_eq!(exported.get("format").and_then(|v| v.as_str()), Some("buffer"));
-        assert!(exported.get("x-pg-type").is_none(), "x-pg-type leaked into export");
+        assert_eq!(
+            exported.get("format").and_then(|v| v.as_str()),
+            Some("buffer")
+        );
+        assert!(
+            exported.get("x-pg-type").is_none(),
+            "x-pg-type leaked into export"
+        );
     }
 
     #[test]
@@ -931,17 +958,30 @@ mod tests {
         // format:"int64" and x-pg-type:"int8" both present; x-pg-type must be consumed.
         let result = import_sql(json!({"type": "number", "format": "int64", "x-pg-type": "int8"}));
         let exported = re_export(&result.unwrap());
-        assert_eq!(exported.get("type").and_then(|v| v.as_str()), Some("string"));
-        assert!(exported.get("x-pg-type").is_none(), "x-pg-type leaked into export");
+        assert_eq!(
+            exported.get("type").and_then(|v| v.as_str()),
+            Some("string")
+        );
+        assert!(
+            exported.get("x-pg-type").is_none(),
+            "x-pg-type leaked into export"
+        );
     }
 
     #[test]
     fn test_sql_dual_signal_numeric_no_leaked_pg_type() {
         // format:"numeric" and x-pg-type:"numeric" both present; x-pg-type must be consumed.
-        let result = import_sql(json!({"type": "number", "format": "numeric", "x-pg-type": "numeric"}));
+        let result =
+            import_sql(json!({"type": "number", "format": "numeric", "x-pg-type": "numeric"}));
         let exported = re_export(&result.unwrap());
-        assert_eq!(exported.get("type").and_then(|v| v.as_str()), Some("string"));
-        assert!(exported.get("x-pg-type").is_none(), "x-pg-type leaked into export");
+        assert_eq!(
+            exported.get("type").and_then(|v| v.as_str()),
+            Some("string")
+        );
+        assert!(
+            exported.get("x-pg-type").is_none(),
+            "x-pg-type leaked into export"
+        );
     }
 
     // 16. strip_unknown

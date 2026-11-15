@@ -274,9 +274,7 @@ impl Serialize for ZerxValue {
 // ---------------------------------------------------------------------------
 
 impl ZerxValue {
-    pub fn from_serialize<T: serde::Serialize + ?Sized>(
-        value: &T,
-    ) -> Result<ZerxValue, ZerxError> {
+    pub fn from_serialize<T: serde::Serialize + ?Sized>(value: &T) -> Result<ZerxValue, ZerxError> {
         value.serialize(ValueSerializer)
     }
 }
@@ -345,10 +343,7 @@ impl Serializer for MapKeySerializer {
     fn serialize_unit(self) -> Result<std::string::String, ZerxError> {
         Err(serde::ser::Error::custom("unit cannot be a map key"))
     }
-    fn serialize_unit_struct(
-        self,
-        _name: &'static str,
-    ) -> Result<std::string::String, ZerxError> {
+    fn serialize_unit_struct(self, _name: &'static str) -> Result<std::string::String, ZerxError> {
         Err(serde::ser::Error::custom("unit struct cannot be a map key"))
     }
     fn serialize_unit_variant(
@@ -389,16 +384,10 @@ impl Serializer for MapKeySerializer {
     fn serialize_bytes(self, _v: &[u8]) -> Result<std::string::String, ZerxError> {
         Err(serde::ser::Error::custom("bytes cannot be a map key"))
     }
-    fn serialize_seq(
-        self,
-        _len: Option<usize>,
-    ) -> Result<Self::SerializeSeq, ZerxError> {
+    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq, ZerxError> {
         Err(serde::ser::Error::custom("sequence cannot be a map key"))
     }
-    fn serialize_tuple(
-        self,
-        _len: usize,
-    ) -> Result<Self::SerializeTuple, ZerxError> {
+    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, ZerxError> {
         Err(serde::ser::Error::custom("tuple cannot be a map key"))
     }
     fn serialize_tuple_struct(
@@ -406,7 +395,9 @@ impl Serializer for MapKeySerializer {
         _name: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleStruct, ZerxError> {
-        Err(serde::ser::Error::custom("tuple struct cannot be a map key"))
+        Err(serde::ser::Error::custom(
+            "tuple struct cannot be a map key",
+        ))
     }
     fn serialize_tuple_variant(
         self,
@@ -419,10 +410,7 @@ impl Serializer for MapKeySerializer {
             "tuple variant cannot be a map key",
         ))
     }
-    fn serialize_map(
-        self,
-        _len: Option<usize>,
-    ) -> Result<Self::SerializeMap, ZerxError> {
+    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, ZerxError> {
         Err(serde::ser::Error::custom("map cannot be a map key"))
     }
     fn serialize_struct(
@@ -527,10 +515,7 @@ impl Serializer for ValueSerializer {
     fn serialize_none(self) -> Result<ZerxValue, ZerxError> {
         Ok(ZerxValue::Null)
     }
-    fn serialize_some<T: Serialize + ?Sized>(
-        self,
-        value: &T,
-    ) -> Result<ZerxValue, ZerxError> {
+    fn serialize_some<T: Serialize + ?Sized>(self, value: &T) -> Result<ZerxValue, ZerxError> {
         value.serialize(self)
     }
     fn serialize_newtype_struct<T: Serialize + ?Sized>(
@@ -552,10 +537,7 @@ impl Serializer for ValueSerializer {
         map.insert(variant, inner);
         Ok(ZerxValue::Object(map))
     }
-    fn serialize_seq(
-        self,
-        _len: Option<usize>,
-    ) -> Result<Self::SerializeSeq, ZerxError> {
+    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq, ZerxError> {
         Ok(SeqBuilder(Vec::new()))
     }
     fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, ZerxError> {
@@ -580,10 +562,7 @@ impl Serializer for ValueSerializer {
             items: Vec::new(),
         })
     }
-    fn serialize_map(
-        self,
-        _len: Option<usize>,
-    ) -> Result<Self::SerializeMap, ZerxError> {
+    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, ZerxError> {
         Ok(MapBuilder {
             map: Map::new(),
             next_key: None,
@@ -790,10 +769,16 @@ mod tests {
     // 1. Scalars in
     #[test]
     fn scalars_in() {
-        assert_eq!(ZerxValue::from_serialize(&true).unwrap(), ZerxValue::Bool(true));
+        assert_eq!(
+            ZerxValue::from_serialize(&true).unwrap(),
+            ZerxValue::Bool(true)
+        );
         assert_eq!(ZerxValue::from_serialize(&7i32).unwrap(), ZerxValue::I64(7));
         assert_eq!(ZerxValue::from_serialize(&7u8).unwrap(), ZerxValue::U64(7));
-        assert_eq!(ZerxValue::from_serialize(&2.5f64).unwrap(), ZerxValue::F64(2.5));
+        assert_eq!(
+            ZerxValue::from_serialize(&2.5f64).unwrap(),
+            ZerxValue::F64(2.5)
+        );
         assert_eq!(
             ZerxValue::from_serialize(&'x').unwrap(),
             ZerxValue::String("x".into())
@@ -818,8 +803,14 @@ mod tests {
     fn ints_128bit() {
         let i = i128::MAX;
         let u = u128::MAX;
-        assert_eq!(ZerxValue::from_serialize(&i).unwrap(), ZerxValue::I128(i128::MAX));
-        assert_eq!(ZerxValue::from_serialize(&u).unwrap(), ZerxValue::U128(u128::MAX));
+        assert_eq!(
+            ZerxValue::from_serialize(&i).unwrap(),
+            ZerxValue::I128(i128::MAX)
+        );
+        assert_eq!(
+            ZerxValue::from_serialize(&u).unwrap(),
+            ZerxValue::U128(u128::MAX)
+        );
         // Self-roundtrip via serialize out → in
         assert_eq!(
             ZerxValue::from_serialize(&ZerxValue::I128(i128::MAX)).unwrap(),
@@ -934,16 +925,10 @@ mod tests {
         assert_eq!(ZerxValue::F64(1.5).as_f64(), Some(1.5));
         assert_eq!(ZerxValue::I64(1).as_f64(), None);
 
-        assert_eq!(
-            ZerxValue::String("s".into()).as_str(),
-            Some("s")
-        );
+        assert_eq!(ZerxValue::String("s".into()).as_str(), Some("s"));
         assert_eq!(ZerxValue::I64(1).as_str(), None);
 
-        assert_eq!(
-            ZerxValue::Bytes(vec![0]).as_bytes(),
-            Some([0u8].as_slice())
-        );
+        assert_eq!(ZerxValue::Bytes(vec![0]).as_bytes(), Some([0u8].as_slice()));
         assert_eq!(ZerxValue::I64(1).as_bytes(), None);
 
         let arr = ZerxValue::Array(vec![ZerxValue::Null]);

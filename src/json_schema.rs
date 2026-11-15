@@ -37,10 +37,7 @@ impl Schema {
 
         if let serde_json::Value::Object(ref mut map) = root {
             if !ctx.defs.is_empty() {
-                map.insert(
-                    "$defs".to_owned(),
-                    serde_json::Value::Object(ctx.defs),
-                );
+                map.insert("$defs".to_owned(), serde_json::Value::Object(ctx.defs));
             }
             if let Some(ref dialect) = opts.dialect {
                 map.insert(
@@ -58,23 +55,59 @@ impl Schema {
 // ---------------------------------------------------------------------------
 
 const RESERVED: &[&str] = &[
-    "type", "properties", "required", "additionalProperties",
-    "items", "prefixItems", "minItems", "maxItems",
-    "anyOf", "oneOf", "discriminator",
-    "const", "enum",
-    "$ref", "$defs", "$schema",
-    "format", "contentMediaType",
-    "minLength", "maxLength", "pattern",
-    "minimum", "maximum",
-    "description", "default", "examples",
-    "deprecated", "readOnly", "writeOnly", "title",
+    "type",
+    "properties",
+    "required",
+    "additionalProperties",
+    "items",
+    "prefixItems",
+    "minItems",
+    "maxItems",
+    "anyOf",
+    "oneOf",
+    "discriminator",
+    "const",
+    "enum",
+    "$ref",
+    "$defs",
+    "$schema",
+    "format",
+    "contentMediaType",
+    "minLength",
+    "maxLength",
+    "pattern",
+    "minimum",
+    "maximum",
+    "description",
+    "default",
+    "examples",
+    "deprecated",
+    "readOnly",
+    "writeOnly",
+    "title",
     // Every remaining assertion keyword is export-reserved: `meta` must never
     // carry a keyword whose JSON Schema meaning zerx would not enforce.
-    "allOf", "not", "if", "then", "else", "$dynamicRef",
-    "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
-    "contains", "minContains", "maxContains", "uniqueItems", "unevaluatedItems",
-    "patternProperties", "propertyNames", "dependentRequired", "dependentSchemas",
-    "minProperties", "maxProperties", "unevaluatedProperties",
+    "allOf",
+    "not",
+    "if",
+    "then",
+    "else",
+    "$dynamicRef",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+    "contains",
+    "minContains",
+    "maxContains",
+    "uniqueItems",
+    "unevaluatedItems",
+    "patternProperties",
+    "propertyNames",
+    "dependentRequired",
+    "dependentSchemas",
+    "minProperties",
+    "maxProperties",
+    "unevaluatedProperties",
 ];
 
 fn is_reserved(key: &str) -> bool {
@@ -150,14 +183,20 @@ fn export_node(schema: &Schema, ctx: &mut ExportContext) -> serde_json::Value {
         let (id, is_new) = ctx.id_for(lzy.export_id());
         if is_new {
             // Placeholder prevents infinite recursion on cyclic schemas
-            ctx.defs.insert(id.clone(), serde_json::Value::Object(serde_json::Map::new()));
+            ctx.defs.insert(
+                id.clone(),
+                serde_json::Value::Object(serde_json::Map::new()),
+            );
             if let Ok(inner) = lzy.resolve() {
                 let exported = export_node(&inner, ctx);
                 ctx.defs.insert(id.clone(), exported);
             }
         }
         let mut core = serde_json::Map::new();
-        core.insert("$ref".to_owned(), serde_json::Value::String(format!("#/$defs/{id}")));
+        core.insert(
+            "$ref".to_owned(),
+            serde_json::Value::String(format!("#/$defs/{id}")),
+        );
         // Annotations/nullable still applied below (step 4+)
         apply_annotations(schema, ctx, &mut core);
         return wrap_nullable(schema, core);
@@ -188,7 +227,10 @@ fn apply_annotations(
     let m = &schema.modifiers;
 
     if let Some(ref d) = m.description {
-        core.insert("description".to_owned(), serde_json::Value::String(d.clone()));
+        core.insert(
+            "description".to_owned(),
+            serde_json::Value::String(d.clone()),
+        );
     }
     if let Some(ref def) = m.default {
         core.insert("default".to_owned(), zerx_to_json(def));
@@ -212,7 +254,10 @@ fn apply_annotations(
         core.insert("title".to_owned(), serde_json::Value::String(t.clone()));
     }
     if let Some(ref mime) = m.mime {
-        core.insert("contentMediaType".to_owned(), serde_json::Value::String(mime.clone()));
+        core.insert(
+            "contentMediaType".to_owned(),
+            serde_json::Value::String(mime.clone()),
+        );
     }
     // User format: only written if no semantic format already present
     if let Some(ref fmt) = m.format {
@@ -229,7 +274,10 @@ fn apply_annotations(
     }
 }
 
-fn wrap_nullable(schema: &Schema, core: serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
+fn wrap_nullable(
+    schema: &Schema,
+    core: serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Value {
     if schema.modifiers.nullable {
         serde_json::Value::Object({
             let mut m = serde_json::Map::new();
@@ -251,32 +299,49 @@ fn wrap_nullable(schema: &Schema, core: serde_json::Map<String, serde_json::Valu
 // base_schema — central exhaustive match over SchemaKind
 // ---------------------------------------------------------------------------
 
-fn base_schema(kind: &SchemaKind, ctx: &mut ExportContext) -> serde_json::Map<String, serde_json::Value> {
+fn base_schema(
+    kind: &SchemaKind,
+    ctx: &mut ExportContext,
+) -> serde_json::Map<String, serde_json::Value> {
     let mut m = serde_json::Map::new();
     match kind {
         SchemaKind::Any => {}
 
         SchemaKind::String => {
-            m.insert("type".to_owned(), serde_json::Value::String("string".to_owned()));
+            m.insert(
+                "type".to_owned(),
+                serde_json::Value::String("string".to_owned()),
+            );
         }
 
         SchemaKind::Number => {
-            m.insert("type".to_owned(), serde_json::Value::String("number".to_owned()));
+            m.insert(
+                "type".to_owned(),
+                serde_json::Value::String("number".to_owned()),
+            );
         }
 
         SchemaKind::Boolean => {
-            m.insert("type".to_owned(), serde_json::Value::String("boolean".to_owned()));
+            m.insert(
+                "type".to_owned(),
+                serde_json::Value::String("boolean".to_owned()),
+            );
         }
 
         SchemaKind::Null => {
-            m.insert("type".to_owned(), serde_json::Value::String("null".to_owned()));
+            m.insert(
+                "type".to_owned(),
+                serde_json::Value::String("null".to_owned()),
+            );
         }
 
         SchemaKind::Enum(set) => {
             m.insert(
                 "enum".to_owned(),
                 serde_json::Value::Array(
-                    set.iter().map(|s| serde_json::Value::String(s.clone())).collect(),
+                    set.iter()
+                        .map(|s| serde_json::Value::String(s.clone()))
+                        .collect(),
                 ),
             );
         }
@@ -290,14 +355,26 @@ fn base_schema(kind: &SchemaKind, ctx: &mut ExportContext) -> serde_json::Map<St
         }
 
         SchemaKind::Array(item) => {
-            m.insert("type".to_owned(), serde_json::Value::String("array".to_owned()));
+            m.insert(
+                "type".to_owned(),
+                serde_json::Value::String("array".to_owned()),
+            );
             m.insert("items".to_owned(), export_node(item, ctx));
         }
 
         SchemaKind::Record(value) => {
-            m.insert("type".to_owned(), serde_json::Value::String("object".to_owned()));
-            m.insert("format".to_owned(), serde_json::Value::String("record".to_owned()));
-            m.insert("properties".to_owned(), serde_json::Value::Object(serde_json::Map::new()));
+            m.insert(
+                "type".to_owned(),
+                serde_json::Value::String("object".to_owned()),
+            );
+            m.insert(
+                "format".to_owned(),
+                serde_json::Value::String("record".to_owned()),
+            );
+            m.insert(
+                "properties".to_owned(),
+                serde_json::Value::Object(serde_json::Map::new()),
+            );
             let additional = if is_plain_any(value) {
                 serde_json::Value::Bool(true)
             } else {
@@ -308,7 +385,10 @@ fn base_schema(kind: &SchemaKind, ctx: &mut ExportContext) -> serde_json::Map<St
 
         SchemaKind::Tuple(items) => {
             let n = items.len();
-            m.insert("type".to_owned(), serde_json::Value::String("array".to_owned()));
+            m.insert(
+                "type".to_owned(),
+                serde_json::Value::String("array".to_owned()),
+            );
             m.insert(
                 "prefixItems".to_owned(),
                 serde_json::Value::Array(items.iter().map(|s| export_node(s, ctx)).collect()),
@@ -335,7 +415,9 @@ fn base_schema(kind: &SchemaKind, ctx: &mut ExportContext) -> serde_json::Map<St
         SchemaKind::DiscriminatedUnion(body) => {
             m.insert(
                 "oneOf".to_owned(),
-                serde_json::Value::Array(body.variants.iter().map(|s| export_node(s, ctx)).collect()),
+                serde_json::Value::Array(
+                    body.variants.iter().map(|s| export_node(s, ctx)).collect(),
+                ),
             );
             let mut disc = serde_json::Map::new();
             disc.insert(
@@ -346,27 +428,54 @@ fn base_schema(kind: &SchemaKind, ctx: &mut ExportContext) -> serde_json::Map<St
         }
 
         SchemaKind::Buffer => {
-            m.insert("type".to_owned(), serde_json::Value::String("string".to_owned()));
-            m.insert("format".to_owned(), serde_json::Value::String("buffer".to_owned()));
+            m.insert(
+                "type".to_owned(),
+                serde_json::Value::String("string".to_owned()),
+            );
+            m.insert(
+                "format".to_owned(),
+                serde_json::Value::String("buffer".to_owned()),
+            );
         }
 
         SchemaKind::Uri => {
-            m.insert("type".to_owned(), serde_json::Value::String("string".to_owned()));
-            m.insert("format".to_owned(), serde_json::Value::String("uri".to_owned()));
+            m.insert(
+                "type".to_owned(),
+                serde_json::Value::String("string".to_owned()),
+            );
+            m.insert(
+                "format".to_owned(),
+                serde_json::Value::String("uri".to_owned()),
+            );
         }
 
         SchemaKind::Url => {
-            m.insert("type".to_owned(), serde_json::Value::String("string".to_owned()));
-            m.insert("format".to_owned(), serde_json::Value::String("url".to_owned()));
+            m.insert(
+                "type".to_owned(),
+                serde_json::Value::String("string".to_owned()),
+            );
+            m.insert(
+                "format".to_owned(),
+                serde_json::Value::String("url".to_owned()),
+            );
         }
 
         SchemaKind::Json => {
-            m.insert("format".to_owned(), serde_json::Value::String("json".to_owned()));
+            m.insert(
+                "format".to_owned(),
+                serde_json::Value::String("json".to_owned()),
+            );
         }
 
         SchemaKind::JsonSchema => {
-            m.insert("type".to_owned(), serde_json::Value::String("object".to_owned()));
-            m.insert("format".to_owned(), serde_json::Value::String("jsonschema".to_owned()));
+            m.insert(
+                "type".to_owned(),
+                serde_json::Value::String("object".to_owned()),
+            );
+            m.insert(
+                "format".to_owned(),
+                serde_json::Value::String("jsonschema".to_owned()),
+            );
         }
 
         SchemaKind::Lazy(_) => unreachable!("Lazy is intercepted in export_node"),
@@ -379,22 +488,25 @@ fn object_schema(
     ctx: &mut ExportContext,
     m: &mut serde_json::Map<String, serde_json::Value>,
 ) {
-    m.insert("type".to_owned(), serde_json::Value::String("object".to_owned()));
+    m.insert(
+        "type".to_owned(),
+        serde_json::Value::String("object".to_owned()),
+    );
 
     let mut properties = serde_json::Map::new();
     let mut required: Vec<serde_json::Value> = Vec::new();
 
     for (key, field) in &body.shape {
         properties.insert(key.clone(), export_node(field, ctx));
-        if !body.all_optional
-            && !field.modifiers.optional
-            && field.modifiers.default.is_none()
-        {
+        if !body.all_optional && !field.modifiers.optional && field.modifiers.default.is_none() {
             required.push(serde_json::Value::String(key.clone()));
         }
     }
 
-    m.insert("properties".to_owned(), serde_json::Value::Object(properties));
+    m.insert(
+        "properties".to_owned(),
+        serde_json::Value::Object(properties),
+    );
 
     if !required.is_empty() {
         m.insert("required".to_owned(), serde_json::Value::Array(required));
@@ -443,21 +555,54 @@ pub(crate) fn from_json_schema_inner(
 // ---------------------------------------------------------------------------
 
 const IMPORT_HANDLED: &[&str] = &[
-    "type", "properties", "required", "additionalProperties",
-    "items", "prefixItems", "enum", "const",
-    "anyOf", "oneOf", "$ref", "discriminator",
-    "minLength", "maxLength", "pattern", "minimum", "maximum",
-    "minItems", "maxItems", "format", "contentMediaType",
-    "description", "title", "default", "examples",
-    "deprecated", "readOnly", "writeOnly",
-    "$defs", "$schema",
+    "type",
+    "properties",
+    "required",
+    "additionalProperties",
+    "items",
+    "prefixItems",
+    "enum",
+    "const",
+    "anyOf",
+    "oneOf",
+    "$ref",
+    "discriminator",
+    "minLength",
+    "maxLength",
+    "pattern",
+    "minimum",
+    "maximum",
+    "minItems",
+    "maxItems",
+    "format",
+    "contentMediaType",
+    "description",
+    "title",
+    "default",
+    "examples",
+    "deprecated",
+    "readOnly",
+    "writeOnly",
+    "$defs",
+    "$schema",
 ];
 
 const IMPORT_UNSUPPORTED_STRUCTURAL: &[&str] = &[
-    "allOf", "not", "if", "then", "else", "contains",
-    "minContains", "maxContains", "patternProperties",
-    "propertyNames", "dependentSchemas", "dependentRequired",
-    "unevaluatedProperties", "unevaluatedItems", "$dynamicRef",
+    "allOf",
+    "not",
+    "if",
+    "then",
+    "else",
+    "contains",
+    "minContains",
+    "maxContains",
+    "patternProperties",
+    "propertyNames",
+    "dependentSchemas",
+    "dependentRequired",
+    "unevaluatedProperties",
+    "unevaluatedItems",
+    "$dynamicRef",
 ];
 
 // ---------------------------------------------------------------------------
@@ -489,9 +634,16 @@ fn assertion_applicability(key: &str) -> Option<Applicability> {
         }
         "items" | "prefixItems" | "contains" | "minContains" | "maxContains" | "minItems"
         | "maxItems" | "uniqueItems" | "unevaluatedItems" => Applicability::Types(ARRAY_APPLIES),
-        "properties" | "patternProperties" | "additionalProperties" | "propertyNames"
-        | "required" | "dependentRequired" | "dependentSchemas" | "minProperties"
-        | "maxProperties" | "unevaluatedProperties" => Applicability::Types(OBJECT_APPLIES),
+        "properties"
+        | "patternProperties"
+        | "additionalProperties"
+        | "propertyNames"
+        | "required"
+        | "dependentRequired"
+        | "dependentSchemas"
+        | "minProperties"
+        | "maxProperties"
+        | "unevaluatedProperties" => Applicability::Types(OBJECT_APPLIES),
         _ => return None,
     })
 }
@@ -562,7 +714,10 @@ fn compare_integer_forms((an, am): (bool, u128), (bn, bm): (bool, u128)) -> std:
 }
 
 /// Exact for integers, `f64` otherwise. Both operands are JSON numbers.
-fn compare_json_numbers(a: &serde_json::Value, b: &serde_json::Value) -> Option<std::cmp::Ordering> {
+fn compare_json_numbers(
+    a: &serde_json::Value,
+    b: &serde_json::Value,
+) -> Option<std::cmp::Ordering> {
     if let (Some(x), Some(y)) = (json_integer_form(a), json_integer_form(b)) {
         return Some(compare_integer_forms(x, y));
     }
@@ -609,8 +764,9 @@ fn validate_static_value(
     path: &[String],
 ) -> Result<(), ZerxError> {
     let ok = match key {
-        "minLength" | "maxLength" | "minItems" | "maxItems" | "minProperties"
-        | "maxProperties" => as_non_negative_u64(val).is_some(),
+        "minLength" | "maxLength" | "minItems" | "maxItems" | "minProperties" | "maxProperties" => {
+            as_non_negative_u64(val).is_some()
+        }
         "minimum" | "maximum" | "exclusiveMinimum" | "exclusiveMaximum" | "multipleOf" => {
             val.is_number()
         }
@@ -801,20 +957,19 @@ fn evaluate_enum_siblings(
         validate_static_value(k, val, path)?;
 
         for (index, member) in applicable {
-            let holds = if k == "multipleOf" {
-                match multiple_of(member, val) {
-                    Some(result) => result,
-                    None => {
-                        return Err(type_error(
+            let holds =
+                if k == "multipleOf" {
+                    match multiple_of(member, val) {
+                        Some(result) => result,
+                        None => return Err(type_error(
                             path,
                             ErrorCode::IMPORT_UNSUPPORTED,
                             "`multipleOf` alongside `enum`/`const` cannot be evaluated statically",
-                        ))
+                        )),
                     }
-                }
-            } else {
-                static_keyword_holds(k, val, member, path)?
-            };
+                } else {
+                    static_keyword_holds(k, val, member, path)?
+                };
             if !holds {
                 return Err(type_error(
                     path,
@@ -922,12 +1077,31 @@ fn is_bare_null_schema(v: &serde_json::Value) -> bool {
         return false;
     }
     const STRUCTURAL: &[&str] = &[
-        "properties", "required", "additionalProperties", "items", "prefixItems",
-        "enum", "const", "anyOf", "oneOf", "$ref", "discriminator",
-        "minLength", "maxLength", "pattern", "minimum", "maximum",
-        "minItems", "maxItems", "allOf", "not", "format", "contentMediaType",
+        "properties",
+        "required",
+        "additionalProperties",
+        "items",
+        "prefixItems",
+        "enum",
+        "const",
+        "anyOf",
+        "oneOf",
+        "$ref",
+        "discriminator",
+        "minLength",
+        "maxLength",
+        "pattern",
+        "minimum",
+        "maximum",
+        "minItems",
+        "maxItems",
+        "allOf",
+        "not",
+        "format",
+        "contentMediaType",
     ];
-    !obj.keys().any(|k| k != "type" && STRUCTURAL.contains(&k.as_str()))
+    !obj.keys()
+        .any(|k| k != "type" && STRUCTURAL.contains(&k.as_str()))
 }
 
 // ---------------------------------------------------------------------------
@@ -1039,7 +1213,10 @@ fn parse_type(
     };
     match raw {
         serde_json::Value::String(s) => match type_name(s) {
-            Some(name) => Ok(Some(TypeSpec { name, nullable: false })),
+            Some(name) => Ok(Some(TypeSpec {
+                name,
+                nullable: false,
+            })),
             None => Err(type_error(
                 path,
                 ErrorCode::IMPORT_MALFORMED,
@@ -1167,8 +1344,8 @@ pub(crate) fn import_value(
     path: &[String],
 ) -> Result<Schema, ZerxError> {
     use crate::{
-        any, array, boolean, buffer, discriminated_union, enumerate, json, jsonschema,
-        literal, null, number, record, tuple, union, uri, url,
+        any, array, boolean, buffer, discriminated_union, enumerate, json, jsonschema, literal,
+        null, number, record, tuple, union, uri, url,
     };
 
     // Step 1: Boolean schema.
@@ -1388,8 +1565,7 @@ pub(crate) fn import_value(
         let members: Vec<serde_json::Value> = if has_enum && has_const {
             let arr = enum_arr.expect("`enum` is an array per grammar check");
             let const_val = obj.get("const").expect("`const` present");
-            let const_zv =
-                ZerxValue::from_serialize(const_val).map_err(|e| e.at(path.to_vec()))?;
+            let const_zv = ZerxValue::from_serialize(const_val).map_err(|e| e.at(path.to_vec()))?;
             let mut is_member = false;
             for member in arr {
                 let member_zv =
@@ -1411,7 +1587,9 @@ pub(crate) fn import_value(
             vec![const_val.clone()]
         } else if has_enum {
             consumed.insert("enum".to_string());
-            enum_arr.expect("`enum` is an array per grammar check").clone()
+            enum_arr
+                .expect("`enum` is an array per grammar check")
+                .clone()
         } else {
             consumed.insert("const".to_string());
             vec![obj.get("const").expect("`const` present").clone()]
@@ -1667,19 +1845,15 @@ pub(crate) fn import_value(
                                 .at(path.to_vec()));
                             }
                         };
-                        let item_schema =
-                            if matches!(items_val, serde_json::Value::Bool(true))
-                                || items_val
-                                    .as_object()
-                                    .map(|o| o.is_empty())
-                                    .unwrap_or(false)
-                            {
-                                any().into()
-                            } else {
-                                let mut items_path = path.to_vec();
-                                items_path.push("items".to_string());
-                                import_value(items_val, ctx, &items_path)?
-                            };
+                        let item_schema = if matches!(items_val, serde_json::Value::Bool(true))
+                            || items_val.as_object().map(|o| o.is_empty()).unwrap_or(false)
+                        {
+                            any().into()
+                        } else {
+                            let mut items_path = path.to_vec();
+                            items_path.push("items".to_string());
+                            import_value(items_val, ctx, &items_path)?
+                        };
                         let mut ab = array(item_schema);
                         if let Some(raw) = obj.get("minItems") {
                             let n = as_non_negative_u64(raw).ok_or_else(|| {
@@ -1748,14 +1922,12 @@ pub(crate) fn import_value(
         schema = schema.title(title);
     }
     if let Some(def_val) = obj.get("default") {
-        let zv = ZerxValue::from_serialize(def_val)
-            .map_err(|e| e.at(path.to_vec()))?;
+        let zv = ZerxValue::from_serialize(def_val).map_err(|e| e.at(path.to_vec()))?;
         schema = schema.default(zv);
     }
     if let Some(examples) = obj.get("examples").and_then(|v| v.as_array()) {
         if let Some(first) = examples.first() {
-            let zv = ZerxValue::from_serialize(first)
-                .map_err(|e| e.at(path.to_vec()))?;
+            let zv = ZerxValue::from_serialize(first).map_err(|e| e.at(path.to_vec()))?;
             schema = schema.example(zv);
         }
     }
@@ -1773,7 +1945,14 @@ pub(crate) fn import_value(
     }
     // Non-marker, non-email, non-uuid format → format modifier.
     const FORMAT_SKIP: &[&str] = &[
-        "buffer", "record", "json", "jsonschema", "uri", "url", "email", "uuid",
+        "buffer",
+        "record",
+        "json",
+        "jsonschema",
+        "uri",
+        "url",
+        "email",
+        "uuid",
     ];
     if let Some(fmt_str) = fmt {
         if !FORMAT_SKIP.contains(&fmt_str) {
@@ -1816,8 +1995,7 @@ pub(crate) fn import_value(
         if IMPORT_HANDLED.contains(&key.as_str()) || assertion_applicability(key).is_some() {
             continue;
         }
-        let zv = ZerxValue::from_serialize(val)
-            .map_err(|e| e.at(path.to_vec()))?;
+        let zv = ZerxValue::from_serialize(val).map_err(|e| e.at(path.to_vec()))?;
         schema = schema.meta(key.clone(), zv);
     }
 
@@ -1916,8 +2094,8 @@ fn import_object(
 mod tests {
     use super::*;
     use crate::*;
-    use std::rc::Rc;
     use std::cell::RefCell;
+    use std::rc::Rc;
 
     fn js(schema: &Schema) -> serde_json::Value {
         schema.to_json_schema()
@@ -1932,7 +2110,10 @@ mod tests {
     fn scalars() {
         assert_eq!(js(&string().into()), serde_json::json!({"type": "string"}));
         assert_eq!(js(&number().into()), serde_json::json!({"type": "number"}));
-        assert_eq!(js(&boolean().into()), serde_json::json!({"type": "boolean"}));
+        assert_eq!(
+            js(&boolean().into()),
+            serde_json::json!({"type": "boolean"})
+        );
         assert_eq!(js(&null().into()), serde_json::json!({"type": "null"}));
         assert_eq!(js(&any().into()), serde_json::json!({}));
     }
@@ -1985,7 +2166,10 @@ mod tests {
         let s: Schema = array(string()).min(1).max(3).into();
         let v = js(&s);
         assert_eq!(get(&v, "type"), Some(&serde_json::json!("array")));
-        assert_eq!(get(&v, "items"), Some(&serde_json::json!({"type": "string"})));
+        assert_eq!(
+            get(&v, "items"),
+            Some(&serde_json::json!({"type": "string"}))
+        );
         assert_eq!(get(&v, "minItems"), Some(&serde_json::json!(1)));
         assert_eq!(get(&v, "maxItems"), Some(&serde_json::json!(3)));
     }
@@ -2013,11 +2197,17 @@ mod tests {
         assert_eq!(get(&v, "type"), Some(&serde_json::json!("object")));
         assert_eq!(get(&v, "format"), Some(&serde_json::json!("record")));
         assert_eq!(get(&v, "properties"), Some(&serde_json::json!({})));
-        assert_eq!(get(&v, "additionalProperties"), Some(&serde_json::json!({"format": "json"})));
+        assert_eq!(
+            get(&v, "additionalProperties"),
+            Some(&serde_json::json!({"format": "json"}))
+        );
 
         let sa: Schema = record(any()).into();
         let va = js(&sa);
-        assert_eq!(get(&va, "additionalProperties"), Some(&serde_json::json!(true)));
+        assert_eq!(
+            get(&va, "additionalProperties"),
+            Some(&serde_json::json!(true))
+        );
     }
 
     // 9. Object required / additionalProperties
@@ -2031,7 +2221,10 @@ mod tests {
         ])
         .into();
         let v = js(&s);
-        assert_eq!(get(&v, "additionalProperties"), Some(&serde_json::json!(false)));
+        assert_eq!(
+            get(&v, "additionalProperties"),
+            Some(&serde_json::json!(false))
+        );
         let req = get(&v, "required").unwrap().as_array().unwrap();
         assert_eq!(req, &[serde_json::json!("a")]);
         let props = get(&v, "properties").unwrap();
@@ -2040,12 +2233,18 @@ mod tests {
         // passthrough
         let sp: Schema = object([("a", string().into())]).passthrough().into();
         let vp = js(&sp);
-        assert_eq!(get(&vp, "additionalProperties"), Some(&serde_json::json!(true)));
+        assert_eq!(
+            get(&vp, "additionalProperties"),
+            Some(&serde_json::json!(true))
+        );
 
         // strip
         let ss: Schema = object([("a", string().into())]).strip().into();
         let vs = js(&ss);
-        assert_eq!(get(&vs, "additionalProperties"), Some(&serde_json::json!(false)));
+        assert_eq!(
+            get(&vs, "additionalProperties"),
+            Some(&serde_json::json!(false))
+        );
 
         // partial — required omitted entirely
         let sparr: Schema = object([("a", string().into()), ("b", string().into())])
@@ -2060,16 +2259,28 @@ mod tests {
     fn buffer_mime() {
         let s: Schema = buffer().mime_format("image/png").into();
         let v = js(&s);
-        assert_eq!(v, serde_json::json!({"type": "string", "format": "buffer", "contentMediaType": "image/png"}));
+        assert_eq!(
+            v,
+            serde_json::json!({"type": "string", "format": "buffer", "contentMediaType": "image/png"})
+        );
     }
 
     // 11. uri / url / json / jsonschema markers
     #[test]
     fn special_type_markers() {
-        assert_eq!(js(&uri().into()), serde_json::json!({"type": "string", "format": "uri"}));
-        assert_eq!(js(&url().into()), serde_json::json!({"type": "string", "format": "url"}));
+        assert_eq!(
+            js(&uri().into()),
+            serde_json::json!({"type": "string", "format": "uri"})
+        );
+        assert_eq!(
+            js(&url().into()),
+            serde_json::json!({"type": "string", "format": "url"})
+        );
         assert_eq!(js(&json().into()), serde_json::json!({"format": "json"}));
-        assert_eq!(js(&jsonschema().into()), serde_json::json!({"type": "object", "format": "jsonschema"}));
+        assert_eq!(
+            js(&jsonschema().into()),
+            serde_json::json!({"type": "object", "format": "jsonschema"})
+        );
     }
 
     // 11b. User format cannot clobber markers
@@ -2089,7 +2300,10 @@ mod tests {
 
         // plain string with no marker — user format is written
         let sp: Schema = string().format("date-time").into();
-        assert_eq!(get(&js(&sp), "format"), Some(&serde_json::json!("date-time")));
+        assert_eq!(
+            get(&js(&sp), "format"),
+            Some(&serde_json::json!("date-time"))
+        );
     }
 
     // 12. Modifiers
@@ -2182,10 +2396,7 @@ mod tests {
     // 15. Lazy → $defs/$ref
     #[test]
     fn lazy_defs_ref() {
-        let s: Schema = lazy(|| {
-            object([("id", string().into())]).into()
-        })
-        .into();
+        let s: Schema = lazy(|| object([("id", string().into())]).into()).into();
         let v = js(&s);
         assert_eq!(get(&v, "$ref"), Some(&serde_json::json!("#/$defs/S1")));
         let defs = get(&v, "$defs").unwrap();
@@ -2201,11 +2412,9 @@ mod tests {
         // We use an Rc<RefCell<Option<Schema>>> as a forward reference.
         let holder: Rc<RefCell<Option<Schema>>> = Rc::new(RefCell::new(None));
         let holder_clone = holder.clone();
-        let inner_lazy: Schema = lazy(move || {
-            holder_clone.borrow().clone().unwrap()
-        })
-        .optional()
-        .into();
+        let inner_lazy: Schema = lazy(move || holder_clone.borrow().clone().unwrap())
+            .optional()
+            .into();
 
         let node: Schema = object([("next", inner_lazy)]).into();
         *holder.borrow_mut() = Some(node.clone());
@@ -2263,7 +2472,10 @@ mod tests {
         let v1 = schema.to_json_schema();
         let imported = from_json_schema(&v1).expect("import failed");
         let v2 = imported.to_json_schema();
-        (serde_json::to_string(&v1).unwrap(), serde_json::to_string(&v2).unwrap())
+        (
+            serde_json::to_string(&v1).unwrap(),
+            serde_json::to_string(&v2).unwrap(),
+        )
     }
 
     fn validate_zv(schema: &Schema, value: ZerxValue) -> Result<ZerxValue, ZerxError> {
@@ -2315,9 +2527,7 @@ mod tests {
     // J2-3. String validators.
     #[test]
     fn import_string_validators() {
-        let (v1, v2) = roundtrip_str(
-            &string().min(2).max(8).regex("^x").email().into(),
-        );
+        let (v1, v2) = roundtrip_str(&string().min(2).max(8).regex("^x").email().into());
         assert_eq!(v1, v2);
 
         let input = serde_json::json!({
@@ -2376,8 +2586,7 @@ mod tests {
         let (v1, v2) = roundtrip_str(&array(string()).min(1).max(3).into());
         assert_eq!(v1, v2);
 
-        let (v1, v2) =
-            roundtrip_str(&tuple([number().into(), string().into()]).into());
+        let (v1, v2) = roundtrip_str(&tuple([number().into(), string().into()]).into());
         assert_eq!(v1, v2);
 
         // items:true and items:{} → array(any())
@@ -2391,10 +2600,7 @@ mod tests {
 
         // missing items → IMPORT_MALFORMED
         let bad = serde_json::json!({"type":"array"});
-        assert_eq!(
-            from(bad).unwrap_err().code,
-            ErrorCode::IMPORT_MALFORMED
-        );
+        assert_eq!(from(bad).unwrap_err().code, ErrorCode::IMPORT_MALFORMED);
 
         // prefixItems with open tail → IMPORT_UNSUPPORTED
         let open_tail = serde_json::json!({
@@ -2446,7 +2652,10 @@ mod tests {
         let req = exported["required"].as_array().unwrap();
         assert_eq!(req, &[serde_json::json!("a")]);
         assert_eq!(exported["additionalProperties"], serde_json::json!(false));
-        assert_eq!(exported["properties"]["c"]["default"], serde_json::json!("x"));
+        assert_eq!(
+            exported["properties"]["c"]["default"],
+            serde_json::json!("x")
+        );
 
         // passthrough
         let pass = serde_json::json!({
@@ -2478,7 +2687,9 @@ mod tests {
             empty_schema.to_json_schema()["additionalProperties"],
             serde_json::json!(true)
         );
-        assert!(empty_schema.validate(&serde_json::json!({"a":"x","extra":1})).is_ok());
+        assert!(empty_schema
+            .validate(&serde_json::json!({"a":"x","extra":1}))
+            .is_ok());
 
         // a per-extra-key value schema would be discarded by passthrough → refused
         let schema_ap = serde_json::json!({
@@ -2555,11 +2766,13 @@ mod tests {
         .into();
         let (v1, v2) = roundtrip_str(&du);
         assert_eq!(v1, v2);
-        assert!(from_json_schema(&serde_json::from_str::<serde_json::Value>(&v1).unwrap())
-            .unwrap()
-            .to_json_schema()
-            .get("oneOf")
-            .is_some());
+        assert!(
+            from_json_schema(&serde_json::from_str::<serde_json::Value>(&v1).unwrap())
+                .unwrap()
+                .to_json_schema()
+                .get("oneOf")
+                .is_some()
+        );
 
         // oneOf without discriminator → OneOf, re-exported as oneOf
         let one_of_no_disc = serde_json::json!({
@@ -2671,7 +2884,10 @@ mod tests {
         let array_const = from(serde_json::json!({"const": [1, {"v": 2.0}]})).unwrap();
         for value in [
             ZerxValue::Array(vec![ZerxValue::I64(1), obj(&[("v", ZerxValue::I64(2))])]),
-            ZerxValue::Array(vec![ZerxValue::F64(1.0), obj(&[("v", ZerxValue::F64(2.0))])]),
+            ZerxValue::Array(vec![
+                ZerxValue::F64(1.0),
+                obj(&[("v", ZerxValue::F64(2.0))]),
+            ]),
             ZerxValue::Array(vec![ZerxValue::U64(1), obj(&[("v", ZerxValue::U64(2))])]),
         ] {
             assert!(validate_zv(&array_const, value).is_ok());
@@ -2825,12 +3041,18 @@ mod tests {
 
         assert!(validate_zv(
             &schema,
-            obj(&[("k", ZerxValue::I64(1)), ("a", ZerxValue::String("x".to_string()))])
+            obj(&[
+                ("k", ZerxValue::I64(1)),
+                ("a", ZerxValue::String("x".to_string()))
+            ])
         )
         .is_ok());
         assert!(validate_zv(
             &schema,
-            obj(&[("k", ZerxValue::F64(1.0)), ("a", ZerxValue::String("x".to_string()))])
+            obj(&[
+                ("k", ZerxValue::F64(1.0)),
+                ("a", ZerxValue::String("x".to_string()))
+            ])
         )
         .is_ok());
     }
@@ -2878,9 +3100,7 @@ mod tests {
             ErrorCode::IMPORT_UNSUPPORTED
         );
         assert_eq!(
-            from(serde_json::Value::Bool(false))
-                .unwrap_err()
-                .code,
+            from(serde_json::Value::Bool(false)).unwrap_err().code,
             ErrorCode::IMPORT_UNSUPPORTED
         );
         // unsupported applicator via step-13 classification
@@ -2919,10 +3139,7 @@ mod tests {
 
         // $ref to missing id → IMPORT_MALFORMED
         let bad = serde_json::json!({"$ref": "#/$defs/Missing"});
-        assert_eq!(
-            from(bad).unwrap_err().code,
-            ErrorCode::IMPORT_MALFORMED
-        );
+        assert_eq!(from(bad).unwrap_err().code, ErrorCode::IMPORT_MALFORMED);
 
         // non-local $ref → IMPORT_MALFORMED
         let non_local = serde_json::json!({"$ref": "http://example.com/schema"});
@@ -2938,11 +3155,9 @@ mod tests {
         // Build a self-referential schema and export it first.
         let holder: Rc<RefCell<Option<Schema>>> = Rc::new(RefCell::new(None));
         let holder_clone = holder.clone();
-        let inner_lazy: Schema = lazy(move || {
-            holder_clone.borrow().clone().unwrap()
-        })
-        .optional()
-        .into();
+        let inner_lazy: Schema = lazy(move || holder_clone.borrow().clone().unwrap())
+            .optional()
+            .into();
         let node: Schema = object([("next", inner_lazy)]).into();
         *holder.borrow_mut() = Some(node.clone());
         let exported = node.to_json_schema();
@@ -2964,7 +3179,10 @@ mod tests {
     #[test]
     fn import_message_schema_roundtrip() {
         let address: Schema = object([
-            ("geo", tuple([number().into(), number().into()]).optional().into()),
+            (
+                "geo",
+                tuple([number().into(), number().into()]).optional().into(),
+            ),
             ("street", string().min(1).into()),
             ("zip", string().regex(r"^\d{5}$").into()),
         ])
@@ -2991,9 +3209,7 @@ mod tests {
             (
                 "metadata",
                 record(json())
-                    .default(
-                        ZerxValue::from_serialize(&serde_json::json!({})).unwrap(),
-                    )
+                    .default(ZerxValue::from_serialize(&serde_json::json!({})).unwrap())
                     .into(),
             ),
             ("origin", address.optional()),
@@ -3023,19 +3239,13 @@ mod tests {
                             ("session", string().into()),
                         ])
                         .into(),
-                        object([
-                            ("kind", literal("tool").into()),
-                            ("tool", string().into()),
-                        ])
-                        .into(),
+                        object([("kind", literal("tool").into()), ("tool", string().into())])
+                            .into(),
                     ],
                 )
                 .into(),
             ),
-            (
-                "tags",
-                array(string().min(1)).max(10).nullable().into(),
-            ),
+            ("tags", array(string().min(1)).max(10).nullable().into()),
         ])
         .into();
 
@@ -3056,7 +3266,10 @@ mod tests {
         });
         let err = from(input).unwrap_err();
         assert_eq!(err.code, ErrorCode::IMPORT_MALFORMED);
-        assert!(!err.path.is_empty(), "error path should point to offending node");
+        assert!(
+            !err.path.is_empty(),
+            "error path should point to offending node"
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -3106,7 +3319,13 @@ mod tests {
         let ok = schema
             .validate(&serde_json::json!({"inner":{"b":"x","stale":1}}))
             .unwrap();
-        let inner = ok.as_object().unwrap().get("inner").unwrap().as_object().unwrap();
+        let inner = ok
+            .as_object()
+            .unwrap()
+            .get("inner")
+            .unwrap()
+            .as_object()
+            .unwrap();
         assert!(inner.get("b").is_some());
         assert!(inner.get("stale").is_none());
     }
@@ -3120,7 +3339,9 @@ mod tests {
             "required":["a"]
         });
         let schema = from_json_schema_inner(&input, true).unwrap();
-        let ok = schema.validate(&serde_json::json!({"a":"x","stale":1})).unwrap();
+        let ok = schema
+            .validate(&serde_json::json!({"a":"x","stale":1}))
+            .unwrap();
         assert!(ok.as_object().unwrap().get("stale").is_none());
     }
 
@@ -3134,7 +3355,9 @@ mod tests {
             "additionalProperties":true
         });
         let schema = from_json_schema_inner(&bool_true, true).unwrap();
-        let ok = schema.validate(&serde_json::json!({"a":"x","extra":1})).unwrap();
+        let ok = schema
+            .validate(&serde_json::json!({"a":"x","extra":1}))
+            .unwrap();
         assert!(ok.as_object().unwrap().get("extra").is_some());
 
         let empty_ap = serde_json::json!({
@@ -3249,7 +3472,9 @@ mod tests {
             }
         });
         let schema = from_json_schema_inner(&input, true).unwrap();
-        let ok = schema.validate(&serde_json::json!({"a":"x","stale":1})).unwrap();
+        let ok = schema
+            .validate(&serde_json::json!({"a":"x","stale":1}))
+            .unwrap();
         assert!(ok.as_object().unwrap().get("stale").is_none());
     }
 
@@ -3372,7 +3597,10 @@ mod tests {
             "$defs": s_defs()
         }))
         .unwrap();
-        assert_eq!(validate_zv(&root, ZerxValue::Null).unwrap(), ZerxValue::Null);
+        assert_eq!(
+            validate_zv(&root, ZerxValue::Null).unwrap(),
+            ZerxValue::Null
+        );
         assert!(validate_zv(
             &root,
             obj(&[("format", ZerxValue::String("a".to_string()))])
@@ -3402,11 +3630,9 @@ mod tests {
     // Export → import → validate keeps accepting null for a nullable lazy.
     #[test]
     fn import_nullable_lazy_roundtrip_accepts_null() {
-        let s: Schema = lazy(|| {
-            object([("format", string().into())]).into()
-        })
-        .nullable()
-        .into();
+        let s: Schema = lazy(|| object([("format", string().into())]).into())
+            .nullable()
+            .into();
         let exported = s.to_json_schema();
         let reimported = from(exported).unwrap();
         assert_eq!(
@@ -3454,7 +3680,8 @@ mod tests {
         assert!(validate_zv(&integer, ZerxValue::F64(1.5)).is_err());
 
         // Sibling constraints survive.
-        let min_len = from(serde_json::json!({"type": ["string", "null"], "minLength": 2})).unwrap();
+        let min_len =
+            from(serde_json::json!({"type": ["string", "null"], "minLength": 2})).unwrap();
         assert!(validate_zv(&min_len, ZerxValue::String("a".to_string())).is_err());
         assert_eq!(
             validate_zv(&min_len, ZerxValue::Null).unwrap(),
@@ -3465,11 +3692,7 @@ mod tests {
             "type": ["array", "null"], "items": {"type": "string"}
         }))
         .unwrap();
-        assert!(validate_zv(
-            &array_items,
-            ZerxValue::Array(vec![ZerxValue::I64(1)])
-        )
-        .is_err());
+        assert!(validate_zv(&array_items, ZerxValue::Array(vec![ZerxValue::I64(1)])).is_err());
         assert_eq!(
             validate_zv(&array_items, ZerxValue::Null).unwrap(),
             ZerxValue::Null
@@ -3506,7 +3729,10 @@ mod tests {
     // Unknown and malformed `type` forms are refused, with a node path.
     #[test]
     fn import_type_malformed_and_unsupported() {
-        assert_eq!(code_of(serde_json::json!({"type": "str"})), ErrorCode::IMPORT_MALFORMED);
+        assert_eq!(
+            code_of(serde_json::json!({"type": "str"})),
+            ErrorCode::IMPORT_MALFORMED
+        );
 
         let err = from(serde_json::json!({
             "type": "object",
@@ -3630,7 +3856,11 @@ mod tests {
         assert!(validate_zv(&exclusive, ZerxValue::I64(1)).is_ok());
 
         let unique = from(serde_json::json!({"enum": [[1, 2]], "uniqueItems": true})).unwrap();
-        assert!(validate_zv(&unique, ZerxValue::Array(vec![ZerxValue::I64(1), ZerxValue::I64(2)])).is_ok());
+        assert!(validate_zv(
+            &unique,
+            ZerxValue::Array(vec![ZerxValue::I64(1), ZerxValue::I64(2)])
+        )
+        .is_ok());
 
         let const_required =
             from(serde_json::json!({"const": {"a": 1}, "required": ["a"]})).unwrap();
@@ -3640,7 +3870,9 @@ mod tests {
         let narrowed = from(serde_json::json!({"enum": ["a", "b"], "const": "a"})).unwrap();
         assert!(validate_zv(&narrowed, ZerxValue::String("a".to_string())).is_ok());
         assert!(validate_zv(&narrowed, ZerxValue::String("b".to_string())).is_err());
-        assert!(from(serde_json::json!({"type": "string", "enum": ["a", "b"], "const": "a"})).is_ok());
+        assert!(
+            from(serde_json::json!({"type": "string", "enum": ["a", "b"], "const": "a"})).is_ok()
+        );
 
         // Redundant satisfied siblings no longer refuse the import.
         assert!(from(serde_json::json!({"enum": ["a"], "pattern": "^a$"})).is_ok());
@@ -3655,7 +3887,9 @@ mod tests {
             "type": "string", "enum": ["a"], "description": "d", "default": "a"
         }))
         .is_ok());
-        assert!(from(serde_json::json!({"type": "string", "enum": ["a"], "format": "email"})).is_ok());
+        assert!(
+            from(serde_json::json!({"type": "string", "enum": ["a"], "format": "email"})).is_ok()
+        );
     }
 
     // An imported `jsonschema` marker rejects non-objects.
@@ -3692,7 +3926,9 @@ mod tests {
         let reimported = from(exported.clone()).unwrap();
         assert_eq!(js(&reimported), exported);
         assert_eq!(
-            validate_zv(&reimported, ZerxValue::I64(5)).unwrap_err().code,
+            validate_zv(&reimported, ZerxValue::I64(5))
+                .unwrap_err()
+                .code,
             ErrorCode::TYPE_MISMATCH
         );
     }
@@ -3733,11 +3969,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        assert!(validate_zv(
-            &objects,
-            obj(&[("a", ZerxValue::String("x".to_string()))])
-        )
-        .is_ok());
+        assert!(validate_zv(&objects, obj(&[("a", ZerxValue::String("x".to_string()))])).is_ok());
 
         assert!(from(serde_json::json!({
             "type": "number",
@@ -3995,8 +4227,8 @@ mod tests {
             ErrorCode::TYPE_MISMATCH
         );
 
-        let s = from(serde_json::json!({"type": "string", "maxLength": 5, "format": "uri"}))
-            .unwrap();
+        let s =
+            from(serde_json::json!({"type": "string", "maxLength": 5, "format": "uri"})).unwrap();
         assert!(validate_zv(&s, ZerxValue::String("a:b".to_string())).is_ok());
         assert_eq!(
             validate_zv(&s, ZerxValue::String("https://example.com".to_string()))
@@ -4192,8 +4424,8 @@ mod tests {
         assert!(from(serde_json::json!({"type": "string", "format": "uri", "minimum": 1})).is_ok());
 
         // `enum` takes its own branch before the marker dispatch.
-        let s = from(serde_json::json!({"type": "string", "format": "uri", "enum": ["a:b"]}))
-            .unwrap();
+        let s =
+            from(serde_json::json!({"type": "string", "format": "uri", "enum": ["a:b"]})).unwrap();
         assert!(validate_zv(&s, ZerxValue::String("a:b".to_string())).is_ok());
         assert!(validate_zv(&s, ZerxValue::String("c:d".to_string())).is_err());
 
