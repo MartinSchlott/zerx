@@ -210,6 +210,12 @@ fn deref_walk(
     }
     // External ref: resolve, then merge sibling keywords (siblings win).
     let resolved = resolver(&ref_str)?;
+    if has_document_local_refs(&resolved) {
+        return Err(ZerxError::new(
+            ErrorCode::IMPORT_UNSUPPORTED,
+            format!("deref: content resolved for '{ref_str}' carries its own $defs or a local '#' ref; such refs would bind to the importing document"),
+        ));
+    }
     let mut merged = match resolved.into_object() {
         Some(m) => m,
         None => {
@@ -228,6 +234,21 @@ fn deref_walk(
     let result = deref_walk(&Value::Object(merged), resolver, active);
     active.pop();
     result
+}
+
+// Local refs and `$defs` in resolved content are relative to the external
+// document, which is inlined without its root; the core importer would bind
+// them to the importing document's `$defs` instead.
+fn has_document_local_refs(value: &Value) -> bool {
+    match value {
+        Value::Object(o) => o.iter().any(|(k, v)| {
+            k == "$defs"
+                || (k == "$ref" && v.as_str().is_some_and(|r| r.starts_with('#')))
+                || has_document_local_refs(v)
+        }),
+        Value::Array(a) => a.iter().any(has_document_local_refs),
+        _ => false,
+    }
 }
 
 trait IntoObject {
@@ -1299,5 +1320,42 @@ mod tests {
         .unwrap();
         assert!(schema.validate(&json!({"a": "x", "b": "y"})).is_ok());
         assert!(schema.validate(&json!({"a": "x", "b": 1})).is_err());
+    }
+
+    #[test]
+    fn test_deref_resolved_content_with_local_refs_is_refused() {
+        // A local ref inside resolved content belongs to the external
+        // document; resolving it against the root's $defs would bind it to
+        // the wrong schema.
+        let resolver: RefResolver = Arc::new(|_r: &str| {
+            Ok(json!({"$defs": {"Id": {"type": "integer", "minimum": 0}}, "$ref": "#/$defs/Id"}))
+        });
+        let err = from_json_schema_with(
+            &json!({
+                "$defs": {"Id": {"type": "string"}},
+                "type": "object",
+                "properties": {"x": {"$ref": "ext.json"}},
+                "required": ["x"]
+            }),
+            &ImportOptions {
+                deref: Some(resolver),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::IMPORT_UNSUPPORTED);
+
+        let nested: RefResolver = Arc::new(|_r: &str| {
+            Ok(json!({"type": "object", "properties": {"y": {"$ref": "#/$defs/Id"}}}))
+        });
+        let err = from_json_schema_with(
+            &json!({"$defs": {"Id": {"type": "string"}}, "$ref": "ext.json"}),
+            &ImportOptions {
+                deref: Some(nested),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::IMPORT_UNSUPPORTED);
     }
 }
