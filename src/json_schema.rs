@@ -5424,17 +5424,29 @@ mod tests {
             assert!(validate_zv(&s, v(hi)).is_ok(), "{key} {hi}");
             assert!(validate_zv(&s, v(lo - 1)).is_err(), "{key} {lo}-1");
             assert!(validate_zv(&s, v(hi + 1)).is_err(), "{key} {hi}+1");
-            // Round trip: the bounds export unchanged and re-import.
+            // Neighbours beyond the signed ranges and huge integral floats.
+            assert!(validate_zv(&s, obj(&[(key, ZerxValue::U64(u64::MAX))])).is_err());
+            assert!(validate_zv(&s, obj(&[(key, ZerxValue::U128(u128::MAX))])).is_err());
+            assert!(validate_zv(&s, obj(&[(key, ZerxValue::F64(1e40))])).is_err());
+            assert!(validate_zv(&s, obj(&[(key, ZerxValue::F64(-1e40))])).is_err());
+            // Round trip: the bounds export unchanged, and the re-import
+            // exports the identical integer bounds again.
             let exported = s.to_json_schema();
             assert_eq!(exported["properties"][key], doc["properties"][key], "{key}");
-            assert!(from(exported).is_ok());
+            let again = from(exported).unwrap().to_json_schema();
+            assert_eq!(again["properties"][key], doc["properties"][key], "{key}");
+            let re = from(again).unwrap();
+            assert!(validate_zv(&re, v(lo)).is_ok());
+            assert!(validate_zv(&re, v(hi + 1)).is_err());
         }
         // A nullable integer keeps exact bounds and admits null.
         let s = from(
-            serde_json::json!({"type": ["integer", "null"], "maximum": 9223372036854775807i64}),
+            serde_json::json!({"type": ["integer", "null"], "minimum": -9223372036854775808i64, "maximum": 9223372036854775807i64}),
         )
         .unwrap();
         assert!(validate_zv(&s, ZerxValue::Null).is_ok());
+        assert!(validate_zv(&s, ZerxValue::I64(i64::MIN)).is_ok());
+        assert!(validate_zv(&s, ZerxValue::I128(i64::MIN as i128 - 1)).is_err());
         assert!(validate_zv(&s, ZerxValue::U64(9223372036854775808)).is_err());
         // An integer node with a float bound of magnitude 2^53 or more may
         // carry a rounded source value and stays refused.

@@ -2237,6 +2237,23 @@ mod tests {
         let j = e.to_json_schema();
         assert_eq!(j["minimum"], serde_json::json!(i64::MIN));
         assert_eq!(j["maximum"], serde_json::json!(i64::MAX));
+        // Values beyond the signed ranges, and huge integral floats, compare
+        // by exact magnitude (no wrapping or saturating casts).
+        let m = number().int().min(i64::MIN).max(i64::MAX);
+        check(&m, V::U64(u64::MAX), false);
+        check(&m, V::U128(i128::MAX as u128 + 1), false);
+        check(&m, V::U128(u128::MAX), false);
+        check(&m, V::F64(1e40), false);
+        check(&m, V::F64(-1e40), false);
+        check(&m, V::F64(1e300), false);
+        check(&m, V::I128(i128::MIN), false);
+        let lo = number().int().min(i64::MIN);
+        check(&lo, V::F64(1e40), true);
+        check(&lo, V::U128(u128::MAX), true);
+        check(&lo, V::I64(i64::MIN + 1), true);
+        let hi = number().int().max(u128::MAX);
+        check(&hi, V::F64(1e40), false);
+        check(&hi, V::F64(3.0e38), true);
         // A 128-bit bound JSON cannot hold exports as the nearest float on
         // the strict side: never below a minimum, never above a maximum.
         let w: Schema = number().int().min(i128::MAX).max(u128::MAX).into();
