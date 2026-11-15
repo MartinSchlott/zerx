@@ -2,7 +2,7 @@
 // everywhere would worsen ergonomics for callers who always handle the Ok path.
 #![allow(clippy::result_large_err)]
 
-use crate::schema::{ParseContext, SchemaKind};
+use crate::schema::{ParseContext, SchemaKind, MAX_PARSE_DEPTH};
 use crate::{ErrorCode, Schema, ZerxError, ZerxValue};
 
 // ---------------------------------------------------------------------------
@@ -61,16 +61,24 @@ fn parse_index(seg: &str, consumed: &[std::string::String]) -> Result<usize, Zer
 // Schema-only navigation (parse_delta)
 // ---------------------------------------------------------------------------
 
-// Loop through Lazy layers until a non-Lazy kind is reached.
-fn resolve_lazy(schema: Schema) -> Result<Schema, ZerxError> {
+// Unwrap Lazy layers until a non-Lazy kind is reached. A lazy that resolves
+// to itself (`{"$ref":"#/$defs/S"}` with `S` = that same `$ref`) or to an
+// endless chain of lazies never reaches one, so the walk is bounded by the
+// same limit the parse flow uses for nested frames.
+fn resolve_lazy(schema: Schema, consumed: &[std::string::String]) -> Result<Schema, ZerxError> {
     let mut current = schema;
-    loop {
+    for _ in 0..=MAX_PARSE_DEPTH {
         let inner_rc = match &current.kind {
             SchemaKind::Lazy(lzy) => lzy.resolve()?,
             _ => return Ok(current),
         };
         current = (*inner_rc).clone();
     }
+    Err(ZerxError::new(
+        ErrorCode::PARSE_DEPTH_EXCEEDED,
+        format!("lazy resolution exceeded maximum depth of {MAX_PARSE_DEPTH}"),
+    )
+    .at(consumed.to_vec()))
 }
 
 fn navigate_schema(root: &Schema, segments: &[std::string::String]) -> Result<Schema, ZerxError> {
@@ -78,7 +86,7 @@ fn navigate_schema(root: &Schema, segments: &[std::string::String]) -> Result<Sc
     let mut current = root.clone();
 
     for seg in segments {
-        let resolved = resolve_lazy(current)?;
+        let resolved = resolve_lazy(current, &consumed)?;
 
         // Closed match — no `_` arm so a future SchemaKind variant is a compile error here.
         let next = match &resolved.kind {
@@ -511,6 +519,20 @@ mod tests {
         .into();
         let result = schema.parse_delta("/child/leaf", &"hello");
         assert_eq!(result.unwrap(), ZerxValue::String("hello".to_string()));
+    }
+
+    #[test]
+    fn parse_delta_self_resolving_lazy_errors_instead_of_hanging() {
+        // A $ref cycle with no structural node in between resolves only to
+        // further lazies; navigation must stop with an error, as validate does.
+        let doc = serde_json::json!({"$defs": {"S": {"$ref": "#/$defs/S"}}, "$ref": "#/$defs/S"});
+        let schema = crate::from_json_schema(&doc).unwrap();
+        let err = schema.parse_delta("/a", &1i32).unwrap_err();
+        assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+        assert_eq!(
+            schema.validate(&1i32).unwrap_err().code,
+            ErrorCode::PARSE_DEPTH_EXCEEDED
+        );
     }
 
     #[test]
