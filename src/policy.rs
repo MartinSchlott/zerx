@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::Value;
 
-use crate::schema::Schema;
+use crate::schema::{Schema, MAX_PARSE_DEPTH};
 use crate::{ErrorCode, ZerxError};
 
 // ---------------------------------------------------------------------------
@@ -104,19 +104,25 @@ fn deep_map_schema(
     mapper: &dyn Fn(&Value) -> Result<Value, ZerxError>,
 ) -> Result<Value, ZerxError> {
     let mapped = mapper(value)?;
+    map_child_schemas(mapped, &mut |child| deep_map_schema(child, mapper))
+}
 
-    let obj = match &mapped {
+// Applies `f` to every direct child schema of `value` (the positions J2's core
+// importer reads as child schemas); a non-object value is returned unchanged.
+fn map_child_schemas(
+    value: Value,
+    f: &mut dyn FnMut(&Value) -> Result<Value, ZerxError>,
+) -> Result<Value, ZerxError> {
+    let mut out = match value {
         Value::Object(o) => o,
-        _ => return Ok(mapped),
+        other => return Ok(other),
     };
-
-    let mut out = obj.clone();
 
     // properties
     if let Some(Value::Object(props)) = out.get("properties").cloned() {
         let mut new_props = serde_json::Map::new();
         for (k, v) in &props {
-            new_props.insert(k.clone(), deep_map_schema(v, mapper)?);
+            new_props.insert(k.clone(), f(v)?);
         }
         out.insert("properties".to_owned(), Value::Object(new_props));
     }
@@ -125,7 +131,7 @@ fn deep_map_schema(
     if let Some(Value::Object(defs)) = out.get("$defs").cloned() {
         let mut new_defs = serde_json::Map::new();
         for (k, v) in &defs {
-            new_defs.insert(k.clone(), deep_map_schema(v, mapper)?);
+            new_defs.insert(k.clone(), f(v)?);
         }
         out.insert("$defs".to_owned(), Value::Object(new_defs));
     }
@@ -133,36 +139,30 @@ fn deep_map_schema(
     // items: schema or array of schemas
     match out.get("items").cloned() {
         Some(Value::Array(arr)) => {
-            let new_items: Result<Vec<Value>, ZerxError> =
-                arr.iter().map(|v| deep_map_schema(v, mapper)).collect();
+            let new_items: Result<Vec<Value>, ZerxError> = arr.iter().map(&mut *f).collect();
             out.insert("items".to_owned(), Value::Array(new_items?));
         }
         Some(v) => {
-            out.insert("items".to_owned(), deep_map_schema(&v, mapper)?);
+            out.insert("items".to_owned(), f(&v)?);
         }
         None => {}
     }
 
     // prefixItems (tuple members)
     if let Some(Value::Array(arr)) = out.get("prefixItems").cloned() {
-        let new_arr: Result<Vec<Value>, ZerxError> =
-            arr.iter().map(|v| deep_map_schema(v, mapper)).collect();
+        let new_arr: Result<Vec<Value>, ZerxError> = arr.iter().map(&mut *f).collect();
         out.insert("prefixItems".to_owned(), Value::Array(new_arr?));
     }
 
     // additionalProperties when it is a schema object (not a bool)
     if let Some(Value::Object(ap)) = out.get("additionalProperties").cloned() {
-        out.insert(
-            "additionalProperties".to_owned(),
-            deep_map_schema(&Value::Object(ap), mapper)?,
-        );
+        out.insert("additionalProperties".to_owned(), f(&Value::Object(ap))?);
     }
 
     // anyOf / oneOf / allOf
     for key in &["anyOf", "oneOf", "allOf"] {
         if let Some(Value::Array(arr)) = out.get(*key).cloned() {
-            let new_arr: Result<Vec<Value>, ZerxError> =
-                arr.iter().map(|v| deep_map_schema(v, mapper)).collect();
+            let new_arr: Result<Vec<Value>, ZerxError> = arr.iter().map(&mut *f).collect();
             out.insert(key.to_string(), Value::Array(new_arr?));
         }
     }
@@ -175,39 +175,59 @@ fn deep_map_schema(
 // ---------------------------------------------------------------------------
 
 fn make_deref_transform(resolver: RefResolver) -> SchemaTransform {
-    Arc::new(move |value: &Value| {
-        deep_map_schema(value, &|node: &Value| {
-            let obj = match node.as_object() {
-                Some(o) => o,
-                None => return Ok(node.clone()),
-            };
-            let ref_str = match obj.get("$ref").and_then(|v| v.as_str()) {
-                Some(s) => s,
-                None => return Ok(node.clone()),
-            };
-            // Local #/$defs/… refs are left untouched for J2's core importer.
-            if ref_str.starts_with("#/") {
-                return Ok(node.clone());
-            }
-            // External ref: resolve, then merge sibling keywords (siblings win).
-            let resolved = resolver(ref_str)?;
-            let mut merged = match resolved.into_object() {
-                Some(m) => m,
-                None => {
-                    return Err(ZerxError::new(
-                        ErrorCode::IMPORT_MALFORMED,
-                        format!("deref: resolver did not return an object for ref '{ref_str}'"),
-                    ));
-                }
-            };
-            for (k, v) in obj {
-                if k != "$ref" {
-                    merged.insert(k.clone(), v.clone());
-                }
-            }
-            Ok(Value::Object(merged))
-        })
-    })
+    Arc::new(move |value: &Value| deref_walk(value, &resolver, &mut Vec::new()))
+}
+
+// Inlines every external `$ref`, then walks the result. `active` holds the
+// external refs whose resolved content is being walked: meeting one of them
+// again is a recursive external schema, which inlining cannot represent, and
+// an unbounded chain of distinct refs is cut at MAX_PARSE_DEPTH.
+fn deref_walk(
+    node: &Value,
+    resolver: &RefResolver,
+    active: &mut Vec<String>,
+) -> Result<Value, ZerxError> {
+    let obj = match node.as_object() {
+        Some(o) => o,
+        None => return Ok(node.clone()),
+    };
+    let ref_str = match obj.get("$ref").and_then(|v| v.as_str()) {
+        // Local #/$defs/… refs are left untouched for J2's core importer.
+        Some(s) if !s.starts_with("#/") => s.to_owned(),
+        _ => return map_child_schemas(node.clone(), &mut |c| deref_walk(c, resolver, active)),
+    };
+    if active.contains(&ref_str) {
+        return Err(ZerxError::new(
+            ErrorCode::IMPORT_UNSUPPORTED,
+            format!("deref: external ref '{ref_str}' refers to itself; recursive external schemas are not supported"),
+        ));
+    }
+    if active.len() >= MAX_PARSE_DEPTH {
+        return Err(ZerxError::new(
+            ErrorCode::IMPORT_UNSUPPORTED,
+            format!("deref: external ref nesting exceeded maximum depth of {MAX_PARSE_DEPTH}"),
+        ));
+    }
+    // External ref: resolve, then merge sibling keywords (siblings win).
+    let resolved = resolver(&ref_str)?;
+    let mut merged = match resolved.into_object() {
+        Some(m) => m,
+        None => {
+            return Err(ZerxError::new(
+                ErrorCode::IMPORT_MALFORMED,
+                format!("deref: resolver did not return an object for ref '{ref_str}'"),
+            ));
+        }
+    };
+    for (k, v) in obj {
+        if k != "$ref" {
+            merged.insert(k.clone(), v.clone());
+        }
+    }
+    active.push(ref_str);
+    let result = deref_walk(&Value::Object(merged), resolver, active);
+    active.pop();
+    result
 }
 
 trait IntoObject {
@@ -1241,5 +1261,43 @@ mod tests {
         let tls = obj.get("tls").unwrap().as_object().unwrap();
         assert!(tls.get("enabled").is_some());
         assert!(tls.get("legacy_ca").is_none());
+    }
+
+    #[test]
+    fn test_deref_self_referential_external_ref_is_refused() {
+        // A linked-list schema cannot be inlined; resolving it again inside
+        // its own resolution must fail instead of recursing without end.
+        let resolver: RefResolver = Arc::new(|_r: &str| {
+            Ok(json!({"type": "object", "properties": {"next": {"$ref": "node.json"}}}))
+        });
+        let err = from_json_schema_with(
+            &json!({"$ref": "node.json"}),
+            &ImportOptions {
+                deref: Some(resolver),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::IMPORT_UNSUPPORTED);
+    }
+
+    #[test]
+    fn test_deref_same_external_ref_twice_side_by_side_resolves() {
+        // Repetition without nesting is not a cycle.
+        let resolver: RefResolver = Arc::new(|_r: &str| Ok(json!({"type": "string"})));
+        let schema = from_json_schema_with(
+            &json!({
+                "type": "object",
+                "properties": {"a": {"$ref": "s.json"}, "b": {"$ref": "s.json"}},
+                "required": ["a", "b"]
+            }),
+            &ImportOptions {
+                deref: Some(resolver),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(schema.validate(&json!({"a": "x", "b": "y"})).is_ok());
+        assert!(schema.validate(&json!({"a": "x", "b": 1})).is_err());
     }
 }
