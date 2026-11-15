@@ -106,6 +106,7 @@ zerx keeps tests in-module (`#[cfg(test)] mod tests`) inside the file they test;
 | `schema` | unit | `schema-core` | modifier composition, parse flow, lazy & cyclic schemas, `MAX_PARSE_DEPTH` boundary |
 | `delta` | unit | `schema-core` | `parse_delta` and `replace` happy path, partial-update semantics, failure modes |
 | `types` | unit | `types` | per-type happy & sad paths, validator boundaries, special-type composition |
+| `ecma_regex` | unit | `types` | ECMA-262 dialect conformance, intersection semantics, refusal classification, nesting bound |
 | `json_schema` | unit | `json-schema` | export/import round-trip, draft 2020-12 conformance, `$defs`/`$ref`, `strip_unknown`, error paths |
 | `policy` | unit | `policy` | pipeline composition, transform ordering, error propagation |
 | `error` | unit | `errors` | code taxonomy, path aggregation, JSON shape, `std::error::Error` propagation |

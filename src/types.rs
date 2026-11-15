@@ -199,7 +199,7 @@ pub(crate) struct Pattern {
 impl Pattern {
     fn new(source: impl Into<String>) -> Self {
         let source = source.into();
-        let compiled = match regex::Regex::new(&source) {
+        let compiled = match crate::ecma_regex::compile(&source) {
             Ok(re) => PatternState::Ok(re),
             Err(e) => PatternState::Invalid(e.to_string()),
         };
@@ -1905,6 +1905,21 @@ mod tests {
         let p_inv = Pattern::new("(");
         let frag_inv = p_inv.json_schema();
         assert_eq!(frag_inv["pattern"], serde_json::json!("("));
+    }
+
+    // 3b. pattern sources are read as ECMA-262 with intersection semantics.
+    #[test]
+    fn string_pattern_uses_ecma_semantics() {
+        // `\d` is ASCII digits only, not every Unicode decimal digit.
+        assert_eq!(
+            val(string().regex(r"^\d+$"), "١٢٣").unwrap_err().code,
+            ErrorCode::PATTERN_MISMATCH
+        );
+        // A Rust-only inline flag is invalid ECMA, so the pattern is invalid.
+        assert_eq!(
+            val(string().regex("(?i)a"), "a").unwrap_err().code,
+            ErrorCode::PATTERN_INVALID
+        );
     }
 
     // 4. string email / uuid

@@ -32,7 +32,7 @@ None.
 
 ## Architecturally Significant Dependencies
 
-- `regex` (full crate, 1.x) — the `pattern`/`regex` validator and the `url` structural check both compile and match regular expressions using the `regex` crate; removing or replacing `regex` would require redesigning both.
+- `regex` (full crate, 1.x) — the `pattern`/`regex` validator compiles the `regex` crate translation of its ECMA-262 source, and the `url` structural check matches with the `regex` crate directly; removing or replacing `regex` would require redesigning both.
 
 ## Constraints
 
@@ -60,6 +60,8 @@ None.
 - `StringSchema::regex(p)` and `StringSchema::pattern(p)` MUST install the same `Pattern` validator; `pattern` is a forwarding alias for `regex` with identical storage and validation semantics.
 - Pattern compilation MUST be deferred to `validate` time; `string().regex(invalid)` MUST be infallible; a value validated against an invalid pattern MUST yield `Err(PATTERN_INVALID)`.
 - A valid pattern that does not match MUST yield `Err(PATTERN_MISMATCH)`.
+- Pattern sources MUST be read as ECMA-262 with the `u` flag, restricted to the translated subset (the JSON Schema 2020-12 portable token set plus the class escapes). A construct whose meaning differs between ECMA-262 and the `regex` crate (`\d`, `\D`, `\w`, `\W`, `\s`, `\S`, `\b`, `\B`, `.`) MUST match only what both dialects accept, so the runtime is never wider than the exported `pattern`.
+- A source that is invalid ECMA-262, or valid but outside the translated subset (lookaround, backreferences, `\p{…}`, constructs the dialects read differently such as `&&` in a class), MUST make the pattern invalid (`PATTERN_INVALID`).
 - `StringSchema::email()` MUST push a hand-rolled `Email` validator (no regex engine); a string failing the structural form check MUST yield `Err(INVALID_EMAIL)`; the JSON Schema fragment MUST be `{"format": "email"}`.
 - `StringSchema::uuid()` MUST push a hand-rolled `Uuid` validator; a string not matching the 8-4-4-4-12 hex-with-dashes form MUST yield `Err(INVALID_UUID)`; the JSON Schema fragment MUST be `{"format": "uuid"}`.
 

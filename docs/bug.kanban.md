@@ -8,19 +8,6 @@ id: zrx9bug0board0tracking0001
 ## Open
 id: zrx9bug0col0open00000001
 
-### `pattern` uses Rust regex semantics, not ECMA-262
-
-id: {new}
-severity: major
-triage: needs-plan
-covered_by: docs/PLAN_T6_ecma_pattern_dialect.md
-
-The `regex`/`pattern` validator compiles with the `regex` crate in Unicode mode, so `\d`, `\w` and `\b` match beyond ASCII and `.` matches `\r`, unlike ECMA-262, which JSON Schema `pattern` uses. `string().regex("^\\d+$")` and the import of `{"type":"string","pattern":"^\\d+$"}` both accept `"١٢٣"`, which the exported or source schema forbids (`D-import-fail-closed`). Found in the bug sweep source audit.
-
-#### Triage
-
-The Product Owner chose intersection semantics: where the dialects disagree, a pattern matches only what both ECMA-262 and the `regex` crate accept. `docs/PLAN_T6_ecma_pattern_dialect.md` carries the fix, released as 3.0.0.
-
 ### Colliding `pattern`/`format` validators export only the last
 
 id: {new}
@@ -35,11 +22,25 @@ severity: accepted
 
 `object([("a", lazy(|| string().optional()))])` and `lazy(|| string().default("d"))` both reject `{}` with `required`: `parse_field` reads only the outer lazy's modifiers. The Product Owner decided to keep this strict behaviour for now; `docs/architecture/schema-core.md` records it as an open limitation, not as a rule.
 
+### ECMA-valid group names with marks or Nl numerals are refused
+
+id: {new}
+severity: minor
+
+The pattern translator approximates ECMA's GroupName grammar (ID_Start / ID_Continue) with `char::is_alphabetic()` / `is_alphanumeric()`, as std has no Unicode ID tables. An ECMA-valid group name containing a combining mark (Mn), ZWNJ/ZWJ or an Nl numeral (e.g. `Ⅻ`) is refused: `PATTERN_INVALID` on a builder pattern, `IMPORT_MALFORMED` on import. The error only ever narrows. Exact handling needs Unicode ID tables or a dependency. Found in validation of PLAN_T6_ecma_pattern_dialect.
+
 ## In Progress
 id: zrx9bug0col0inprogress01
 
 ## Done
 id: zrx9bug0col0done00000001
+
+### `pattern` uses Rust regex semantics, not ECMA-262
+
+id: {new}
+severity: major
+
+The `regex`/`pattern` validator compiles with the `regex` crate in Unicode mode, so `\d`, `\w` and `\b` match beyond ASCII and `.` matches `\r`, unlike ECMA-262, which JSON Schema `pattern` uses. `string().regex("^\\d+$")` and the import of `{"type":"string","pattern":"^\\d+$"}` both accept `"١٢٣"`, which the exported or source schema forbids (`D-import-fail-closed`). Found in the bug sweep source audit. Fixed by PLAN_T6_ecma_pattern_dialect: patterns are read as ECMA-262 with intersection semantics.
 
 ### `parse_delta` rejects unknown keys on a passthrough object
 

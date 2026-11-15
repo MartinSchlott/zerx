@@ -1,6 +1,7 @@
 //! zerx — structured schema validation for Rust.
 
 mod delta;
+mod ecma_regex;
 mod error;
 mod json_schema;
 #[cfg(feature = "lua")]

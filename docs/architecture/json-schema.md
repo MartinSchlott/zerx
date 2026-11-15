@@ -141,11 +141,12 @@
 - Each reconstruction branch MUST consume exactly the keywords it rebuilds into the schema; a keyword the branch reads but does not enforce MUST NOT count as consumed.
 - An object node MUST refuse a `required` name that is not a key of `properties`, because strict mode would reject the key instead of requiring it.
 - A tuple node MUST refuse `minItems` above, or `maxItems` below, the number of `prefixItems`; bracketing values are consumed.
-- A tuple MAY import narrower than its source: `prefixItems` with `items:false` reconstructs a fixed-length tuple, although the source also accepts shorter arrays. This is the one named narrowing under `D-import-fail-closed`.
+- A tuple MAY import narrower than its source: `prefixItems` with `items:false` reconstructs a fixed-length tuple, although the source also accepts shorter arrays. This is a named narrowing under `D-import-fail-closed`.
+- An imported `pattern` MAY accept less than ECMA-262 does where the ECMA and `regex` crate dialects disagree (`\D`, `\W`, `\s`, `\S`, `\b`, `\B`): it matches only what both accept (`types`). This is a named narrowing under `D-import-fail-closed`.
 - A consumed keyword whose value violates the Draft 2020-12 grammar MUST raise `IMPORT_MALFORMED`; an integral float counts as an integer.
 - An empty `anyOf`/`oneOf` MUST raise `IMPORT_UNSUPPORTED`; it accepts nothing, and zerx has no never type.
 - `$id` on any node other than the root MUST raise `IMPORT_UNSUPPORTED`; a nested `$id` would re-base the `$ref`s inside it. A root `$id` imports as `meta`.
-- A non-compiling `pattern` on a string, `uri` or `url` node MUST raise `IMPORT_MALFORMED`; it would otherwise reject every string at validation time.
+- A `pattern` on a string, `uri` or `url` node that is invalid ECMA-262 MUST raise `IMPORT_MALFORMED`, and one that is valid but outside the translated subset MUST raise `IMPORT_UNSUPPORTED`; it would otherwise reject every string at validation time.
 - A `minimum` or `maximum` of magnitude 2^53 or more MUST raise `IMPORT_UNSUPPORTED`; bounds compare in `f64`, where such a bound no longer separates neighbouring integers (`D-import-fail-closed`).
 - Import nesting, `$ref` resolution included, MUST be bounded by the parse-depth limit; a deeper document MUST raise `IMPORT_UNSUPPORTED`. A flat `$defs` chain nests once per link although the document stays shallow, so the JSON parser's own nesting limit does not bound it.
 - The bound MUST take effect before the import exhausts a 2 MB thread stack, in debug as well as release builds.
@@ -214,7 +215,7 @@
 - With a `type` present, every `enum` member and the `const` value MUST be an instance of the declared type set; otherwise the node MUST raise `IMPORT_UNSUPPORTED`. A member is never filtered out silently.
 - A `[T, "null"]` type array MUST NOT add `null` to an `enum`/`const`; `null` passes only if it is a member.
 - A sibling assertion keyword of `enum`/`const` MUST be evaluated statically against every member it applies to: when every applicable member satisfies it the keyword is consumed, and when a member violates it the node MUST raise `IMPORT_UNSUPPORTED`.
-- Static evaluation MUST use the runtime semantics of the matching validator, such as character counting for string lengths and the `regex` crate for `pattern`; a non-compiling `pattern` MUST raise `IMPORT_MALFORMED`.
+- Static evaluation MUST use the runtime semantics of the matching validator, such as character counting for string lengths and the ECMA-262 translation for `pattern`; a `pattern` that is invalid ECMA-262 MUST raise `IMPORT_MALFORMED`, and one outside the translated subset MUST raise `IMPORT_UNSUPPORTED`.
 - A sibling keyword that applies to a member but cannot be evaluated statically, such as a sub-schema keyword, MUST raise `IMPORT_UNSUPPORTED`.
 - A node carrying both `enum` and `const` MUST import as `literal(const)` when the `const` equals an `enum` member, and MUST raise `IMPORT_UNSUPPORTED` otherwise.
 

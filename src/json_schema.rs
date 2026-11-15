@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+use crate::ecma_regex::{self, EcmaError};
 use crate::schema::{Schema, SchemaKind, MAX_PARSE_DEPTH};
 use crate::types::{DiscriminatorState, ObjectBody, ObjectMode, StringSchema};
 use crate::{ErrorCode, Modify, ZerxError, ZerxValue};
@@ -831,6 +832,30 @@ fn validate_static_value(
     val: &serde_json::Value,
     path: &[String],
 ) -> Result<(), ZerxError> {
+    if key == "pattern" {
+        // `pattern` is an ECMA-262 source: a source valid there but not
+        // translatable is `Unsupported`, not malformed.
+        let src = val.as_str().ok_or_else(|| {
+            type_error(
+                path,
+                ErrorCode::IMPORT_MALFORMED,
+                "malformed `pattern` value",
+            )
+        })?;
+        return match ecma_regex::compile(src) {
+            Ok(_) => Ok(()),
+            Err(EcmaError::Malformed(_)) => Err(type_error(
+                path,
+                ErrorCode::IMPORT_MALFORMED,
+                "malformed `pattern` value",
+            )),
+            Err(EcmaError::Unsupported(_)) => Err(type_error(
+                path,
+                ErrorCode::IMPORT_UNSUPPORTED,
+                "unsupported `pattern` value",
+            )),
+        };
+    }
     let ok = match key {
         "minLength" | "maxLength" | "minItems" | "maxItems" | "minProperties" | "maxProperties" => {
             as_non_negative_u64(val).is_some()
@@ -838,10 +863,6 @@ fn validate_static_value(
         "minimum" | "maximum" | "exclusiveMinimum" | "exclusiveMaximum" | "multipleOf" => {
             val.is_number()
         }
-        "pattern" => val
-            .as_str()
-            .map(|p| regex::Regex::new(p).is_ok())
-            .unwrap_or(false),
         "required" => required_names(val).is_some(),
         "uniqueItems" => val.is_boolean(),
         _ => true,
@@ -911,12 +932,17 @@ fn static_keyword_holds(
         }
         "pattern" => {
             let src = val.as_str().unwrap_or("");
-            let re = regex::Regex::new(src).map_err(|_| {
-                type_error(
+            let re = ecma_regex::compile(src).map_err(|e| match e {
+                EcmaError::Malformed(_) => type_error(
                     path,
                     ErrorCode::IMPORT_MALFORMED,
-                    format!("`pattern` value `{src}` does not compile"),
-                )
+                    format!("`pattern` value `{src}` is not valid ECMA-262"),
+                ),
+                EcmaError::Unsupported(_) => type_error(
+                    path,
+                    ErrorCode::IMPORT_UNSUPPORTED,
+                    format!("`pattern` value `{src}` is not supported"),
+                ),
             })?;
             re.is_match(member.as_str().unwrap_or(""))
         }
@@ -1291,14 +1317,24 @@ fn import_string_validators(
                 "`pattern` must be a string",
             )
         })?;
-        // Compiled here as in static evaluation: a non-compiling pattern would
+        // Compiled here as in static evaluation: a refused pattern would
         // otherwise import and reject every string at validation time.
-        if regex::Regex::new(pat).is_err() {
-            return Err(type_error(
-                path,
-                ErrorCode::IMPORT_MALFORMED,
-                "`pattern` does not compile",
-            ));
+        match ecma_regex::compile(pat) {
+            Ok(_) => {}
+            Err(EcmaError::Malformed(_)) => {
+                return Err(type_error(
+                    path,
+                    ErrorCode::IMPORT_MALFORMED,
+                    "`pattern` is not valid ECMA-262",
+                ))
+            }
+            Err(EcmaError::Unsupported(_)) => {
+                return Err(type_error(
+                    path,
+                    ErrorCode::IMPORT_UNSUPPORTED,
+                    "`pattern` uses a construct that cannot be translated",
+                ))
+            }
         }
         sb = sb.regex(pat);
         consumed.insert("pattern".to_string());
@@ -5158,6 +5194,37 @@ mod tests {
             );
         }
         assert!(from(serde_json::json!({"type": "string", "pattern": "^a+$"})).is_ok());
+    }
+
+    #[test]
+    fn import_pattern_reads_ecma_262() {
+        // The translated `\d` is ASCII-only, so an Arabic-digit value fails.
+        let s = from(serde_json::json!({"type": "string", "pattern": "^\\d+$"})).unwrap();
+        assert_eq!(
+            validate_zv(&s, ZerxValue::String("١٢٣".to_string()))
+                .unwrap_err()
+                .code,
+            ErrorCode::PATTERN_MISMATCH
+        );
+        assert!(validate_zv(&s, ZerxValue::String("123".to_string())).is_ok());
+
+        // Valid ECMA that cannot be translated is `IMPORT_UNSUPPORTED`;
+        // invalid ECMA is `IMPORT_MALFORMED`.
+        assert_eq!(
+            code_of(serde_json::json!({"type": "string", "pattern": "(?=a)a"})),
+            ErrorCode::IMPORT_UNSUPPORTED
+        );
+        assert_eq!(
+            code_of(serde_json::json!({"type": "string", "pattern": "\\e"})),
+            ErrorCode::IMPORT_MALFORMED
+        );
+
+        // Static `enum` evaluation agrees with the translated runtime meaning.
+        assert_eq!(
+            code_of(serde_json::json!({"enum": ["١٢٣"], "pattern": "^\\d+$"})),
+            ErrorCode::IMPORT_UNSUPPORTED
+        );
+        assert!(from(serde_json::json!({"enum": ["123"], "pattern": "^\\d+$"})).is_ok());
     }
 
     #[test]
