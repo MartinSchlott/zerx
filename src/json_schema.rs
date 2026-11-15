@@ -205,10 +205,22 @@ fn export_node(schema: &Schema, ctx: &mut ExportContext) -> serde_json::Value {
     // Step 2 — Base map
     let mut core = base_schema(&schema.kind, ctx);
 
-    // Step 3 — Validator fragments (merge, last write wins)
+    // Step 3 — Validator fragments. The runtime enforces every validator, so a
+    // repeated lower or upper bound keeps the tightest value; any other key is
+    // last write wins.
     for v in &schema.validators {
         for (k, val) in v.json_schema() {
-            core.insert(k, val);
+            let keep_existing = match (core.get(&k).and_then(|e| e.as_f64()), val.as_f64()) {
+                (Some(old), Some(new)) => match k.as_str() {
+                    "minLength" | "minItems" | "minimum" => old >= new,
+                    "maxLength" | "maxItems" | "maximum" => old <= new,
+                    _ => false,
+                },
+                _ => false,
+            };
+            if !keep_existing {
+                core.insert(k, val);
+            }
         }
     }
 
@@ -4719,5 +4731,29 @@ mod tests {
             );
         }
         assert!(from(serde_json::json!({"type": "string", "pattern": "^a+$"})).is_ok());
+    }
+
+    #[test]
+    fn export_repeated_bounds_keep_the_strictest() {
+        // The runtime enforces every validator, so the export must state the
+        // tightest bound, not whichever validator was added last.
+        let s: Schema = string().min(5).min(2).max(3).max(9).into();
+        let v = js(&s);
+        assert_eq!(get(&v, "minLength"), Some(&serde_json::json!(5)));
+        assert_eq!(get(&v, "maxLength"), Some(&serde_json::json!(3)));
+
+        let n: Schema = number().max(10.0).max(20.0).min(-5.0).min(1.0).into();
+        let v = js(&n);
+        assert_eq!(get(&v, "maximum").and_then(|x| x.as_f64()), Some(10.0));
+        assert_eq!(get(&v, "minimum").and_then(|x| x.as_f64()), Some(1.0));
+
+        let a: Schema = array(string()).min(4).min(1).max(2).max(8).into();
+        let v = js(&a);
+        assert_eq!(get(&v, "minItems"), Some(&serde_json::json!(4)));
+        assert_eq!(get(&v, "maxItems"), Some(&serde_json::json!(2)));
+
+        // Round trip stays as strict as the source.
+        let re = from_json_schema(&js(&s)).unwrap();
+        assert!(re.validate("abc").is_err());
     }
 }
