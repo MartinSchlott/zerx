@@ -21,7 +21,8 @@ pending_reason=
 usage_text() {
   cat <<'EOF'
 Usage:
-  scripts/verify all                  # lint, test (both variants), api
+  scripts/verify all                  # fmt, lint, test (both variants), api
+  scripts/verify fmt
   scripts/verify lint
   scripts/verify test [FILTER]        # all-features variant
   scripts/verify test core [FILTER]   # feature-off variant
@@ -273,7 +274,7 @@ gate_display() {
 emit_pass() {
   g="$1"; log="$2"; dur="$3"
   disp=$(gate_display "$g")
-  if [ "$g" = "lint" ]; then
+  if [ "$g" = "lint" ] || [ "$g" = "fmt" ]; then
     printf 'PASS %s — %ss\n' "$disp" "$dur"
     return
   fi
@@ -291,6 +292,14 @@ emit_fail() {
   printf 'FAIL %s — %ss\n' "$disp" "$dur"
 
   printed=0
+  if [ "$g" = "fmt" ]; then
+    difflines=$(grep '^Diff in' "$log")
+    if [ -n "$difflines" ]; then
+      printf '%s\n' "$difflines" | print_capped 20
+      echo "run 'cargo fmt --all' to apply"
+      printed=1
+    fi
+  fi
   lineno=$(grep -n '^failures:$' "$log" | tail -1 | cut -d: -f1)
   if [ -n "$lineno" ]; then
     block=$(tail -n +"$((lineno + 1))" "$log" | awk 'NF{print} !NF{exit}')
@@ -342,6 +351,9 @@ run_gate() {
 
   target_dir=$(gate_target_dir "$gate_id")
   case "$gate_id" in
+  fmt)
+    cmd=(cargo fmt --all -- --check)
+    ;;
   lint)
     cmd=(cargo clippy --all-features --all-targets -- -D warnings)
     ;;
@@ -485,7 +497,11 @@ filter=""
 case "$1" in
 all)
   [ "$argc" -eq 1 ] || fail_usage "'all' does not accept extra arguments"
-  gates_to_run="lint test test-core api"
+  gates_to_run="fmt lint test test-core api"
+  ;;
+fmt)
+  [ "$argc" -eq 1 ] || fail_usage "'fmt' does not accept extra arguments"
+  gates_to_run="fmt"
   ;;
 lint)
   [ "$argc" -eq 1 ] || fail_usage "'lint' does not accept extra arguments"

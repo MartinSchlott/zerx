@@ -12,7 +12,8 @@ pre-commit / final-validation gate — run it before considering any change done
 ## Usage
 
 ```
-scripts/verify all                  # lint, test (both variants), api
+scripts/verify all                  # fmt, lint, test (both variants), api
+scripts/verify fmt
 scripts/verify lint
 scripts/verify test [FILTER]        # all-features variant
 scripts/verify test core [FILTER]   # feature-off variant
@@ -79,11 +80,16 @@ before removal.
 
 | Gate | Command | Covers | Excludes | Cold / warm | When |
 |---|---|---|---|---|---|
+| `fmt` | `scripts/verify fmt` | `cargo fmt --all -- --check` with default rustfmt settings; any diff fails | everything but layout | <1 s | before commit, `all`; invalidated by any `.rs` change |
 | `lint` | `scripts/verify lint` | clippy over lib + tests, all features, warnings are errors | run-time behaviour | ~3 s / <1 s | inner loop, `all` |
 | `test` | `scripts/verify test` | all in-module tests with `lua` enabled | doctests, feature-off compile | ~7 s / <1 s | inner loop, `all` |
 | `test core` | `scripts/verify test core` | all in-module tests with `lua` disabled — proves the feature-off configuration compiles and passes | the `lua`-gated tests | cold cost close to `test`'s / <1 s warm | `all`, and any plan touching `#[cfg(feature = "lua")]` |
 | `api` | `scripts/verify api` | the `compile_fail` doctests — public builder types reject foreign methods | run-time behaviour | ~1 s / <1 s | `all`, and any plan changing the public API surface |
-| *(all)* | `scripts/verify all` | the four rows above, once each | — | ~15 s / ~2 s | pre-commit, final validation |
+| *(all)* | `scripts/verify all` | the five rows above, once each | — | ~15 s / ~2 s | pre-commit, final validation |
+
+`fmt` builds nothing and needs no target directory; on failure it lists the files rustfmt would
+change. Apply formatting with `cargo fmt --all` as its own change, not mixed into a functional
+diff.
 
 `lint` runs in the all-features configuration only; the feature-off configuration is covered
 structurally by `test core` (it proves feature-off compiles and passes), not by a second lint
