@@ -69,6 +69,7 @@ None.
 - A `~` not followed by `0` or `1`, and an array or tuple index with a leading zero, MUST be rejected with `INVALID_POINTER`, as RFC 6901 does not admit them.
 - `parse_delta` MUST navigate the schema by kind only (no instance), then run `parse_present` against the located sub-schema. Navigation MUST be a closed per-kind dispatch over `SchemaKind` with no catch-all arm, so a future variant is a compile error until handled.
 - `parse_delta` MUST reject a segment naming a prestripped object key with `INVALID_PATH`; validation treats that key as absent, so no value supplied there survives.
+- `parse_delta` MUST navigate a key that a `passthrough` object does not declare to `any()`, as validation keeps any value there; a `strict` or `strip` object MUST reject it with `UNKNOWN_PROPERTY`.
 - Unwrapping `lazy` layers during navigation MUST be bounded by the parse-depth limit and MUST return `PARSE_DEPTH_EXCEEDED` beyond it, because a lazy may resolve only to further lazies.
 - `replace` MUST navigate the instance by value kind only (schema-independent), rebuild the tree immutably via clone-and-return (`D-modifier-composition`), then run full root revalidation via `parse_present`; revalidation MUST include refinement predicates and `default` application.
 - Descending into a `union`, `discriminated_union` or the crate-internal `OneOf` kind during `parse_delta` navigation MUST be rejected with `UNION_PATH_REQUIRES_INSTANCE`; variant selection requires an instance and is not schema-navigable alone.

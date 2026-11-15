@@ -122,6 +122,12 @@ fn navigate_schema(root: &Schema, segments: &[std::string::String]) -> Result<Sc
                     consumed.push(seg.clone());
                     field
                 }
+                // Validation keeps any value at an unknown key of a
+                // passthrough object, so the delta validates it as `any()`.
+                None if matches!(body.mode, crate::types::ObjectMode::Passthrough) => {
+                    consumed.push(seg.clone());
+                    crate::any().into()
+                }
                 None => {
                     let mut path = consumed;
                     path.push(seg.clone());
@@ -601,6 +607,29 @@ mod tests {
         assert_eq!(err.code, ErrorCode::INVALID_PATH);
         assert_eq!(err.path, vec!["id"]);
         assert!(schema.parse_delta("/n", &"y").is_ok());
+    }
+
+    #[test]
+    fn parse_delta_passthrough_unknown_key_is_any() {
+        // Validation keeps any value at an unknown key of a passthrough
+        // object; the delta agrees. Strict and strip objects keep rejecting.
+        let pass: Schema = object([("a", string().into())]).passthrough().into();
+        assert_eq!(pass.parse_delta("/b", &1i32).unwrap(), ZerxValue::I64(1));
+        assert!(pass.parse_delta("/a", &1i32).is_err());
+        // An unknown key's value is `any()`: nothing below it is navigable.
+        assert_eq!(
+            pass.parse_delta("/b/c", &1i32).unwrap_err().code,
+            ErrorCode::INVALID_PATH
+        );
+        for s in [
+            Schema::from(object([("a", string().into())])),
+            Schema::from(object([("a", string().into())]).strip()),
+        ] {
+            assert_eq!(
+                s.parse_delta("/b", &1i32).unwrap_err().code,
+                ErrorCode::UNKNOWN_PROPERTY
+            );
+        }
     }
 
     #[test]

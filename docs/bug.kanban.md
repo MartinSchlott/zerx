@@ -32,18 +32,6 @@ triage: needs-decision
 
 Interim fix landed: a colliding node now exports as `false` (fail closed). Open question for the Product Owner: should the extra fragments export under `allOf`, with import accepting an `allOf` of pure string-validator fragments, so the node round-trips?
 
-### `parse_delta` rejects unknown keys on a passthrough object
-
-id: {new}
-severity: minor
-triage: needs-decision
-
-With `object([("a", string())]).passthrough()`, `validate({"a":"x","b":1})` succeeds but `parse_delta("/b", &1)` fails with `unknown_property`. Navigation looks only at `shape`. This is a wrong rejection, not fail-open, and no doc rule decides it. Found in the bug sweep source audit.
-
-#### Triage
-
-Should a passthrough object's unknown key navigate to `any()`? Recommendation: yes, matching root validation; strict and strip objects keep rejecting.
-
 ### Missing lazy field ignores the inner schema's optional/default
 
 id: {new}
@@ -61,6 +49,13 @@ id: zrx9bug0col0inprogress01
 
 ## Done
 id: zrx9bug0col0done00000001
+
+### `parse_delta` rejects unknown keys on a passthrough object
+
+id: {new}
+severity: minor
+
+With `object([("a", string())]).passthrough()`, `validate({"a":"x","b":1})` succeeds but `parse_delta("/b", &1)` fails with `unknown_property`. Navigation looks only at `shape`. This is a wrong rejection, not fail-open, and no doc rule decides it. Found in the bug sweep source audit.
 
 ### Imported integer bounds beyond 2^53 compare in f64
 
