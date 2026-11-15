@@ -2081,7 +2081,9 @@ fn import_string_type(
 }
 
 // Step 10, `type: "number"`.
-// 2^53: from here on neighbouring integers share one `f64`.
+// 2^53: from here on neighbouring integers share one `f64`. Number nodes keep
+// this refusal for every bound; integer nodes apply it only to float literals
+// (`import_integer_bound`).
 const EXACT_F64_INTEGER_LIMIT: f64 = 9_007_199_254_740_992.0;
 
 // Reads an imported `minimum`/`maximum`. Bounds compare in `f64`; a bound of
@@ -2113,6 +2115,24 @@ fn import_bound(raw: &serde_json::Value, key: &str, path: &[String]) -> Result<f
         ));
     }
     Ok(n)
+}
+
+// Reads a `minimum`/`maximum` of a `type: integer` node. An integer JSON
+// literal is held exactly (any i64/u64 value) and compared exactly at runtime.
+// A float literal of magnitude 2^53 or more may already be a rounded form of
+// its source text, so it is refused like on a number node.
+fn import_integer_bound(
+    raw: &serde_json::Value,
+    key: &str,
+    path: &[String],
+) -> Result<crate::NumberBound, ZerxError> {
+    if let Some(i) = raw.as_i64() {
+        return Ok(i.into());
+    }
+    if let Some(u) = raw.as_u64() {
+        return Ok(u.into());
+    }
+    Ok(import_bound(raw, key, path)?.into())
 }
 
 fn import_number_type(
@@ -2148,12 +2168,12 @@ fn import_integer_type(
     *base = Some({
         let mut nb = crate::number().int();
         if let Some(raw) = obj.get("minimum") {
-            let n = import_bound(raw, "minimum", path)?;
+            let n = import_integer_bound(raw, "minimum", path)?;
             nb = nb.min(n);
             consumed.insert("minimum".to_string());
         }
         if let Some(raw) = obj.get("maximum") {
-            let n = import_bound(raw, "maximum", path)?;
+            let n = import_integer_bound(raw, "maximum", path)?;
             nb = nb.max(n);
             consumed.insert("maximum".to_string());
         }
@@ -2683,8 +2703,9 @@ mod tests {
         let s: Schema = number().int().min(0).max(9).into();
         let v = js(&s);
         assert_eq!(get(&v, "type"), Some(&serde_json::json!("integer")));
-        assert_eq!(get(&v, "minimum"), Some(&serde_json::json!(0.0)));
-        assert_eq!(get(&v, "maximum"), Some(&serde_json::json!(9.0)));
+        // Integer bounds export as exact JSON integers.
+        assert_eq!(get(&v, "minimum"), Some(&serde_json::json!(0)));
+        assert_eq!(get(&v, "maximum"), Some(&serde_json::json!(9)));
     }
 
     // 6. Array
@@ -5341,15 +5362,17 @@ mod tests {
     }
 
     #[test]
-    fn import_bounds_beyond_2_pow_53_are_refused() {
-        // Bounds compare in f64; past 2^53 a bound no longer separates
-        // neighbouring integers (`maximum: 2^53` would accept 2^53 + 1).
+    fn number_node_bounds_beyond_2_pow_53_are_refused() {
+        // A number node compares a bound against fractional and integral
+        // values alike; from 2^53 on the bound no longer separates
+        // neighbouring integers, so it is refused rather than enforced
+        // inexactly. Integer nodes hold integer bounds exactly instead
+        // (`integer_node_bounds_import_exactly`).
         for doc in [
-            serde_json::json!({"type": "integer", "maximum": 9007199254740993u64}),
-            serde_json::json!({"type": "integer", "maximum": 9223372036854775806i64}),
+            serde_json::json!({"type": "number", "maximum": 9007199254740992u64}),
             serde_json::json!({"type": "number", "minimum": -9007199254740993i64}),
             serde_json::json!({"type": "number", "maximum": 1e300}),
-            serde_json::json!({"type": ["integer", "null"], "minimum": 18446744073709551615u64}),
+            serde_json::json!({"type": ["number", "null"], "minimum": 18446744073709551615u64}),
         ] {
             assert_eq!(
                 from(doc.clone()).unwrap_err().code,
@@ -5357,20 +5380,76 @@ mod tests {
                 "{doc}"
             );
         }
-        // 2^53 itself is refused: 2^53 + 1 rounds to it in f64.
+        assert!(
+            from(serde_json::json!({"type": "number", "minimum": 0.5, "maximum": 1e15})).is_ok()
+        );
+        // On an integer node the same literals import and order exactly.
+        let s =
+            from(serde_json::json!({"type": "integer", "maximum": 9007199254740992u64})).unwrap();
+        assert!(validate_zv(&s, ZerxValue::I64(9007199254740991)).is_ok());
+        assert!(validate_zv(&s, ZerxValue::I64(9007199254740992)).is_ok());
+        assert!(validate_zv(&s, ZerxValue::I64(9007199254740993)).is_err());
+        assert!(from(
+            serde_json::json!({"type": ["integer", "null"], "minimum": 18446744073709551615u64})
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn integer_node_bounds_import_exactly() {
+        // epistole: quota_bytes up to i64::MAX.
+        let epistole = serde_json::json!({
+            "type": "object",
+            "properties": {"quota_bytes": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807i64}},
+            "required": ["quota_bytes"]
+        });
+        // pygmalion: seed over the full i64 range below its maximum.
+        let pygmalion = serde_json::json!({
+            "type": "object",
+            "properties": {"seed": {"type": "integer", "minimum": -9223372036854775808i64, "maximum": 9223372036854774784i64}},
+            "required": ["seed"]
+        });
+        for (doc, key, lo, hi) in [
+            (&epistole, "quota_bytes", 0i128, i64::MAX as i128),
+            (
+                &pygmalion,
+                "seed",
+                i64::MIN as i128,
+                9223372036854774784i128,
+            ),
+        ] {
+            let s = from(doc.clone()).unwrap();
+            let v = |n: i128| obj(&[(key, ZerxValue::I128(n))]);
+            assert!(validate_zv(&s, v(lo)).is_ok(), "{key} {lo}");
+            assert!(validate_zv(&s, v(hi)).is_ok(), "{key} {hi}");
+            assert!(validate_zv(&s, v(lo - 1)).is_err(), "{key} {lo}-1");
+            assert!(validate_zv(&s, v(hi + 1)).is_err(), "{key} {hi}+1");
+            // Round trip: the bounds export unchanged and re-import.
+            let exported = s.to_json_schema();
+            assert_eq!(exported["properties"][key], doc["properties"][key], "{key}");
+            assert!(from(exported).is_ok());
+        }
+        // A nullable integer keeps exact bounds and admits null.
+        let s = from(
+            serde_json::json!({"type": ["integer", "null"], "maximum": 9223372036854775807i64}),
+        )
+        .unwrap();
+        assert!(validate_zv(&s, ZerxValue::Null).is_ok());
+        assert!(validate_zv(&s, ZerxValue::U64(9223372036854775808)).is_err());
+        // An integer node with a float bound of magnitude 2^53 or more may
+        // carry a rounded source value and stays refused.
         assert_eq!(
-            from(serde_json::json!({"type": "integer", "maximum": 9007199254740992u64}))
+            from(serde_json::json!({"type": "integer", "maximum": 1e300}))
                 .unwrap_err()
                 .code,
             ErrorCode::IMPORT_UNSUPPORTED
         );
-        // Below 2^53 the bound orders every integer exactly.
-        let s = from(serde_json::json!({"type": "integer", "maximum": 9007199254740991u64, "minimum": -9007199254740991i64})).unwrap();
-        assert!(validate_zv(&s, ZerxValue::I64(9007199254740991)).is_ok());
-        assert!(validate_zv(&s, ZerxValue::I64(9007199254740992)).is_err());
-        assert!(validate_zv(&s, ZerxValue::I64(9007199254740993)).is_err());
-        assert!(
-            from(serde_json::json!({"type": "number", "minimum": 0.5, "maximum": 1e15})).is_ok()
+        // Number nodes keep the 2^53 refusal.
+        assert_eq!(
+            from(serde_json::json!({"type": "number", "maximum": 9223372036854775807i64}))
+                .unwrap_err()
+                .code,
+            ErrorCode::IMPORT_UNSUPPORTED
         );
     }
 }

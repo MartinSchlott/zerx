@@ -25,8 +25,8 @@ pub use types::{
     DiscriminatedUnionSchema, LiteralSchema, ObjectSchema, RecordSchema, TupleSchema, UnionSchema,
 };
 pub use types::{
-    boolean, enumerate, null, number, string, BooleanSchema, EnumSchema, NullSchema, NumberSchema,
-    StringSchema,
+    boolean, enumerate, null, number, string, BooleanSchema, EnumSchema, NullSchema, NumberBound,
+    NumberSchema, StringSchema,
 };
 pub use types::{
     buffer, json, jsonschema, uri, url, BufferSchema, JsonSchema, JsonschemaSchema, UriSchema,

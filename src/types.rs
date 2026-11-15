@@ -345,8 +345,174 @@ impl Validator for Uuid {
 // Concrete validators — Number
 // ---------------------------------------------------------------------------
 
-pub(crate) struct MinValue(pub f64);
-pub(crate) struct MaxValue(pub f64);
+/// A `minimum`/`maximum` for [`NumberSchema::min`] / [`NumberSchema::max`].
+///
+/// Integer bounds (any primitive integer type, up to `i128`/`u128`) are held
+/// exactly and compared exactly against every numeric value, with no rounding
+/// through `f64`. Float bounds (`f32`/`f64`) are compared exactly as floats.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NumberBound(pub(crate) BoundRepr);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum BoundRepr {
+    /// Sign and magnitude; zero is always `neg: false`.
+    Int {
+        neg: bool,
+        mag: u128,
+    },
+    Float(f64),
+}
+
+impl NumberBound {
+    fn int(neg: bool, mag: u128) -> Self {
+        NumberBound(BoundRepr::Int {
+            neg: neg && mag != 0,
+            mag,
+        })
+    }
+}
+
+macro_rules! bound_from_signed {
+    ($($t:ty),*) => {$(
+        impl From<$t> for NumberBound {
+            fn from(n: $t) -> Self {
+                NumberBound::int(n < 0, (n as i128).unsigned_abs())
+            }
+        }
+    )*};
+}
+macro_rules! bound_from_unsigned {
+    ($($t:ty),*) => {$(
+        impl From<$t> for NumberBound {
+            fn from(n: $t) -> Self {
+                NumberBound::int(false, n as u128)
+            }
+        }
+    )*};
+}
+bound_from_signed!(i8, i16, i32, i64, i128, isize);
+bound_from_unsigned!(u8, u16, u32, u64, u128, usize);
+
+impl From<f64> for NumberBound {
+    fn from(n: f64) -> Self {
+        NumberBound(BoundRepr::Float(n))
+    }
+}
+
+impl From<f32> for NumberBound {
+    fn from(n: f32) -> Self {
+        NumberBound(BoundRepr::Float(n as f64))
+    }
+}
+
+impl std::fmt::Display for NumberBound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            BoundRepr::Int { neg, mag } => write!(f, "{}{mag}", if neg { "-" } else { "" }),
+            BoundRepr::Float(x) => write!(f, "{x}"),
+        }
+    }
+}
+
+fn cmp_int((an, am): (bool, u128), (bn, bm): (bool, u128)) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (an, bn) {
+        (false, false) => am.cmp(&bm),
+        (true, true) => bm.cmp(&am),
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+    }
+}
+
+// Exact order of a float against an integer. A non-integral `f` lies strictly
+// between `floor(f)` and `floor(f) + 1`, so it is below an integer `b` exactly
+// when `floor(f)` is.
+fn cmp_float_int(f: f64, b: (bool, u128)) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering;
+    if f.is_nan() {
+        return None;
+    }
+    let fl = f.floor();
+    // 2^128: at or beyond it no u128 magnitude reaches the float.
+    const TWO_128: f64 = 340_282_366_920_938_463_463_374_607_431_768_211_456.0;
+    if fl >= TWO_128 {
+        return Some(Ordering::Greater);
+    }
+    if fl <= -TWO_128 {
+        return Some(Ordering::Less);
+    }
+    // `fl` is integral and below 2^128 in magnitude, so the cast is exact.
+    let mag = fl.abs() as u128;
+    let ord = cmp_int((fl < 0.0 && mag != 0, mag), b);
+    if f == fl {
+        Some(ord)
+    } else if ord == Ordering::Less {
+        Some(Ordering::Less)
+    } else {
+        Some(Ordering::Greater)
+    }
+}
+
+fn value_int_form(value: &ZerxValue) -> Option<(bool, u128)> {
+    let (neg, mag) = match *value {
+        ZerxValue::I64(n) => (n < 0, (n as i128).unsigned_abs()),
+        ZerxValue::U64(n) => (false, n as u128),
+        ZerxValue::I128(n) => (n < 0, n.unsigned_abs()),
+        ZerxValue::U128(n) => (false, n),
+        _ => return None,
+    };
+    Some((neg && mag != 0, mag))
+}
+
+/// Exact order of a numeric value against a bound; `None` for a non-numeric
+/// value or a NaN bound.
+fn cmp_to_bound(value: &ZerxValue, bound: &BoundRepr) -> Option<std::cmp::Ordering> {
+    match (value_int_form(value), value, *bound) {
+        (Some(v), _, BoundRepr::Int { neg, mag }) => Some(cmp_int(v, (neg, mag))),
+        (Some(v), _, BoundRepr::Float(b)) => cmp_float_int(b, v).map(|o| o.reverse()),
+        (None, ZerxValue::F64(f), BoundRepr::Int { neg, mag }) => cmp_float_int(*f, (neg, mag)),
+        (None, ZerxValue::F64(f), BoundRepr::Float(b)) => f.partial_cmp(&b),
+        _ => None,
+    }
+}
+
+// The JSON number for a bound. Integers within the i64/u64 range export
+// exactly; beyond it (128-bit builder bounds) JSON cannot hold the value, so
+// the nearest float on the strict side is exported (`toward_larger` for a
+// minimum), keeping the export no wider than the runtime.
+fn bound_json(bound: &BoundRepr, toward_larger: bool) -> Option<serde_json::Number> {
+    match *bound {
+        BoundRepr::Float(x) => serde_json::Number::from_f64(x),
+        BoundRepr::Int { neg: false, mag } => match u64::try_from(mag) {
+            Ok(u) => Some(u.into()),
+            Err(_) => strict_float(false, mag, toward_larger),
+        },
+        BoundRepr::Int { neg: true, mag } if mag <= i64::MIN.unsigned_abs() as u128 => {
+            // `mag` is at most 2^63, so the negation fits an i64.
+            Some(((-(mag as i128)) as i64).into())
+        }
+        BoundRepr::Int { neg: true, mag } => strict_float(true, mag, toward_larger),
+    }
+}
+
+fn strict_float(neg: bool, mag: u128, toward_larger: bool) -> Option<serde_json::Number> {
+    use std::cmp::Ordering;
+    let mut f = mag as f64;
+    if neg {
+        f = -f;
+    }
+    loop {
+        match cmp_float_int(f, (neg, mag))? {
+            Ordering::Less if toward_larger => f = f.next_up(),
+            Ordering::Greater if !toward_larger => f = f.next_down(),
+            _ => break,
+        }
+    }
+    serde_json::Number::from_f64(f)
+}
+
+pub(crate) struct MinValue(pub(crate) NumberBound);
+pub(crate) struct MaxValue(pub(crate) NumberBound);
 pub(crate) struct IntValidator;
 
 // Number values are finite, so a NaN bound, a `+∞` minimum or a `-∞` maximum
@@ -354,10 +520,10 @@ pub(crate) struct IntValidator;
 // no non-finite number: export emits `false` or omits the keyword.
 impl Validator for MinValue {
     fn validate(&self, value: &ZerxValue) -> Result<(), ZerxError> {
-        if let Some(n) = numeric_as_f64(value) {
+        if numeric_as_f64(value).is_some() {
             // A NaN bound compares as unordered and is rejected too.
             if !matches!(
-                n.partial_cmp(&self.0),
+                cmp_to_bound(value, &self.0 .0),
                 Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
             ) {
                 return Err(ZerxError::new(
@@ -371,23 +537,23 @@ impl Validator for MinValue {
 
     fn json_schema(&self) -> serde_json::Map<String, serde_json::Value> {
         let mut m = serde_json::Map::new();
-        if let Some(n) = serde_json::Number::from_f64(self.0) {
+        if let Some(n) = bound_json(&self.0 .0, true) {
             m.insert("minimum".to_owned(), serde_json::Value::Number(n));
         }
         m
     }
 
     fn accepts_nothing(&self) -> bool {
-        self.0.is_nan() || self.0 == f64::INFINITY
+        matches!(self.0 .0, BoundRepr::Float(x) if x.is_nan() || x == f64::INFINITY)
     }
 }
 
 impl Validator for MaxValue {
     fn validate(&self, value: &ZerxValue) -> Result<(), ZerxError> {
-        if let Some(n) = numeric_as_f64(value) {
+        if numeric_as_f64(value).is_some() {
             // A NaN bound compares as unordered and is rejected too.
             if !matches!(
-                n.partial_cmp(&self.0),
+                cmp_to_bound(value, &self.0 .0),
                 Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
             ) {
                 return Err(ZerxError::new(
@@ -401,14 +567,14 @@ impl Validator for MaxValue {
 
     fn json_schema(&self) -> serde_json::Map<String, serde_json::Value> {
         let mut m = serde_json::Map::new();
-        if let Some(n) = serde_json::Number::from_f64(self.0) {
+        if let Some(n) = bound_json(&self.0 .0, false) {
             m.insert("maximum".to_owned(), serde_json::Value::Number(n));
         }
         m
     }
 
     fn accepts_nothing(&self) -> bool {
-        self.0.is_nan() || self.0 == f64::NEG_INFINITY
+        matches!(self.0 .0, BoundRepr::Float(x) if x.is_nan() || x == f64::NEG_INFINITY)
     }
 }
 
@@ -579,12 +745,12 @@ impl StringSchema {
 }
 
 impl NumberSchema {
-    pub fn min(mut self, n: impl Into<f64>) -> Self {
+    pub fn min(mut self, n: impl Into<NumberBound>) -> Self {
         self.0.validators.push(Rc::new(MinValue(n.into())));
         self
     }
 
-    pub fn max(mut self, n: impl Into<f64>) -> Self {
+    pub fn max(mut self, n: impl Into<NumberBound>) -> Self {
         self.0.validators.push(Rc::new(MaxValue(n.into())));
         self
     }
@@ -2008,10 +2174,83 @@ mod tests {
         let err2 = val(number().max(9), &10i32).unwrap_err();
         assert_eq!(err2.code, ErrorCode::NUMBER_TOO_LARGE);
 
-        let frag_min = MinValue(0.0).json_schema();
+        let frag_min = MinValue(0.0.into()).json_schema();
         assert_eq!(frag_min["minimum"], serde_json::json!(0.0));
-        let frag_max = MaxValue(9.0).json_schema();
+        let frag_max = MaxValue(9.0.into()).json_schema();
         assert_eq!(frag_max["maximum"], serde_json::json!(9.0));
+    }
+
+    #[test]
+    fn integer_bounds_compare_exactly() {
+        use crate::ZerxValue as V;
+        let p53: i64 = 1 << 53;
+        let check = |s: &NumberSchema, v: V, ok: bool| {
+            let schema: Schema = s.clone().into();
+            assert_eq!(schema.validate(&v).is_ok(), ok, "{v:?}");
+        };
+        // pygmalion's maximum and its neighbours.
+        let m = number().int().max(9223372036854774784i64);
+        check(&m, V::I64(9223372036854774783), true);
+        check(&m, V::I64(9223372036854774784), true);
+        check(&m, V::I64(9223372036854774785), false);
+        // i64::MAX via I64, and i64::MAX + 1 via U64 and integral F64.
+        let m = number().int().max(i64::MAX);
+        check(&m, V::I64(i64::MAX), true);
+        check(&m, V::U64(i64::MAX as u64 + 1), false);
+        check(&m, V::F64(9223372036854775808.0), false);
+        // i64::MIN and i64::MIN - 1 via I128.
+        let m = number().int().min(i64::MIN);
+        check(&m, V::I64(i64::MIN), true);
+        check(&m, V::I128(i64::MIN as i128 - 1), false);
+        // 2^53 bound and both neighbours, signed, unsigned and integral F64.
+        let m = number().int().max(p53);
+        check(&m, V::I64(p53 - 1), true);
+        check(&m, V::I64(p53), true);
+        check(&m, V::I64(p53 + 1), false);
+        check(&m, V::U64(p53 as u64 + 1), false);
+        check(&m, V::F64(p53 as f64), true);
+        check(&m, V::F64(9007199254740994.0), false);
+        let m = number().int().min(p53);
+        check(&m, V::I64(p53 - 1), false);
+        check(&m, V::U64(p53 as u64), true);
+        check(&m, V::I128(p53 as i128 + 1), true);
+        // u64 and 128-bit bounds.
+        let m = number().int().max(u64::MAX);
+        check(&m, V::U64(u64::MAX), true);
+        check(&m, V::U128(u64::MAX as u128 + 1), false);
+        let m = number().int().min(i128::MIN).max(u128::MAX);
+        check(&m, V::I128(i128::MIN), true);
+        check(&m, V::U128(u128::MAX), true);
+        // A non-integral F64 against an integer bound compares exactly.
+        let m = number().min(3i64);
+        check(&m, V::F64(2.5), false);
+        check(&m, V::F64(3.5), true);
+        let m = number().max(3i64);
+        check(&m, V::F64(2.5), true);
+        check(&m, V::F64(3.5), false);
+        // Nullable integer.
+        let n: Schema = number().int().max(i64::MAX).nullable().into();
+        assert!(n.validate(&()).is_ok());
+        assert!(n.validate(&V::U64(i64::MAX as u64 + 1)).is_err());
+        // Integer bounds export exactly.
+        let e: Schema = number().int().min(i64::MIN).max(i64::MAX).into();
+        let j = e.to_json_schema();
+        assert_eq!(j["minimum"], serde_json::json!(i64::MIN));
+        assert_eq!(j["maximum"], serde_json::json!(i64::MAX));
+        // A 128-bit bound JSON cannot hold exports as the nearest float on
+        // the strict side: never below a minimum, never above a maximum.
+        let w: Schema = number().int().min(i128::MAX).max(u128::MAX).into();
+        let j = w.to_json_schema();
+        let lo = j["minimum"].as_f64().unwrap();
+        let hi = j["maximum"].as_f64().unwrap();
+        assert_ne!(
+            cmp_float_int(lo, (false, i128::MAX as u128)),
+            Some(std::cmp::Ordering::Less)
+        );
+        assert_ne!(
+            cmp_float_int(hi, (false, u128::MAX)),
+            Some(std::cmp::Ordering::Greater)
+        );
     }
 
     // 8. number int
