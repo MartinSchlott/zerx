@@ -180,7 +180,31 @@ fn is_plain_any(s: &Schema) -> bool {
 // Whether the runtime rejects every non-null value of this node in a way JSON
 // Schema keywords cannot express.
 fn accepts_nothing(schema: &Schema) -> bool {
-    schema.validators.iter().any(|v| v.accepts_nothing())
+    let kind_rejects_all = match &schema.kind {
+        // A constant JSON cannot hold: `const` would carry a stand-in
+        // (`null` for a non-finite float or a 128-bit integer, a number array
+        // for bytes) that the literal itself rejects.
+        SchemaKind::Literal(c) => !json_representable(c),
+        _ => false,
+    };
+    kind_rejects_all || schema.validators.iter().any(|v| v.accepts_nothing())
+}
+
+// Whether `v` converts to JSON without a stand-in value.
+fn json_representable(v: &ZerxValue) -> bool {
+    match v {
+        ZerxValue::Null
+        | ZerxValue::Bool(_)
+        | ZerxValue::I64(_)
+        | ZerxValue::U64(_)
+        | ZerxValue::String(_) => true,
+        ZerxValue::I128(n) => i64::try_from(*n).is_ok() || u64::try_from(*n).is_ok(),
+        ZerxValue::U128(n) => u64::try_from(*n).is_ok(),
+        ZerxValue::F64(f) => f.is_finite(),
+        ZerxValue::Bytes(_) => false,
+        ZerxValue::Array(items) => items.iter().all(json_representable),
+        ZerxValue::Object(map) => map.iter().all(|(_, v)| json_representable(v)),
+    }
 }
 
 fn export_node(schema: &Schema, ctx: &mut ExportContext) -> serde_json::Value {
@@ -5161,5 +5185,25 @@ mod tests {
         let o: Schema = object([("a", number().min(f64::NAN).into())]).into();
         assert_eq!(js(&o)["properties"]["a"], serde_json::Value::Bool(false));
         assert!(from_json_schema(&js(&o)).is_err());
+    }
+
+    #[test]
+    fn unrepresentable_literal_exports_false() {
+        // `{"const": null}` would accept only null, which the literal rejects.
+        for s in [
+            Schema::from(literal(u128::MAX)),
+            Schema::from(literal(i128::MIN)),
+            Schema::from(literal(f64::NAN)),
+            Schema::from(literal(f64::INFINITY)),
+            Schema::from(literal(ZerxValue::Bytes(vec![1, 2]))),
+        ] {
+            assert!(s.validate(&()).is_err());
+            assert_eq!(js(&s), serde_json::Value::Bool(false));
+        }
+        // Representable literals keep `const`.
+        let s: Schema = literal(u64::MAX).into();
+        assert_eq!(js(&s), serde_json::json!({"const": u64::MAX}));
+        let s: Schema = literal(i64::MIN).into();
+        assert_eq!(js(&s), serde_json::json!({"const": i64::MIN}));
     }
 }
