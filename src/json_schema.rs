@@ -1442,6 +1442,14 @@ pub(crate) fn import_value(
         if let Some(any_of_arr) = obj.get("anyOf").and_then(|v| v.as_array()) {
             if any_of_arr.len() == 2 {
                 if let Some(null_i) = any_of_arr.iter().position(is_bare_null_schema) {
+                    // The null member is dropped from the reconstruction, so it
+                    // is imported only to hold it to the import rules: a keyword
+                    // the bare-null check does not know (`if`, `$dynamicRef`,
+                    // a non-root `$id`) is refused there as anywhere else.
+                    let mut null_path = path.to_vec();
+                    null_path.push("anyOf".to_string());
+                    null_path.push(null_i.to_string());
+                    import_value(&any_of_arr[null_i], ctx, &null_path)?;
                     let other_i = 1 - null_i;
                     let mut child_path = path.to_vec();
                     child_path.push("anyOf".to_string());
@@ -4542,5 +4550,25 @@ mod tests {
             validate_zv(&s, obj(&[])).unwrap(),
             obj(&[("a", ZerxValue::String("x".into()))])
         );
+    }
+
+    #[test]
+    fn import_nullable_collapse_checks_the_null_member() {
+        // The null member of a nullable anyOf is held to the same import
+        // rules as any other node: an unsupported applicator or a non-root
+        // `$id` there is refused, not skipped.
+        for member in [
+            serde_json::json!({"type": "null", "if": true, "then": false}),
+            serde_json::json!({"type": "null", "$dynamicRef": "#x"}),
+            serde_json::json!({"type": "null", "$id": "https://example.com/n"}),
+        ] {
+            let doc = serde_json::json!({"anyOf": [{"type": "string"}, member]});
+            assert!(from(doc.clone()).is_err(), "{doc}");
+        }
+        // A bare null member with annotations still collapses to nullable.
+        let s = from(serde_json::json!({"anyOf": [{"type": "string"}, {"type": "null", "description": "none"}]})).unwrap();
+        assert!(validate_zv(&s, ZerxValue::Null).is_ok());
+        assert!(validate_zv(&s, ZerxValue::String("a".into())).is_ok());
+        assert!(validate_zv(&s, ZerxValue::I64(1)).is_err());
     }
 }
