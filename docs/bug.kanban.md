@@ -30,43 +30,7 @@ triage: needs-decision
 
 #### Triage
 
-How should a second pattern or format export? `allOf` is refused on import. Recommendation: export the extra fragments under `allOf`, and let import accept an `allOf` of pure string-validator fragments; the alternative is that the builder refuses a second pattern or format.
-
-### Non-finite number bounds are silently wrong
-
-id: {new}
-severity: minor
-triage: needs-decision
-
-`number().min(f64::NAN)` accepts every number (no-op validator, fail-open). `number().min(f64::INFINITY)` and `.max(f64::NAN)` export as `minimum`/`maximum` `0` through the `Number::from_f64` fallback, so the export disagrees with the runtime in both directions. Found in the bug sweep source audit.
-
-#### Triage
-
-Should a non-finite bound fail closed (NaN or `+∞` minimum rejects everything) and export as `false`, or be clamped? Recommendation: fail closed at runtime and export the node as `false`.
-
-### Literals that JSON cannot hold export as `const: null`
-
-id: {new}
-severity: minor
-triage: needs-decision
-
-`literal(u128::MAX)`, `literal(i128::MIN)` and `literal(f64::NAN)` export `{"const":null}` through the documented `unwrap_or(Null)` fallback. The runtime rejects `null` and the export accepts only `null`, and the re-import becomes `literal(null)`. Found in the bug sweep source audit.
-
-#### Triage
-
-Replace the fallback with an export that accepts nothing? Recommendation: export `false` for an unrepresentable constant. The `unwrap_or(Null)` rule in `docs/architecture/json-schema.md` changes with it.
-
-### Invalid discriminated union exports as an accepting `oneOf`
-
-id: {new}
-severity: minor
-triage: needs-decision
-
-`discriminated_union("k", [object([("k", literal("a").optional())])])` is `DiscriminatorState::Invalid` and rejects every value, but exports `{"oneOf":[…],"discriminator":…}`, which accepts `{"k":"a"}`. The re-import becomes `OneOf`, which accepts it. Found in the bug sweep source audit.
-
-#### Triage
-
-What should a defective schema export, given that `to_json_schema` is infallible? Recommendation: export `false` for an invalid discriminated union.
+Interim fix landed: a colliding node now exports as `false` (fail closed). Open question for the Product Owner: should the extra fragments export under `allOf`, with import accepting an `allOf` of pure string-validator fragments, so the node round-trips?
 
 ### Imported integer bounds beyond 2^53 compare in f64
 
@@ -109,6 +73,27 @@ id: zrx9bug0col0inprogress01
 
 ## Done
 id: zrx9bug0col0done00000001
+
+### Non-finite number bounds are silently wrong
+
+id: {new}
+severity: minor
+
+`number().min(f64::NAN)` accepts every number (no-op validator, fail-open). `number().min(f64::INFINITY)` and `.max(f64::NAN)` export as `minimum`/`maximum` `0` through the `Number::from_f64` fallback, so the export disagrees with the runtime in both directions. Found in the bug sweep source audit.
+
+### Literals that JSON cannot hold export as `const: null`
+
+id: {new}
+severity: minor
+
+`literal(u128::MAX)`, `literal(i128::MIN)` and `literal(f64::NAN)` export `{"const":null}` through the documented `unwrap_or(Null)` fallback. The runtime rejects `null` and the export accepts only `null`, and the re-import becomes `literal(null)`. Found in the bug sweep source audit.
+
+### Invalid discriminated union exports as an accepting `oneOf`
+
+id: {new}
+severity: minor
+
+`discriminated_union("k", [object([("k", literal("a").optional())])])` is `DiscriminatorState::Invalid` and rejects every value, but exports `{"oneOf":[…],"discriminator":…}`, which accepts `{"k":"a"}`. The re-import becomes `OneOf`, which accepts it. Found in the bug sweep source audit.
 
 ### Consumes / Provides duals differ in wording
 

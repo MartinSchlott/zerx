@@ -69,8 +69,8 @@ None.
 
 ### Number validators
 
-- `NumberSchema::min(n: impl Into<f64>)` MUST push a `MinValue(n)` validator; a numeric value whose `f64` representation is less than `n` MUST yield `Err(NUMBER_TOO_SMALL)`.
-- `NumberSchema::max(n: impl Into<f64>)` MUST push a `MaxValue(n)` validator; a numeric value whose `f64` representation exceeds `n` MUST yield `Err(NUMBER_TOO_LARGE)`.
+- `NumberSchema::min(n: impl Into<f64>)` MUST push a `MinValue(n)` validator; a numeric value whose `f64` representation is less than `n`, or any numeric value when `n` is NaN, MUST yield `Err(NUMBER_TOO_SMALL)`.
+- `NumberSchema::max(n: impl Into<f64>)` MUST push a `MaxValue(n)` validator; a numeric value whose `f64` representation exceeds `n`, or any numeric value when `n` is NaN, MUST yield `Err(NUMBER_TOO_LARGE)`.
 - `NumberSchema::int()` MUST push an `IntValidator`; `I64`/`U64`/`I128`/`U128` MUST always pass; a `F64` with `fract() != 0.0` MUST yield `Err(NOT_INTEGER)`.
 - Bound comparison is performed in `f64`; precision loss at `i128`/`u128` magnitudes beyond 2^53 is accepted for v1.
 
@@ -81,8 +81,8 @@ None.
 - `Pattern.json_schema()` MUST return `{"pattern": <source>}` preserving the original pattern string regardless of compilation success.
 - `Email.json_schema()` MUST return `{"format": "email"}`.
 - `Uuid.json_schema()` MUST return `{"format": "uuid"}`.
-- `MinValue(n).json_schema()` MUST return `{"minimum": n}`.
-- `MaxValue(n).json_schema()` MUST return `{"maximum": n}`.
+- `MinValue(n).json_schema()` MUST return `{"minimum": n}` for a finite `n` and no keyword otherwise; a NaN or `+∞` minimum accepts nothing and takes the fail-closed export of `json-schema`.
+- `MaxValue(n).json_schema()` MUST return `{"maximum": n}` for a finite `n` and no keyword otherwise; a NaN or `-∞` maximum accepts nothing and takes the fail-closed export of `json-schema`.
 - `IntValidator.json_schema()` MUST return `{"type": "integer"}`.
 
 ### Error codes — basic types

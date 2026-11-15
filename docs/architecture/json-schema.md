@@ -44,6 +44,13 @@
 - A later step MUST NOT overwrite a key produced by an earlier step. The order is: base → validators → modifiers → meta.
 - The `format` modifier MUST NOT overwrite a semantically meaningful `format` key produced in step (1) or (2) (kind markers and validator-contributed formats take precedence).
 - `meta` entries MUST be skipped when the key is export-reserved or already present in the output map.
+- Repeated bound fragments of one node MUST export the tightest value: the largest `minLength`/`minItems`/`minimum` and the smallest `maxLength`/`maxItems`/`maximum`, because the runtime enforces every validator.
+
+### Fail-closed export
+
+- A node whose runtime accepts no value JSON Schema keywords can express MUST export as `false`, or as `{"type":"null"}` when it carries `nullable`, which the runtime accepts before any other check. The import refuses `false`, so such a node does not round-trip (`D-import-fail-closed`).
+- This applies to a validator that accepts nothing (a NaN bound, a `+∞` minimum, a `-∞` maximum), a `Literal` whose constant JSON cannot hold, a `DiscriminatedUnion` in the `Invalid` state, and two different `pattern` or `format` fragments on one node, which one keyword cannot carry.
+- A non-finite bound that forbids nothing (`-∞` minimum, `+∞` maximum) MUST export no keyword.
 
 ### Per-kind base schemas and format markers
 
@@ -53,13 +60,13 @@
 - `Boolean` → `{"type":"boolean"}`.
 - `Null` → `{"type":"null"}`.
 - `Enum(set)` → `{"enum":[…]}`.
-- `Literal(c)` → `{"const":<value>}`.
+- `Literal(c)` → `{"const":<value>}` when JSON can hold `c` (finite floats, integers within the `i64`/`u64` range, no bytes); otherwise the fail-closed export applies.
 - `Object(body)` → `{"type":"object","properties":{…},"required":[…],"additionalProperties":<mode>}`.
 - `Array(item)` → `{"type":"array","items":<exported item>}`.
 - `Record(value)` → `{"type":"object","format":"record","properties":{},"additionalProperties":<value or true>}`.
 - `Tuple(items)` → `{"type":"array","prefixItems":[…],"items":false,"minItems":n,"maxItems":n}`.
 - `Union(variants)` → `{"anyOf":[…]}`.
-- `DiscriminatedUnion(body)` → `{"oneOf":[…],"discriminator":{"propertyName":<key>}}`.
+- `DiscriminatedUnion(body)` → `{"oneOf":[…],"discriminator":{"propertyName":<key>}}` while its discriminator state is valid; an `Invalid` state takes the fail-closed export.
 - `OneOf(variants)` (crate-internal, built only by import) → `{"oneOf":[…]}`.
 - `Buffer` → `{"type":"string","format":"buffer"}` (`contentMediaType` added by `mime` modifier).
 - `Uri` → `{"type":"string","format":"uri"}`.
@@ -101,7 +108,8 @@
 ### Infallibility
 
 - `to_json_schema` and `to_json_schema_with` MUST be infallible and MUST return `serde_json::Value` directly (no `Result`).
-- `ZerxValue` → `serde_json::Value` conversions inside export MUST use `.unwrap_or(serde_json::Value::Null)` to preserve infallibility.
+- `ZerxValue` → `serde_json::Value` conversions of annotation values (`default`, `examples`, `meta`) MUST use `.unwrap_or(serde_json::Value::Null)` to preserve infallibility.
+- A `const` MUST NOT be exported through that fallback; a constant JSON cannot hold takes the fail-closed export, because a stand-in value would be accepted where the literal rejects it.
 
 ### Export-reserved keyword set
 
@@ -137,6 +145,9 @@
 - A consumed keyword whose value violates the Draft 2020-12 grammar MUST raise `IMPORT_MALFORMED`; an integral float counts as an integer.
 - An empty `anyOf`/`oneOf` MUST raise `IMPORT_UNSUPPORTED`; it accepts nothing, and zerx has no never type.
 - `$id` on any node other than the root MUST raise `IMPORT_UNSUPPORTED`; a nested `$id` would re-base the `$ref`s inside it. A root `$id` imports as `meta`.
+- A non-compiling `pattern` on a string, `uri` or `url` node MUST raise `IMPORT_MALFORMED`; it would otherwise reject every string at validation time.
+- Import nesting, `$ref` resolution included, MUST be bounded by the parse-depth limit; a deeper document MUST raise `IMPORT_UNSUPPORTED`. A flat `$defs` chain nests once per link although the document stays shallow, so the JSON parser's own nesting limit does not bound it.
+- The bound MUST take effect before the import exhausts a 2 MB thread stack, in debug as well as release builds.
 
 ### Import keyword→modifier mapping (inverse of export)
 
@@ -156,12 +167,14 @@
 ### `required` / `optional` / default import rule
 
 - A property listed in `required` MUST import as non-optional.
+- A property listed in `required` whose imported schema carries a `default`, a default inside a nullable `anyOf` member included, MUST raise `IMPORT_UNSUPPORTED`; the default would fill the missing key before the required check.
 - A property not in `required` and with no `default` keyword on its node MUST import as `.optional()`.
 - A property not in `required` but with a `default` keyword MUST import as non-optional (default supplies the missing value at parse time, matching the runtime invariant).
 
 ### Nullable collapse
 
 - An `anyOf` of exactly two members where exactly one is a bare null schema (`{"type":"null"}` with no other structural keyword) MUST import as the other member with `.nullable()` applied.
+- The bare null member MUST be held to every import rule, unsupported applicators and a nested `$id` included, although it is not part of the reconstruction.
 - A `type` sibling of a nullable collapse MUST be honoured by the `anyOf`/`oneOf` `type` rule below; the bare null member counts as a member of type `null`.
 - Any other `anyOf` MUST import as `union(variants)`.
 
@@ -212,6 +225,7 @@
 ### `$ref` import with memoised lazy
 
 - A `$ref` value MUST start with `#/$defs/`; any other form MUST raise `IMPORT_MALFORMED`.
+- The rest of the `$ref` MUST be decoded as one JSON Pointer segment (RFC 6901, `~1`→`/` then `~0`→`~`) naming a `$defs` key; a further `/` or a `%` MUST raise `IMPORT_UNSUPPORTED`, and a `~` not followed by `0` or `1` MUST raise `IMPORT_MALFORMED`.
 - Every assertion sibling of `$ref`, `type` and the unsupported applicators included, MUST raise `IMPORT_UNSUPPORTED`; the `$ref` path reconstructs only the reference and annotations.
 - All `$ref`s to the same `$defs` id MUST share one `lazy` instance (clones share one resolution cell), so re-export emits a single `$defs` entry per id.
 - Structural errors in a referenced `$defs` entry MUST be surfaced eagerly (via `ensure_resolved`) before `from_json_schema` returns; the thunk MUST only clone an already-resolved schema and MUST NOT fail.

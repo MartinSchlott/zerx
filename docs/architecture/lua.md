@@ -41,6 +41,7 @@
 - A `Bytes` value under a string-family schema (`string`, `enumerate`, `uri`, `url`, `literal(<String>)`) MUST be decoded as UTF-8 to produce `ZerxValue::String`; non-UTF-8 bytes MUST produce `ZerxValue::Bytes`, which the parse pass rejects as `TYPE_MISMATCH` (no Lua-specific error code).
 - A `Bytes` value under `buffer` MUST be kept raw as `ZerxValue::Bytes` without any decode attempt.
 - The transform pass MUST be depth-guarded using the same `ParseContext` depth counter as the parse pass (`MAX_PARSE_DEPTH = 100`); a table tree that would exceed the limit MUST return `PARSE_DEPTH_EXCEEDED`.
+- Unwrapping `lazy` layers before a transform step MUST be bounded by the same limit and MUST return `PARSE_DEPTH_EXCEEDED` beyond it, because a lazy may resolve only to further lazies.
 - No data-value cycle guard is required; the producer (endymion) guarantees acyclic, finite trees.
 - The transform pass MUST be gate-aware: container gates (unknown-key gate for strict object, length gate for tuple, discriminator gate for discriminated union) MUST be applied before any field/element value is converted, to preserve the error-precedence contract.
 - Error codes: `LUA_INVALID_KEY` — a hash key is not a UTF-8 byte string where the directing schema requires string keys; `LUA_SHAPE_MISMATCH` — a table's populated parts do not match the directing schema kind (non-empty hash under `array`/`tuple`; non-empty array part under `object`/`record`; mixed table under a free conversion).

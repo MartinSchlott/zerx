@@ -73,6 +73,8 @@
 
 - The deref transform MUST act only on nodes whose `$ref` string does NOT start with `#/`; local `#/$defs/…` refs MUST be left untouched for J2's core importer.
 - On a non-local `$ref` node the deref transform MUST replace the node with the resolver's result, merging every sibling keyword (every key except `$ref`) onto the resolved object, with the sibling keys taking precedence over the resolved object's keys.
+- An external ref met again while its own resolved content is walked MUST raise `IMPORT_UNSUPPORTED`; inlining cannot represent a recursive external schema. External ref nesting beyond the parse-depth limit MUST raise `IMPORT_UNSUPPORTED`.
+- Resolved content that carries `$defs` or a `$ref` starting with `#` MUST raise `IMPORT_UNSUPPORTED`; such refs are relative to the external document and would bind to the importing document's `$defs` (`D-import-fail-closed`).
 
 ### Built-in `sql` policy schema transforms (pre-parse, in order)
 
@@ -86,6 +88,7 @@
   - `{"type":"string","format":"timestamp without time zone"|"timestamp with time zone"|"timestamptz"}` → format set to `"date-time"`.
   - `{"type":"number","format":"int64"}` or `{"type":"number","x-pg-type":"int8"}` → `{"type":"string"}`.
   - `{"type":"number","format":"numeric"|"decimal"}` or `{"type":"number","x-pg-type":"numeric"}` → `{"type":"string"}`.
+- A number node matching an int64/int8 or numeric/decimal rewrite that carries `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` or `multipleOf` MUST raise `IMPORT_UNSUPPORTED`; the string rewrite cannot enforce numeric bounds, and the core import would drop them as vacuous (`D-import-fail-closed`).
 
 ### Built-in `sql` policy type transforms
 
