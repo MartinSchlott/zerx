@@ -1398,11 +1398,7 @@ pub(crate) fn import_value(
     // parse limit does not bound it. Cap it at the parse-depth limit.
     let depth = ctx.depth.get();
     if depth >= MAX_PARSE_DEPTH {
-        return Err(ZerxError::new(
-            ErrorCode::IMPORT_UNSUPPORTED,
-            format!("schema nesting exceeds the import depth limit of {MAX_PARSE_DEPTH}"),
-        )
-        .at(path.to_vec()));
+        return Err(import_depth_error(path));
     }
     ctx.depth.set(depth + 1);
     let result = import_node(node, ctx, path);
@@ -1410,19 +1406,89 @@ pub(crate) fn import_value(
     result
 }
 
+#[cold]
+fn import_depth_error(path: &[String]) -> ZerxError {
+    ZerxError::new(
+        ErrorCode::IMPORT_UNSUPPORTED,
+        format!("schema nesting exceeds the import depth limit of {MAX_PARSE_DEPTH}"),
+    )
+    .at(path.to_vec())
+}
+
+// The import recurses through `import_node` once per nesting level or `$ref`
+// link, so every step lives in its own function and writes its result through
+// `base`: a single frame holding every step's temporaries exhausted a 2 MB
+// stack well within the depth limit in debug builds.
 fn import_node(
     node: &serde_json::Value,
     ctx: &ImportContext,
     path: &[String],
 ) -> Result<Schema, ZerxError> {
-    use crate::{
-        any, array, boolean, buffer, discriminated_union, enumerate, json, jsonschema, literal,
-        null, number, record, tuple, union, uri, url,
+    let (obj, spec) = match import_node_prelude(node, path)? {
+        Some(parts) => parts,
+        // Step 1: `true` imports as `any()`.
+        None => return Ok(true_schema()),
     };
 
+    // Assertion keywords this node's reconstruction actually consumed. The
+    // coverage check before `meta` routing proves every one of them was
+    // consumed, is vacuous for the declared type, or is refused.
+    let mut consumed: HashSet<String> = HashSet::new();
+    let mut base: Option<Schema> = None;
+
+    if obj.contains_key("$ref") {
+        import_ref_step(obj, spec, ctx, path, &mut consumed, &mut base)?;
+    }
+    if base.is_none() {
+        refuse_all_of_not(obj, path)?;
+        import_nullable_collapse_step(obj, spec, ctx, path, &mut consumed, &mut base)?;
+    }
+    if base.is_none() {
+        import_union_step(obj, spec, ctx, path, &mut consumed, &mut base)?;
+    }
+    if base.is_none() && (obj.contains_key("enum") || obj.contains_key("const")) {
+        import_enum_const_step(obj, spec, path, &mut consumed, &mut base)?;
+    }
+
+    let fmt = obj.get("format").and_then(|v| v.as_str());
+    let had_base_before_markers = base.is_some();
+
+    if base.is_none() {
+        import_format_marker_step(obj, spec, ctx, path, &mut consumed, fmt, &mut base)?;
+    }
+    if base.is_none() {
+        import_type_step(obj, spec, ctx, path, &mut consumed, fmt, &mut base)?;
+    }
+
+    finish_import_node(
+        base,
+        had_base_before_markers,
+        obj,
+        spec,
+        fmt,
+        path,
+        &consumed,
+    )
+}
+
+type NodeParts<'a> = (
+    &'a serde_json::Map<String, serde_json::Value>,
+    Option<TypeSpec>,
+);
+
+fn true_schema() -> Schema {
+    crate::any().into()
+}
+
+// Steps 1–2.5: boolean schema, non-object guard, keyword grammar, nested `$id`
+// and `type` parsing. `None` stands for the `true` schema.
+fn import_node_prelude<'a>(
+    node: &'a serde_json::Value,
+    path: &[String],
+) -> Result<Option<NodeParts<'a>>, ZerxError> {
     // Step 1: Boolean schema.
     match node {
-        serde_json::Value::Bool(true) => return Ok(any().into()),
+        serde_json::Value::Bool(true) => return Ok(None),
         serde_json::Value::Bool(false) => {
             return Err(ZerxError::new(
                 ErrorCode::IMPORT_UNSUPPORTED,
@@ -1462,17 +1528,41 @@ fn import_node(
     // Step 2.5: parse `type`. Runs on every object node, `$ref` included, so a
     // malformed `type` is never skipped.
     let spec = parse_type(obj, path)?;
+    Ok(Some((obj, spec)))
+}
 
-    // Assertion keywords this node's reconstruction actually consumed. The
-    // coverage check before `meta` routing proves every one of them was
-    // consumed, is vacuous for the declared type, or is refused.
-    let mut consumed: HashSet<String> = HashSet::new();
+// Step 4: `allOf` / `not` — raise a clear error.
+fn refuse_all_of_not(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    path: &[String],
+) -> Result<(), ZerxError> {
+    for kw in &["allOf", "not"] {
+        if obj.contains_key(*kw) {
+            let hint = if *kw == "allOf" {
+                "use extend() for composition"
+            } else {
+                "use union() alternatives"
+            };
+            return Err(ZerxError::new(
+                ErrorCode::IMPORT_UNSUPPORTED,
+                format!("`{kw}` is not representable in zerx; {hint}"),
+            )
+            .at(path.to_vec()));
+        }
+    }
+    Ok(())
+}
 
-    let is_ref = obj.contains_key("$ref");
-    let mut base: Option<Schema> = None;
-
-    // Step 3: $ref — set base and skip to step 12.
-    if is_ref {
+// Step 3: `$ref` — the base is the lazy def placeholder.
+fn import_ref_step(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    spec: Option<TypeSpec>,
+    ctx: &ImportContext,
+    path: &[String],
+    consumed: &mut HashSet<String>,
+    base: &mut Option<Schema>,
+) -> Result<(), ZerxError> {
+    {
         if spec.is_some() {
             return Err(ZerxError::new(
                 ErrorCode::IMPORT_UNSUPPORTED,
@@ -1489,495 +1579,702 @@ fn import_node(
             .at(path.to_vec()));
         }
         let id = decode_defs_ref(&ref_str["#/$defs/".len()..], path)?;
-        base = Some(ctx.ref_schema(&id, path)?);
+        *base = Some(ctx.ref_schema(&id, path)?);
         consumed.insert("$ref".to_string());
     }
+    Ok(())
+}
 
-    if base.is_none() {
-        // Step 4: allOf / not — raise clear error.
-        for kw in &["allOf", "not"] {
-            if obj.contains_key(*kw) {
-                let hint = if *kw == "allOf" {
-                    "use extend() for composition"
-                } else {
-                    "use union() alternatives"
-                };
-                return Err(ZerxError::new(
-                    ErrorCode::IMPORT_UNSUPPORTED,
-                    format!("`{kw}` is not representable in zerx; {hint}"),
-                )
-                .at(path.to_vec()));
-            }
-        }
-
-        // Step 5: Nullable collapse.
-        if let Some(any_of_arr) = obj.get("anyOf").and_then(|v| v.as_array()) {
-            if any_of_arr.len() == 2 {
-                if let Some(null_i) = any_of_arr.iter().position(is_bare_null_schema) {
-                    // The null member is dropped from the reconstruction, so it
-                    // is imported only to hold it to the import rules: a keyword
-                    // the bare-null check does not know (`if`, `$dynamicRef`,
-                    // a non-root `$id`) is refused there as anywhere else.
-                    let mut null_path = path.to_vec();
-                    null_path.push("anyOf".to_string());
-                    null_path.push(null_i.to_string());
-                    import_value(&any_of_arr[null_i], ctx, &null_path)?;
-                    let other_i = 1 - null_i;
-                    let mut child_path = path.to_vec();
-                    child_path.push("anyOf".to_string());
-                    child_path.push(other_i.to_string());
-                    let other = import_value(&any_of_arr[other_i], ctx, &child_path)?;
-                    if let Some(outer) = spec {
-                        for (i, member) in any_of_arr.iter().enumerate() {
-                            ensure_member_within(member, &outer, "anyOf", i, path)?;
-                        }
+// Step 5: nullable `anyOf` collapse.
+fn import_nullable_collapse_step(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    spec: Option<TypeSpec>,
+    ctx: &ImportContext,
+    path: &[String],
+    consumed: &mut HashSet<String>,
+    base: &mut Option<Schema>,
+) -> Result<(), ZerxError> {
+    if let Some(any_of_arr) = obj.get("anyOf").and_then(|v| v.as_array()) {
+        if any_of_arr.len() == 2 {
+            if let Some(null_i) = any_of_arr.iter().position(is_bare_null_schema) {
+                // The null member is dropped from the reconstruction, so it
+                // is imported only to hold it to the import rules: a keyword
+                // the bare-null check does not know (`if`, `$dynamicRef`,
+                // a non-root `$id`) is refused there as anywhere else.
+                let mut null_path = path.to_vec();
+                null_path.push("anyOf".to_string());
+                null_path.push(null_i.to_string());
+                import_value(&any_of_arr[null_i], ctx, &null_path)?;
+                let other_i = 1 - null_i;
+                let mut child_path = path.to_vec();
+                child_path.push("anyOf".to_string());
+                child_path.push(other_i.to_string());
+                let other = import_value(&any_of_arr[other_i], ctx, &child_path)?;
+                if let Some(outer) = spec {
+                    for (i, member) in any_of_arr.iter().enumerate() {
+                        ensure_member_within(member, &outer, "anyOf", i, path)?;
                     }
-                    base = Some(other.nullable());
-                    consumed.insert("anyOf".to_string());
-                    if spec.is_some() {
-                        consumed.insert("type".to_string());
-                    }
-                    // Continue to step 12.
                 }
+                *base = Some(other.nullable());
+                consumed.insert("anyOf".to_string());
+                if spec.is_some() {
+                    consumed.insert("type".to_string());
+                }
+                // Continue to step 12.
             }
         }
     }
+    Ok(())
+}
 
-    // Step 6: oneOf / anyOf (not consumed by nullable collapse).
-    if base.is_none() {
-        let (arr_opt, is_one_of) = if let Some(a) = obj.get("oneOf").and_then(|v| v.as_array()) {
-            (Some(a), true)
-        } else if let Some(a) = obj.get("anyOf").and_then(|v| v.as_array()) {
-            (Some(a), false)
-        } else {
-            (None, false)
-        };
+// Step 6: `oneOf` / `anyOf` not consumed by the nullable collapse.
+fn import_union_step(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    spec: Option<TypeSpec>,
+    ctx: &ImportContext,
+    path: &[String],
+    consumed: &mut HashSet<String>,
+    base: &mut Option<Schema>,
+) -> Result<(), ZerxError> {
+    let (arr_opt, is_one_of) = if let Some(a) = obj.get("oneOf").and_then(|v| v.as_array()) {
+        (Some(a), true)
+    } else if let Some(a) = obj.get("anyOf").and_then(|v| v.as_array()) {
+        (Some(a), false)
+    } else {
+        (None, false)
+    };
 
-        if let Some(arr) = arr_opt {
-            if arr.is_empty() {
-                return Err(ZerxError::new(
-                    ErrorCode::IMPORT_UNSUPPORTED,
-                    "an empty `anyOf`/`oneOf` accepts nothing; zerx has no never type",
-                )
-                .at(path.to_vec()));
+    if let Some(arr) = arr_opt {
+        if arr.is_empty() {
+            return Err(ZerxError::new(
+                ErrorCode::IMPORT_UNSUPPORTED,
+                "an empty `anyOf`/`oneOf` accepts nothing; zerx has no never type",
+            )
+            .at(path.to_vec()));
+        }
+        let kw = if is_one_of { "oneOf" } else { "anyOf" };
+        let mut variants: Vec<Schema> = Vec::new();
+        for (i, v) in arr.iter().enumerate() {
+            let mut child_path = path.to_vec();
+            child_path.push(kw.to_string());
+            child_path.push(i.to_string());
+            variants.push(import_value(v, ctx, &child_path)?);
+        }
+
+        if let Some(outer) = spec {
+            for (i, member) in arr.iter().enumerate() {
+                ensure_member_within(member, &outer, kw, i, path)?;
             }
-            let kw = if is_one_of { "oneOf" } else { "anyOf" };
-            let mut variants: Vec<Schema> = Vec::new();
-            for (i, v) in arr.iter().enumerate() {
-                let mut child_path = path.to_vec();
-                child_path.push(kw.to_string());
-                child_path.push(i.to_string());
-                variants.push(import_value(v, ctx, &child_path)?);
-            }
+            consumed.insert("type".to_string());
+        }
 
-            if let Some(outer) = spec {
-                for (i, member) in arr.iter().enumerate() {
-                    ensure_member_within(member, &outer, kw, i, path)?;
-                }
-                consumed.insert("type".to_string());
-            }
+        let disc_key = obj
+            .get("discriminator")
+            .and_then(|d| d.as_object())
+            .and_then(|d| d.get("propertyName"))
+            .and_then(|p| p.as_str());
 
-            let disc_key = obj
-                .get("discriminator")
-                .and_then(|d| d.as_object())
-                .and_then(|d| d.get("propertyName"))
-                .and_then(|p| p.as_str());
-
-            let schema = if let Some(key) = disc_key {
-                let du: Schema = discriminated_union(key, variants.clone()).into();
-                let is_ok = matches!(
-                    &du.kind,
-                    SchemaKind::DiscriminatedUnion(b)
-                        if matches!(b.state, DiscriminatorState::Ok { .. })
-                );
-                if is_ok {
-                    du
-                } else if is_one_of {
-                    // A failed discriminator invariant leaves exactly-one
-                    // semantics intact; `x-oneOf` is never written.
-                    crate::types::one_of(variants)
-                } else {
-                    union(variants).into()
-                }
+        let schema = if let Some(key) = disc_key {
+            let du: Schema = crate::discriminated_union(key, variants.clone()).into();
+            let is_ok = matches!(
+                &du.kind,
+                SchemaKind::DiscriminatedUnion(b)
+                    if matches!(b.state, DiscriminatorState::Ok { .. })
+            );
+            if is_ok {
+                du
             } else if is_one_of {
+                // A failed discriminator invariant leaves exactly-one
+                // semantics intact; `x-oneOf` is never written.
                 crate::types::one_of(variants)
             } else {
-                union(variants).into()
-            };
-
-            consumed.insert(kw.to_string());
-            base = Some(schema);
-            // Continue to step 12.
-        }
-    }
-
-    // Step 7/8: `enum`/`const`. Sibling assertion keywords are evaluated
-    // statically against the member set: satisfied ones are redundant and
-    // consumed, violated or non-evaluable ones are refused.
-    if base.is_none() && (obj.contains_key("enum") || obj.contains_key("const")) {
-        let has_enum = obj.contains_key("enum");
-        let has_const = obj.contains_key("const");
-        let enum_arr = obj.get("enum").and_then(|v| v.as_array());
-
-        // The PLAN_J4 type-membership rule applies first.
-        if let Some(t) = spec {
-            if let Some(arr) = enum_arr {
-                if let Some((i, _)) = arr.iter().enumerate().find(|(_, v)| !admits_value(&t, v)) {
-                    return Err(ZerxError::new(
-                        ErrorCode::IMPORT_UNSUPPORTED,
-                        format!("`enum` member {i} is outside the declared `type`"),
-                    )
-                    .at(path.to_vec()));
-                }
+                crate::union(variants).into()
             }
-            if let Some(const_val) = obj.get("const") {
-                if !admits_value(&t, const_val) {
-                    return Err(ZerxError::new(
-                        ErrorCode::IMPORT_UNSUPPORTED,
-                        "`const` value is outside the declared `type`",
-                    )
-                    .at(path.to_vec()));
-                }
-            }
-        }
-
-        // Effective member set: `enum` merged with `const` where present.
-        let members: Vec<serde_json::Value> = if has_enum && has_const {
-            let arr = enum_arr.expect("`enum` is an array per grammar check");
-            let const_val = obj.get("const").expect("`const` present");
-            let const_zv = ZerxValue::from_serialize(const_val).map_err(|e| e.at(path.to_vec()))?;
-            let mut is_member = false;
-            for member in arr {
-                let member_zv =
-                    ZerxValue::from_serialize(member).map_err(|e| e.at(path.to_vec()))?;
-                if crate::types::literal_eq(&member_zv, &const_zv) {
-                    is_member = true;
-                    break;
-                }
-            }
-            if !is_member {
-                return Err(ZerxError::new(
-                    ErrorCode::IMPORT_UNSUPPORTED,
-                    "`const` is not a member of the sibling `enum`",
-                )
-                .at(path.to_vec()));
-            }
-            consumed.insert("enum".to_string());
-            consumed.insert("const".to_string());
-            vec![const_val.clone()]
-        } else if has_enum {
-            consumed.insert("enum".to_string());
-            enum_arr
-                .expect("`enum` is an array per grammar check")
-                .clone()
+        } else if is_one_of {
+            crate::types::one_of(variants)
         } else {
-            consumed.insert("const".to_string());
-            vec![obj.get("const").expect("`const` present").clone()]
+            crate::union(variants).into()
         };
-        if spec.is_some() {
-            consumed.insert("type".to_string());
-        }
 
-        for key in evaluate_enum_siblings(obj, &members, path)? {
-            consumed.insert(key);
-        }
-
-        if has_const {
-            let const_val = obj.get("const").expect("`const` present");
-            let zv = ZerxValue::from_serialize(const_val).map_err(|e| e.at(path.to_vec()))?;
-            base = Some(literal(zv).into());
-        } else {
-            let arr = enum_arr.expect("`enum` is an array per grammar check");
-            let all_strings = arr.iter().all(|v| v.is_string());
-            if all_strings {
-                let strings: Vec<String> = arr
-                    .iter()
-                    .map(|v| v.as_str().unwrap().to_string())
-                    .collect();
-                base = Some(enumerate(strings).into());
-            } else {
-                let mut lit_variants: Vec<Schema> = Vec::new();
-                for v in arr {
-                    let zv = ZerxValue::from_serialize(v).map_err(|e| e.at(path.to_vec()))?;
-                    lit_variants.push(literal(zv).into());
-                }
-                base = Some(union(lit_variants).into());
-            }
-        }
+        consumed.insert(kw.to_string());
+        *base = Some(schema);
         // Continue to step 12.
     }
+    Ok(())
+}
 
-    let fmt = obj.get("format").and_then(|v| v.as_str());
-    let had_base_before_markers = base.is_some();
+// Step 7/8: `enum`/`const`. Sibling assertion keywords are evaluated
+// statically against the member set: satisfied ones are redundant and
+// consumed, violated or non-evaluable ones are refused.
+fn import_enum_const_step(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    spec: Option<TypeSpec>,
+    path: &[String],
+    consumed: &mut HashSet<String>,
+    base: &mut Option<Schema>,
+) -> Result<(), ZerxError> {
+    let has_enum = obj.contains_key("enum");
+    let has_const = obj.contains_key("const");
+    let enum_arr = obj.get("enum").and_then(|v| v.as_array());
 
-    // Step 9: Format-marker kinds (checked before generic type dispatch).
-    if base.is_none() {
-        if fmt == Some("json") {
-            if spec.is_some() {
+    // The PLAN_J4 type-membership rule applies first.
+    if let Some(t) = spec {
+        if let Some(arr) = enum_arr {
+            if let Some((i, _)) = arr.iter().enumerate().find(|(_, v)| !admits_value(&t, v)) {
                 return Err(ZerxError::new(
                     ErrorCode::IMPORT_UNSUPPORTED,
-                    "`type` alongside `format: \"json\"` is not supported",
+                    format!("`enum` member {i} is outside the declared `type`"),
                 )
                 .at(path.to_vec()));
             }
-            base = Some(json().into());
-        } else if let Some(s) = spec {
-            match (s.name, fmt) {
-                (TypeName::Object, Some("record")) => {
-                    match obj.get("additionalProperties") {
-                        Some(serde_json::Value::Bool(false)) => {
-                            return Err(ZerxError::new(
-                                ErrorCode::IMPORT_MALFORMED,
-                                "record with `additionalProperties: false` is meaningless",
-                            )
-                            .at(path.to_vec()));
-                        }
-                        Some(serde_json::Value::Bool(true)) | None => {
-                            base = Some(record(any()).into());
-                        }
-                        Some(ap_schema) => {
-                            let mut ap_path = path.to_vec();
-                            ap_path.push("additionalProperties".to_string());
-                            let inner = import_value(ap_schema, ctx, &ap_path)?;
-                            base = Some(record(inner).into());
-                        }
-                    }
-                    consumed.insert("type".to_string());
-                    if obj.contains_key("additionalProperties") {
-                        consumed.insert("additionalProperties".to_string());
-                    }
-                    // The export form carries `properties: {}`; any other shape
-                    // leaves `properties` to the coverage check below.
-                    if obj
-                        .get("properties")
-                        .and_then(|v| v.as_object())
-                        .map(|o| o.is_empty())
-                        .unwrap_or(false)
-                    {
-                        consumed.insert("properties".to_string());
-                    }
-                }
-                (TypeName::Object, Some("jsonschema")) => {
-                    base = Some(jsonschema().into());
-                    consumed.insert("type".to_string());
-                }
-                (TypeName::String, Some("buffer")) => {
-                    // `buffer` holds bytes; the string validators skip non-string
-                    // values, so consuming them here would not enforce them.
-                    base = Some(buffer().into());
-                    consumed.insert("type".to_string());
-                }
-                (TypeName::String, Some("uri")) => {
-                    let mut schema: Schema = uri().into();
-                    let extra: Schema = import_string_validators(obj, path, &mut consumed)?.into();
-                    schema.validators.extend(extra.validators);
-                    base = Some(schema);
-                    consumed.insert("type".to_string());
-                }
-                (TypeName::String, Some("url")) => {
-                    let mut schema: Schema = url().into();
-                    let extra: Schema = import_string_validators(obj, path, &mut consumed)?.into();
-                    schema.validators.extend(extra.validators);
-                    base = Some(schema);
-                    consumed.insert("type".to_string());
-                }
-                _ => {}
+        }
+        if let Some(const_val) = obj.get("const") {
+            if !admits_value(&t, const_val) {
+                return Err(ZerxError::new(
+                    ErrorCode::IMPORT_UNSUPPORTED,
+                    "`const` value is outside the declared `type`",
+                )
+                .at(path.to_vec()));
             }
         }
     }
 
-    // Step 10: Type dispatch. Exhaustive over `TypeName`: every `Some(spec)`
-    // produces a base here (or in step 9) or has already errored.
-    if base.is_none() {
-        if let Some(s) = spec {
-            consumed.insert("type".to_string());
-            let built: Schema = match s.name {
-                TypeName::String => {
-                    let mut sb = import_string_validators(obj, path, &mut consumed)?;
-                    match fmt {
-                        Some("email") => sb = sb.email(),
-                        Some("uuid") => sb = sb.uuid(),
-                        _ => {}
-                    }
-                    sb.into()
-                }
-                TypeName::Number => {
-                    let mut nb = number();
-                    if let Some(raw) = obj.get("minimum") {
-                        let n = raw.as_f64().ok_or_else(|| {
-                            type_error(
-                                path,
-                                ErrorCode::IMPORT_MALFORMED,
-                                "`minimum` must be a number",
-                            )
-                        })?;
-                        nb = nb.min(n);
-                        consumed.insert("minimum".to_string());
-                    }
-                    if let Some(raw) = obj.get("maximum") {
-                        let n = raw.as_f64().ok_or_else(|| {
-                            type_error(
-                                path,
-                                ErrorCode::IMPORT_MALFORMED,
-                                "`maximum` must be a number",
-                            )
-                        })?;
-                        nb = nb.max(n);
-                        consumed.insert("maximum".to_string());
-                    }
-                    nb.into()
-                }
-                TypeName::Integer => {
-                    let mut nb = number().int();
-                    if let Some(raw) = obj.get("minimum") {
-                        let n = raw.as_f64().ok_or_else(|| {
-                            type_error(
-                                path,
-                                ErrorCode::IMPORT_MALFORMED,
-                                "`minimum` must be a number",
-                            )
-                        })?;
-                        nb = nb.min(n);
-                        consumed.insert("minimum".to_string());
-                    }
-                    if let Some(raw) = obj.get("maximum") {
-                        let n = raw.as_f64().ok_or_else(|| {
-                            type_error(
-                                path,
-                                ErrorCode::IMPORT_MALFORMED,
-                                "`maximum` must be a number",
-                            )
-                        })?;
-                        nb = nb.max(n);
-                        consumed.insert("maximum".to_string());
-                    }
-                    nb.into()
-                }
-                TypeName::Boolean => boolean().into(),
-                TypeName::Null => null().into(),
-                TypeName::Array => {
-                    if let Some(prefix) = obj.get("prefixItems").and_then(|v| v.as_array()) {
-                        // Tuple: only when items is Bool(false).
-                        match obj.get("items") {
-                            Some(serde_json::Value::Bool(false)) => {
-                                let mut items: Vec<Schema> = Vec::new();
-                                for (i, pi) in prefix.iter().enumerate() {
-                                    let mut pi_path = path.to_vec();
-                                    pi_path.push("prefixItems".to_string());
-                                    pi_path.push(i.to_string());
-                                    items.push(import_value(pi, ctx, &pi_path)?);
-                                }
-                                let n = prefix.len() as u64;
-                                if let Some(raw) = obj.get("minItems") {
-                                    let min = as_non_negative_u64(raw).ok_or_else(|| {
-                                        type_error(
-                                            path,
-                                            ErrorCode::IMPORT_MALFORMED,
-                                            "`minItems` must be a non-negative integer",
-                                        )
-                                    })?;
-                                    if min > n {
-                                        return Err(ZerxError::new(
-                                            ErrorCode::IMPORT_UNSUPPORTED,
-                                            "`minItems` exceeds the number of `prefixItems`; the tuple can never match",
-                                        )
-                                        .at(path.to_vec()));
-                                    }
-                                    consumed.insert("minItems".to_string());
-                                }
-                                if let Some(raw) = obj.get("maxItems") {
-                                    let max = as_non_negative_u64(raw).ok_or_else(|| {
-                                        type_error(
-                                            path,
-                                            ErrorCode::IMPORT_MALFORMED,
-                                            "`maxItems` must be a non-negative integer",
-                                        )
-                                    })?;
-                                    if max < n {
-                                        return Err(ZerxError::new(
-                                            ErrorCode::IMPORT_UNSUPPORTED,
-                                            "`maxItems` is below the number of `prefixItems`; the tuple can never match",
-                                        )
-                                        .at(path.to_vec()));
-                                    }
-                                    consumed.insert("maxItems".to_string());
-                                }
-                                consumed.insert("prefixItems".to_string());
-                                consumed.insert("items".to_string());
-                                tuple(items).into()
-                            }
-                            _ => {
-                                return Err(ZerxError::new(
-                                    ErrorCode::IMPORT_UNSUPPORTED,
-                                    "`prefixItems` with an open or typed tail is not representable as a zerx tuple",
-                                )
-                                .at(path.to_vec()));
-                            }
-                        }
-                    } else {
-                        let items_val = match obj.get("items") {
-                            Some(v) => v,
-                            None => {
-                                return Err(ZerxError::new(
-                                    ErrorCode::IMPORT_MALFORMED,
-                                    "array schema missing `items`",
-                                )
-                                .at(path.to_vec()));
-                            }
-                        };
-                        let item_schema = if matches!(items_val, serde_json::Value::Bool(true))
-                            || items_val.as_object().map(|o| o.is_empty()).unwrap_or(false)
-                        {
-                            any().into()
-                        } else {
-                            let mut items_path = path.to_vec();
-                            items_path.push("items".to_string());
-                            import_value(items_val, ctx, &items_path)?
-                        };
-                        let mut ab = array(item_schema);
-                        if let Some(raw) = obj.get("minItems") {
-                            let n = as_non_negative_u64(raw).ok_or_else(|| {
-                                type_error(
-                                    path,
-                                    ErrorCode::IMPORT_MALFORMED,
-                                    "`minItems` must be a non-negative integer",
-                                )
-                            })?;
-                            ab = ab.min(n as usize);
-                            consumed.insert("minItems".to_string());
-                        }
-                        if let Some(raw) = obj.get("maxItems") {
-                            let n = as_non_negative_u64(raw).ok_or_else(|| {
-                                type_error(
-                                    path,
-                                    ErrorCode::IMPORT_MALFORMED,
-                                    "`maxItems` must be a non-negative integer",
-                                )
-                            })?;
-                            ab = ab.max(n as usize);
-                            consumed.insert("maxItems".to_string());
-                        }
-                        consumed.insert("items".to_string());
-                        ab.into()
-                    }
-                }
-                TypeName::Object => {
-                    let built = import_object(obj, ctx, path)?;
-                    if obj.contains_key("properties") {
-                        consumed.insert("properties".to_string());
-                    }
-                    if obj.contains_key("required") {
-                        consumed.insert("required".to_string());
-                    }
-                    if obj.contains_key("additionalProperties") {
-                        consumed.insert("additionalProperties".to_string());
-                    }
-                    built
-                }
-            };
-            base = Some(built);
+    // Effective member set: `enum` merged with `const` where present.
+    let members: Vec<serde_json::Value> = if has_enum && has_const {
+        let arr = enum_arr.expect("`enum` is an array per grammar check");
+        let const_val = obj.get("const").expect("`const` present");
+        let const_zv = ZerxValue::from_serialize(const_val).map_err(|e| e.at(path.to_vec()))?;
+        let mut is_member = false;
+        for member in arr {
+            let member_zv = ZerxValue::from_serialize(member).map_err(|e| e.at(path.to_vec()))?;
+            if crate::types::literal_eq(&member_zv, &const_zv) {
+                is_member = true;
+                break;
+            }
+        }
+        if !is_member {
+            return Err(ZerxError::new(
+                ErrorCode::IMPORT_UNSUPPORTED,
+                "`const` is not a member of the sibling `enum`",
+            )
+            .at(path.to_vec()));
+        }
+        consumed.insert("enum".to_string());
+        consumed.insert("const".to_string());
+        vec![const_val.clone()]
+    } else if has_enum {
+        consumed.insert("enum".to_string());
+        enum_arr
+            .expect("`enum` is an array per grammar check")
+            .clone()
+    } else {
+        consumed.insert("const".to_string());
+        vec![obj.get("const").expect("`const` present").clone()]
+    };
+    if spec.is_some() {
+        consumed.insert("type".to_string());
+    }
+
+    for key in evaluate_enum_siblings(obj, &members, path)? {
+        consumed.insert(key);
+    }
+
+    if has_const {
+        let const_val = obj.get("const").expect("`const` present");
+        let zv = ZerxValue::from_serialize(const_val).map_err(|e| e.at(path.to_vec()))?;
+        *base = Some(crate::literal(zv).into());
+    } else {
+        let arr = enum_arr.expect("`enum` is an array per grammar check");
+        let all_strings = arr.iter().all(|v| v.is_string());
+        if all_strings {
+            let strings: Vec<String> = arr
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect();
+            *base = Some(crate::enumerate(strings).into());
+        } else {
+            let mut lit_variants: Vec<Schema> = Vec::new();
+            for v in arr {
+                let zv = ZerxValue::from_serialize(v).map_err(|e| e.at(path.to_vec()))?;
+                lit_variants.push(crate::literal(zv).into());
+            }
+            *base = Some(crate::union(lit_variants).into());
         }
     }
+    // Continue to step 12.
+    Ok(())
+}
+
+// Step 9: format-marker kinds (checked before generic type dispatch).
+fn import_format_marker_step(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    spec: Option<TypeSpec>,
+    ctx: &ImportContext,
+    path: &[String],
+    consumed: &mut HashSet<String>,
+    fmt: Option<&str>,
+    base: &mut Option<Schema>,
+) -> Result<(), ZerxError> {
+    // `record` is the only marker with a child schema; the others are leaves
+    // and stay out of the frames live across the recursion.
+    match (spec.map(|s| s.name), fmt) {
+        (Some(TypeName::Object), Some("record")) => {
+            import_record_marker(obj, ctx, path, consumed, base)
+        }
+        _ => import_leaf_marker(obj, spec, path, consumed, fmt, base),
+    }
+}
+
+// Step 9 for the markers without a child schema.
+fn import_leaf_marker(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    spec: Option<TypeSpec>,
+    path: &[String],
+    consumed: &mut HashSet<String>,
+    fmt: Option<&str>,
+    base: &mut Option<Schema>,
+) -> Result<(), ZerxError> {
+    if fmt == Some("json") {
+        if spec.is_some() {
+            return Err(ZerxError::new(
+                ErrorCode::IMPORT_UNSUPPORTED,
+                "`type` alongside `format: \"json\"` is not supported",
+            )
+            .at(path.to_vec()));
+        }
+        *base = Some(crate::json().into());
+    } else if let Some(s) = spec {
+        match (s.name, fmt) {
+            (TypeName::Object, Some("jsonschema")) => {
+                *base = Some(crate::jsonschema().into());
+                consumed.insert("type".to_string());
+            }
+            (TypeName::String, Some("buffer")) => {
+                // `buffer` holds bytes; the string validators skip non-string
+                // values, so consuming them here would not enforce them.
+                *base = Some(crate::buffer().into());
+                consumed.insert("type".to_string());
+            }
+            (TypeName::String, Some("uri")) => {
+                let mut schema: Schema = crate::uri().into();
+                let extra: Schema = import_string_validators(obj, path, consumed)?.into();
+                schema.validators.extend(extra.validators);
+                *base = Some(schema);
+                consumed.insert("type".to_string());
+            }
+            (TypeName::String, Some("url")) => {
+                let mut schema: Schema = crate::url().into();
+                let extra: Schema = import_string_validators(obj, path, consumed)?.into();
+                schema.validators.extend(extra.validators);
+                *base = Some(schema);
+                consumed.insert("type".to_string());
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+// Step 9, `type: "object"` + `format: "record"`.
+fn import_record_marker(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    ctx: &ImportContext,
+    path: &[String],
+    consumed: &mut HashSet<String>,
+    base: &mut Option<Schema>,
+) -> Result<(), ZerxError> {
+    match obj.get("additionalProperties") {
+        Some(serde_json::Value::Bool(false)) => {
+            return Err(ZerxError::new(
+                ErrorCode::IMPORT_MALFORMED,
+                "record with `additionalProperties: false` is meaningless",
+            )
+            .at(path.to_vec()));
+        }
+        Some(serde_json::Value::Bool(true)) | None => {
+            *base = Some(crate::record(crate::any()).into());
+        }
+        Some(ap_schema) => {
+            let mut ap_path = path.to_vec();
+            ap_path.push("additionalProperties".to_string());
+            let inner = import_value(ap_schema, ctx, &ap_path)?;
+            *base = Some(crate::record(inner).into());
+        }
+    }
+    consumed.insert("type".to_string());
+    if obj.contains_key("additionalProperties") {
+        consumed.insert("additionalProperties".to_string());
+    }
+    // The export form carries `properties: {}`; any other shape
+    // leaves `properties` to the coverage check below.
+    if obj
+        .get("properties")
+        .and_then(|v| v.as_object())
+        .map(|o| o.is_empty())
+        .unwrap_or(false)
+    {
+        consumed.insert("properties".to_string());
+    }
+    Ok(())
+}
+
+// Imports the child schema at `path` + `key` (+ `index`). Building the child
+// path here keeps it out of the frames that stay live across the recursion.
+fn import_child(
+    node: &serde_json::Value,
+    ctx: &ImportContext,
+    path: &[String],
+    key: &str,
+    index: Option<String>,
+) -> Result<Schema, ZerxError> {
+    let mut child_path = path.to_vec();
+    child_path.push(key.to_string());
+    if let Some(i) = index {
+        child_path.push(i);
+    }
+    import_value(node, ctx, &child_path)
+}
+
+// Step 10: type dispatch. Exhaustive over `TypeName`: every `Some(spec)`
+// produces a base here (or in step 9) or has already errored.
+fn import_type_step(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    spec: Option<TypeSpec>,
+    ctx: &ImportContext,
+    path: &[String],
+    consumed: &mut HashSet<String>,
+    fmt: Option<&str>,
+    base: &mut Option<Schema>,
+) -> Result<(), ZerxError> {
+    if let Some(s) = spec {
+        consumed.insert("type".to_string());
+        match s.name {
+            TypeName::String => import_string_type(obj, path, consumed, fmt, base)?,
+            TypeName::Number => import_number_type(obj, path, consumed, base)?,
+            TypeName::Integer => import_integer_type(obj, path, consumed, base)?,
+            TypeName::Boolean | TypeName::Null => import_scalar_type(s.name, base),
+            TypeName::Array => import_array_type(obj, ctx, path, consumed, base)?,
+            TypeName::Object => import_object_type(obj, ctx, path, consumed, base)?,
+        }
+    }
+    Ok(())
+}
+
+// Step 10, `type: "boolean"` / `type: "null"`.
+fn import_scalar_type(name: TypeName, base: &mut Option<Schema>) {
+    *base = Some(match name {
+        TypeName::Boolean => crate::boolean().into(),
+        _ => crate::null().into(),
+    });
+}
+
+// Step 10, `type: "string"`.
+fn import_string_type(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    path: &[String],
+    consumed: &mut HashSet<String>,
+    fmt: Option<&str>,
+    base: &mut Option<Schema>,
+) -> Result<(), ZerxError> {
+    *base = Some({
+        let mut sb = import_string_validators(obj, path, consumed)?;
+        match fmt {
+            Some("email") => sb = sb.email(),
+            Some("uuid") => sb = sb.uuid(),
+            _ => {}
+        }
+        sb.into()
+    });
+    Ok(())
+}
+
+// Step 10, `type: "number"`.
+fn import_number_type(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    path: &[String],
+    consumed: &mut HashSet<String>,
+    base: &mut Option<Schema>,
+) -> Result<(), ZerxError> {
+    *base = Some({
+        let mut nb = crate::number();
+        if let Some(raw) = obj.get("minimum") {
+            let n = raw.as_f64().ok_or_else(|| {
+                type_error(
+                    path,
+                    ErrorCode::IMPORT_MALFORMED,
+                    "`minimum` must be a number",
+                )
+            })?;
+            nb = nb.min(n);
+            consumed.insert("minimum".to_string());
+        }
+        if let Some(raw) = obj.get("maximum") {
+            let n = raw.as_f64().ok_or_else(|| {
+                type_error(
+                    path,
+                    ErrorCode::IMPORT_MALFORMED,
+                    "`maximum` must be a number",
+                )
+            })?;
+            nb = nb.max(n);
+            consumed.insert("maximum".to_string());
+        }
+        nb.into()
+    });
+    Ok(())
+}
+
+// Step 10, `type: "integer"`.
+fn import_integer_type(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    path: &[String],
+    consumed: &mut HashSet<String>,
+    base: &mut Option<Schema>,
+) -> Result<(), ZerxError> {
+    *base = Some({
+        let mut nb = crate::number().int();
+        if let Some(raw) = obj.get("minimum") {
+            let n = raw.as_f64().ok_or_else(|| {
+                type_error(
+                    path,
+                    ErrorCode::IMPORT_MALFORMED,
+                    "`minimum` must be a number",
+                )
+            })?;
+            nb = nb.min(n);
+            consumed.insert("minimum".to_string());
+        }
+        if let Some(raw) = obj.get("maximum") {
+            let n = raw.as_f64().ok_or_else(|| {
+                type_error(
+                    path,
+                    ErrorCode::IMPORT_MALFORMED,
+                    "`maximum` must be a number",
+                )
+            })?;
+            nb = nb.max(n);
+            consumed.insert("maximum".to_string());
+        }
+        nb.into()
+    });
+    Ok(())
+}
+
+// Step 10, `type: "array"`: a closed tuple or an array.
+fn import_array_type(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    ctx: &ImportContext,
+    path: &[String],
+    consumed: &mut HashSet<String>,
+    base: &mut Option<Schema>,
+) -> Result<(), ZerxError> {
+    match obj.get("prefixItems").and_then(|v| v.as_array()) {
+        Some(prefix) => import_tuple_type(obj, prefix, ctx, path, consumed, base),
+        None => import_plain_array(obj, ctx, path, consumed, base),
+    }
+}
+
+// `type: "array"` without `prefixItems`.
+fn import_plain_array(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    ctx: &ImportContext,
+    path: &[String],
+    consumed: &mut HashSet<String>,
+    base: &mut Option<Schema>,
+) -> Result<(), ZerxError> {
+    let item_schema = import_array_items(obj, ctx, path)?;
+    *base = Some(apply_array_bounds(item_schema, obj, path, consumed)?);
+    Ok(())
+}
+
+// The `items` schema of a plain array.
+fn import_array_items(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    ctx: &ImportContext,
+    path: &[String],
+) -> Result<Schema, ZerxError> {
+    let items_val = match obj.get("items") {
+        Some(v) => v,
+        None => {
+            return Err(ZerxError::new(
+                ErrorCode::IMPORT_MALFORMED,
+                "array schema missing `items`",
+            )
+            .at(path.to_vec()));
+        }
+    };
+    Ok(
+        if matches!(items_val, serde_json::Value::Bool(true))
+            || items_val.as_object().map(|o| o.is_empty()).unwrap_or(false)
+        {
+            crate::any().into()
+        } else {
+            import_child(items_val, ctx, path, "items", None)?
+        },
+    )
+}
+
+// `prefixItems`: a tuple, representable only when `items` is `false`.
+fn import_tuple_type(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    prefix: &[serde_json::Value],
+    ctx: &ImportContext,
+    path: &[String],
+    consumed: &mut HashSet<String>,
+    base: &mut Option<Schema>,
+) -> Result<(), ZerxError> {
+    if !matches!(obj.get("items"), Some(serde_json::Value::Bool(false))) {
+        return Err(open_tuple_error(path));
+    }
+    import_tuple_items(obj, prefix, ctx, path, consumed, base)
+}
+
+#[cold]
+fn open_tuple_error(path: &[String]) -> ZerxError {
+    ZerxError::new(
+        ErrorCode::IMPORT_UNSUPPORTED,
+        "`prefixItems` with an open or typed tail is not representable as a zerx tuple",
+    )
+    .at(path.to_vec())
+}
+
+// `prefixItems` with `items: false`: a closed tuple.
+fn import_tuple_items(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    prefix: &[serde_json::Value],
+    ctx: &ImportContext,
+    path: &[String],
+    consumed: &mut HashSet<String>,
+    base: &mut Option<Schema>,
+) -> Result<(), ZerxError> {
+    let mut items: Vec<Schema> = Vec::new();
+    for (i, pi) in prefix.iter().enumerate() {
+        items.push(import_child(
+            pi,
+            ctx,
+            path,
+            "prefixItems",
+            Some(i.to_string()),
+        )?);
+    }
+    check_tuple_bounds(obj, prefix.len() as u64, path, consumed)?;
+    set_tuple(items, base);
+    Ok(())
+}
+
+fn set_tuple(items: Vec<Schema>, base: &mut Option<Schema>) {
+    *base = Some(crate::tuple(items).into());
+}
+
+// `minItems`/`maxItems` next to a closed tuple: bracketing values are
+// consumed, values the tuple length can never meet are refused.
+fn check_tuple_bounds(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    n: u64,
+    path: &[String],
+    consumed: &mut HashSet<String>,
+) -> Result<(), ZerxError> {
+    if let Some(raw) = obj.get("minItems") {
+        let min = as_non_negative_u64(raw).ok_or_else(|| {
+            type_error(
+                path,
+                ErrorCode::IMPORT_MALFORMED,
+                "`minItems` must be a non-negative integer",
+            )
+        })?;
+        if min > n {
+            return Err(ZerxError::new(
+                ErrorCode::IMPORT_UNSUPPORTED,
+                "`minItems` exceeds the number of `prefixItems`; the tuple can never match",
+            )
+            .at(path.to_vec()));
+        }
+        consumed.insert("minItems".to_string());
+    }
+    if let Some(raw) = obj.get("maxItems") {
+        let max = as_non_negative_u64(raw).ok_or_else(|| {
+            type_error(
+                path,
+                ErrorCode::IMPORT_MALFORMED,
+                "`maxItems` must be a non-negative integer",
+            )
+        })?;
+        if max < n {
+            return Err(ZerxError::new(
+                ErrorCode::IMPORT_UNSUPPORTED,
+                "`maxItems` is below the number of `prefixItems`; the tuple can never match",
+            )
+            .at(path.to_vec()));
+        }
+        consumed.insert("maxItems".to_string());
+    }
+    consumed.insert("prefixItems".to_string());
+    consumed.insert("items".to_string());
+    Ok(())
+}
+
+fn apply_array_bounds(
+    item_schema: Schema,
+    obj: &serde_json::Map<String, serde_json::Value>,
+    path: &[String],
+    consumed: &mut HashSet<String>,
+) -> Result<Schema, ZerxError> {
+    let mut ab = crate::array(item_schema);
+    if let Some(raw) = obj.get("minItems") {
+        let n = as_non_negative_u64(raw).ok_or_else(|| {
+            type_error(
+                path,
+                ErrorCode::IMPORT_MALFORMED,
+                "`minItems` must be a non-negative integer",
+            )
+        })?;
+        ab = ab.min(n as usize);
+        consumed.insert("minItems".to_string());
+    }
+    if let Some(raw) = obj.get("maxItems") {
+        let n = as_non_negative_u64(raw).ok_or_else(|| {
+            type_error(
+                path,
+                ErrorCode::IMPORT_MALFORMED,
+                "`maxItems` must be a non-negative integer",
+            )
+        })?;
+        ab = ab.max(n as usize);
+        consumed.insert("maxItems".to_string());
+    }
+    consumed.insert("items".to_string());
+    Ok(ab.into())
+}
+
+// Step 10, `type: "object"`.
+fn import_object_type(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    ctx: &ImportContext,
+    path: &[String],
+    consumed: &mut HashSet<String>,
+    base: &mut Option<Schema>,
+) -> Result<(), ZerxError> {
+    import_object(obj, ctx, path, base)?;
+    for key in ["properties", "required", "additionalProperties"] {
+        if obj.contains_key(key) {
+            consumed.insert(key.to_string());
+        }
+    }
+    Ok(())
+}
+
+// Steps 12–14: annotation/modifier reconstruction, the assertion coverage
+// check, and `meta` routing of the remaining keys.
+fn finish_import_node(
+    mut base: Option<Schema>,
+    had_base_before_markers: bool,
+    obj: &serde_json::Map<String, serde_json::Value>,
+    spec: Option<TypeSpec>,
+    fmt: Option<&str>,
+    path: &[String],
+    consumed: &HashSet<String>,
+) -> Result<Schema, ZerxError> {
+    use crate::any;
 
     // A `[T, "null"]` type array adds `.nullable()` only to a base built by
     // steps 9/10; a base from steps 3/5/6/7/8 already decides null itself.
@@ -1990,8 +2287,6 @@ fn import_node(
             }
         }
     }
-
-    // Step 14: Fallthrough → any().
     let mut schema = base.unwrap_or_else(|| any().into());
 
     // Step 12: Annotation / modifier reconstruction (inverse of apply_annotations).
@@ -2090,9 +2385,8 @@ fn import_object(
     obj: &serde_json::Map<String, serde_json::Value>,
     ctx: &ImportContext,
     path: &[String],
-) -> Result<Schema, ZerxError> {
-    use crate::object;
-
+    base: &mut Option<Schema>,
+) -> Result<(), ZerxError> {
     let props = obj.get("properties").and_then(|v| v.as_object());
     let required: HashSet<&str> = obj
         .get("required")
@@ -2104,40 +2398,81 @@ fn import_object(
     // the reconstructed object: strict mode would reject it, so `{}` would pass.
     for name in &required {
         if !props.map(|p| p.contains_key(*name)).unwrap_or(false) {
-            return Err(ZerxError::new(
-                ErrorCode::IMPORT_UNSUPPORTED,
-                format!("`required` names `{name}`, which is not declared in `properties`"),
-            )
-            .at(path.to_vec()));
+            return Err(undeclared_required_error(name, path));
         }
     }
 
+    let fields = match props {
+        Some(props) => import_object_fields(props, &required, ctx, path)?,
+        None => Vec::new(),
+    };
+    *base = Some(finish_object(fields, obj, ctx, path)?);
+    Ok(())
+}
+
+#[cold]
+fn undeclared_required_error(name: &str, path: &[String]) -> ZerxError {
+    ZerxError::new(
+        ErrorCode::IMPORT_UNSUPPORTED,
+        format!("`required` names `{name}`, which is not declared in `properties`"),
+    )
+    .at(path.to_vec())
+}
+
+// The per-property imports, kept apart from the object reconstruction so the
+// frame live across each property's recursion stays small.
+fn import_object_fields(
+    props: &serde_json::Map<String, serde_json::Value>,
+    required: &HashSet<&str>,
+    ctx: &ImportContext,
+    path: &[String],
+) -> Result<Vec<(String, Schema)>, ZerxError> {
     let mut fields: Vec<(String, Schema)> = Vec::new();
-
-    if let Some(props) = props {
-        for (key, prop_val) in props.iter() {
-            let mut prop_path = path.to_vec();
-            prop_path.push("properties".to_string());
-            prop_path.push(key.clone());
-            let mut field_schema = import_value(prop_val, ctx, &prop_path)?;
-
-            // A default fills a missing key before the required check, so a
-            // required field carrying one would accept the key's absence.
-            if required.contains(key.as_str()) && field_schema.modifiers.default.is_some() {
-                return Err(ZerxError::new(
-                    ErrorCode::IMPORT_UNSUPPORTED,
-                    format!("required property `{key}` carries a `default`; a default would satisfy the missing key"),
-                )
-                .at(prop_path));
-            }
-
-            if !required.contains(key.as_str()) && prop_val.get("default").is_none() {
-                field_schema = field_schema.optional();
-            }
-            // Not in required but has default → non-optional (default supplies the value).
-            fields.push((key.clone(), field_schema));
-        }
+    for (key, prop_val) in props.iter() {
+        let field_schema = import_child(prop_val, ctx, path, "properties", Some(key.clone()))?;
+        fields.push((
+            key.clone(),
+            import_field_presence(field_schema, key, prop_val, required, path)?,
+        ));
     }
+    Ok(fields)
+}
+
+// Applies `required` to an imported property schema.
+fn import_field_presence(
+    field_schema: Schema,
+    key: &str,
+    prop_val: &serde_json::Value,
+    required: &HashSet<&str>,
+    path: &[String],
+) -> Result<Schema, ZerxError> {
+    // A default fills a missing key before the required check, so a required
+    // field carrying one would accept the key's absence.
+    if required.contains(key) && field_schema.modifiers.default.is_some() {
+        let mut prop_path = path.to_vec();
+        prop_path.push("properties".to_string());
+        prop_path.push(key.to_string());
+        return Err(ZerxError::new(
+            ErrorCode::IMPORT_UNSUPPORTED,
+            format!("required property `{key}` carries a `default`; a default would satisfy the missing key"),
+        )
+        .at(prop_path));
+    }
+    if !required.contains(key) && prop_val.get("default").is_none() {
+        return Ok(field_schema.optional());
+    }
+    // Not in required but has default → non-optional (default supplies the value).
+    Ok(field_schema)
+}
+
+// Builds the object from its imported fields and applies `additionalProperties`.
+fn finish_object(
+    fields: Vec<(String, Schema)>,
+    obj: &serde_json::Map<String, serde_json::Value>,
+    ctx: &ImportContext,
+    path: &[String],
+) -> Result<Schema, ZerxError> {
+    use crate::object;
 
     let mut ob = object(fields);
     match obj.get("additionalProperties") {
@@ -4679,42 +5014,68 @@ mod tests {
 
     #[test]
     fn import_depth_is_bounded() {
-        // A flat `$defs` chain D0 -> D1 -> ... nests the import once per link
-        // although the document itself is shallow; the import must stop with
-        // an error rather than exhaust the stack. Run on a large stack so the
-        // assertion checks the bound, not the build's frame sizes.
-        let handle = std::thread::Builder::new()
-            .stack_size(512 * 1024 * 1024)
-            .spawn(|| {
-                let links = MAX_PARSE_DEPTH + 50;
+        // Nesting and `$ref` chains recurse once per level; past the depth
+        // limit the import must refuse rather than exhaust the stack. A flat
+        // `$defs` chain nests once per link although the document is shallow.
+        // Run on a 2 MB thread so the bound must hold in debug builds too.
+        fn build(kind: &str, n: usize) -> serde_json::Value {
+            if kind == "chain" {
                 let mut defs = serde_json::Map::new();
-                for i in 0..links {
+                for i in 0..n {
                     defs.insert(
                         format!("D{i}"),
                         serde_json::json!({"$ref": format!("#/$defs/D{}", i + 1)}),
                     );
                 }
-                defs.insert(format!("D{links}"), serde_json::json!({"type": "string"}));
-                let doc = serde_json::json!({"$defs": defs, "$ref": "#/$defs/D0"});
-                let long = from(doc).map(|_| ()).map_err(|e| e.code);
-
-                let mut defs = serde_json::Map::new();
-                for i in 0..10 {
-                    defs.insert(
-                        format!("D{i}"),
-                        serde_json::json!({"$ref": format!("#/$defs/D{}", i + 1)}),
-                    );
-                }
-                defs.insert("D10".to_string(), serde_json::json!({"type": "string"}));
-                let short = from(serde_json::json!({"$defs": defs, "$ref": "#/$defs/D0"}))
-                    .map(|_| ())
-                    .map_err(|e| e.code);
-                (long, short)
-            })
-            .unwrap();
-        let (long, short) = handle.join().unwrap();
-        assert_eq!(long.unwrap_err(), ErrorCode::IMPORT_UNSUPPORTED);
-        assert!(short.is_ok());
+                defs.insert(format!("D{n}"), serde_json::json!({"type": "string"}));
+                return serde_json::json!({"$defs": defs, "$ref": "#/$defs/D0"});
+            }
+            let mut v = serde_json::json!({"type": "string"});
+            for _ in 0..n {
+                v = match kind {
+                    "items" => serde_json::json!({"type": "array", "items": v}),
+                    "properties" => serde_json::json!({
+                        "type": "object", "properties": {"a": v}, "required": ["a"]
+                    }),
+                    "anyOf" => serde_json::json!({"anyOf": [v, {"type": "number"}]}),
+                    "oneOf" => serde_json::json!({"oneOf": [v, {"type": "number"}]}),
+                    "nullable" => serde_json::json!({"anyOf": [v, {"type": "null"}]}),
+                    "record" => serde_json::json!({
+                        "type": "object", "format": "record", "additionalProperties": v
+                    }),
+                    "tuple" => {
+                        serde_json::json!({"type": "array", "prefixItems": [v], "items": false})
+                    }
+                    _ => unreachable!(),
+                };
+            }
+            v
+        }
+        let kinds = [
+            "chain",
+            "items",
+            "properties",
+            "anyOf",
+            "oneOf",
+            "nullable",
+            "record",
+            "tuple",
+        ];
+        for kind in kinds {
+            let handle = std::thread::Builder::new()
+                .stack_size(2 * 1024 * 1024)
+                .spawn(move || {
+                    let deep = from(build(kind, MAX_PARSE_DEPTH + 50))
+                        .map(|_| ())
+                        .map_err(|e| e.code);
+                    let shallow = from(build(kind, 10)).map(|_| ()).map_err(|e| e.code);
+                    (deep, shallow)
+                })
+                .unwrap();
+            let (deep, shallow) = handle.join().unwrap();
+            assert_eq!(deep, Err(ErrorCode::IMPORT_UNSUPPORTED), "{kind}");
+            assert_eq!(shallow, Ok(()), "{kind}");
+        }
     }
 
     #[test]
