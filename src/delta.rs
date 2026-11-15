@@ -91,6 +91,18 @@ fn navigate_schema(root: &Schema, segments: &[std::string::String]) -> Result<Sc
         // Closed match — no `_` arm so a future SchemaKind variant is a compile error here.
         let next = match &resolved.kind {
             SchemaKind::Object(body) => match body.shape.iter().find(|(k, _)| k == seg) {
+                // Validation drops a prestripped key before field checks, so a
+                // value supplied there is never kept; accepting it would be
+                // wider than the root schema.
+                Some(_) if crate::types::effective_prestrip(body).contains(seg) => {
+                    let mut path = consumed;
+                    path.push(seg.clone());
+                    return Err(ZerxError::new(
+                        ErrorCode::INVALID_PATH,
+                        format!("property {seg:?} is stripped before validation"),
+                    )
+                    .at(path));
+                }
                 Some((_, field)) => {
                     let field = field.clone();
                     consumed.push(seg.clone());
@@ -533,6 +545,25 @@ mod tests {
             schema.validate(&1i32).unwrap_err().code,
             ErrorCode::PARSE_DEPTH_EXCEEDED
         );
+    }
+
+    #[test]
+    fn parse_delta_rejects_prestripped_key() {
+        // Full validation treats a prestripped key as absent, so no value
+        // supplied at that key can ever survive; the delta must not accept one.
+        let schema: Schema = object([("id", string().read_only().into()), ("n", string().into())])
+            .strip_read_only()
+            .into();
+        assert!(schema
+            .validate(&make_obj(&[
+                ("id", ZerxValue::String("x".into())),
+                ("n", ZerxValue::String("y".into())),
+            ]))
+            .is_err());
+        let err = schema.parse_delta("/id", &"x").unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PATH);
+        assert_eq!(err.path, vec!["id"]);
+        assert!(schema.parse_delta("/n", &"y").is_ok());
     }
 
     #[test]
