@@ -31,6 +31,12 @@ pub const MAX_PARSE_DEPTH: usize = 100;
 pub trait Validator {
     fn validate(&self, value: &ZerxValue) -> Result<(), ZerxError>;
     fn json_schema(&self) -> serde_json::Map<String, serde_json::Value>;
+
+    /// Whether this validator rejects every value. Export then emits the
+    /// `false` schema for the node instead of a fragment that would be wider.
+    fn accepts_nothing(&self) -> bool {
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------

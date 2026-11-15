@@ -177,6 +177,12 @@ fn is_plain_any(s: &Schema) -> bool {
 // Export walk
 // ---------------------------------------------------------------------------
 
+// Whether the runtime rejects every non-null value of this node in a way JSON
+// Schema keywords cannot express.
+fn accepts_nothing(schema: &Schema) -> bool {
+    schema.validators.iter().any(|v| v.accepts_nothing())
+}
+
 fn export_node(schema: &Schema, ctx: &mut ExportContext) -> serde_json::Value {
     // Step 1 — Lazy short-circuit
     if let SchemaKind::Lazy(lzy) = &schema.kind {
@@ -200,6 +206,16 @@ fn export_node(schema: &Schema, ctx: &mut ExportContext) -> serde_json::Value {
         // Annotations/nullable still applied below (step 4+)
         apply_annotations(schema, ctx, &mut core);
         return wrap_nullable(schema, core);
+    }
+
+    // A node that accepts nothing exports as `false` rather than as a wider
+    // schema; `null` stays accepted under `.nullable()`, which precedes it.
+    if accepts_nothing(schema) {
+        return if schema.modifiers.nullable {
+            serde_json::json!({"type": "null"})
+        } else {
+            serde_json::Value::Bool(false)
+        };
     }
 
     // Step 2 — Base map
@@ -5116,5 +5132,34 @@ mod tests {
         // Round trip stays as strict as the source.
         let re = from_json_schema(&js(&s)).unwrap();
         assert!(re.validate("abc").is_err());
+    }
+
+    #[test]
+    fn non_finite_number_bounds_fail_closed() {
+        // Number values are always finite, so a NaN bound or an infinite bound
+        // on the wrong side accepts nothing; JSON cannot hold the bound, so
+        // the node exports as `false`.
+        for s in [
+            Schema::from(number().min(f64::NAN)),
+            Schema::from(number().max(f64::NAN)),
+            Schema::from(number().min(f64::INFINITY)),
+            Schema::from(number().max(f64::NEG_INFINITY)),
+        ] {
+            assert!(s.validate(&5i32).is_err());
+            assert!(s.validate(&-5i32).is_err());
+            assert_eq!(js(&s), serde_json::Value::Bool(false));
+        }
+        // An infinite bound on the open side forbids nothing: no keyword.
+        let open: Schema = number().min(f64::NEG_INFINITY).max(f64::INFINITY).into();
+        assert!(open.validate(&5i32).is_ok());
+        assert_eq!(js(&open), serde_json::json!({"type": "number"}));
+        // Nullable keeps `null`, the only value the runtime still accepts.
+        let n: Schema = number().min(f64::NAN).nullable().into();
+        assert!(n.validate(&()).is_ok());
+        assert_eq!(js(&n), serde_json::json!({"type": "null"}));
+        // Inside a container the `false` member makes the import refuse.
+        let o: Schema = object([("a", number().min(f64::NAN).into())]).into();
+        assert_eq!(js(&o)["properties"]["a"], serde_json::Value::Bool(false));
+        assert!(from_json_schema(&js(&o)).is_err());
     }
 }

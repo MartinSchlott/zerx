@@ -349,10 +349,17 @@ pub(crate) struct MinValue(pub f64);
 pub(crate) struct MaxValue(pub f64);
 pub(crate) struct IntValidator;
 
+// Number values are finite, so a NaN bound, a `+∞` minimum or a `-∞` maximum
+// accepts nothing, and `-∞`/`+∞` on the open side forbids nothing. JSON holds
+// no non-finite number: export emits `false` or omits the keyword.
 impl Validator for MinValue {
     fn validate(&self, value: &ZerxValue) -> Result<(), ZerxError> {
         if let Some(n) = numeric_as_f64(value) {
-            if n < self.0 {
+            // A NaN bound compares as unordered and is rejected too.
+            if !matches!(
+                n.partial_cmp(&self.0),
+                Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+            ) {
                 return Err(ZerxError::new(
                     ErrorCode::NUMBER_TOO_SMALL,
                     format!("number is less than minimum {}", self.0),
@@ -364,16 +371,25 @@ impl Validator for MinValue {
 
     fn json_schema(&self) -> serde_json::Map<String, serde_json::Value> {
         let mut m = serde_json::Map::new();
-        let n = serde_json::Number::from_f64(self.0).unwrap_or_else(|| serde_json::Number::from(0));
-        m.insert("minimum".to_owned(), serde_json::Value::Number(n));
+        if let Some(n) = serde_json::Number::from_f64(self.0) {
+            m.insert("minimum".to_owned(), serde_json::Value::Number(n));
+        }
         m
+    }
+
+    fn accepts_nothing(&self) -> bool {
+        self.0.is_nan() || self.0 == f64::INFINITY
     }
 }
 
 impl Validator for MaxValue {
     fn validate(&self, value: &ZerxValue) -> Result<(), ZerxError> {
         if let Some(n) = numeric_as_f64(value) {
-            if n > self.0 {
+            // A NaN bound compares as unordered and is rejected too.
+            if !matches!(
+                n.partial_cmp(&self.0),
+                Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+            ) {
                 return Err(ZerxError::new(
                     ErrorCode::NUMBER_TOO_LARGE,
                     format!("number exceeds maximum {}", self.0),
@@ -385,9 +401,14 @@ impl Validator for MaxValue {
 
     fn json_schema(&self) -> serde_json::Map<String, serde_json::Value> {
         let mut m = serde_json::Map::new();
-        let n = serde_json::Number::from_f64(self.0).unwrap_or_else(|| serde_json::Number::from(0));
-        m.insert("maximum".to_owned(), serde_json::Value::Number(n));
+        if let Some(n) = serde_json::Number::from_f64(self.0) {
+            m.insert("maximum".to_owned(), serde_json::Value::Number(n));
+        }
         m
+    }
+
+    fn accepts_nothing(&self) -> bool {
+        self.0.is_nan() || self.0 == f64::NEG_INFINITY
     }
 }
 
