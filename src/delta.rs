@@ -32,16 +32,30 @@ fn parse_pointer(path: &str) -> Result<Vec<std::string::String>, ZerxError> {
             format!("JSON Pointer must be empty or start with '/'; got {path:?}"),
         ));
     }
-    let segments = path[1..]
-        .split('/')
-        .map(|seg| seg.replace("~1", "/").replace("~0", "~"))
-        .collect();
+    let mut segments = Vec::new();
+    for seg in path[1..].split('/') {
+        // RFC 6901 escaped = "~" ( "0" / "1" ); any other use of '~' is malformed.
+        let mut chars = seg.chars();
+        while let Some(c) = chars.next() {
+            if c == '~' && !matches!(chars.next(), Some('0') | Some('1')) {
+                return Err(ZerxError::new(
+                    ErrorCode::INVALID_POINTER,
+                    format!("JSON Pointer segment has an invalid '~' escape; got {seg:?}"),
+                ));
+            }
+        }
+        segments.push(seg.replace("~1", "/").replace("~0", "~"));
+    }
     Ok(segments)
 }
 
-// Accepts only non-negative decimal integers (no sign, no leading-+, no whitespace).
+// Accepts only RFC 6901 array indices: "0" or a non-negative decimal integer
+// without a leading zero (no sign, no leading-+, no whitespace).
 fn parse_index(seg: &str, consumed: &[std::string::String]) -> Result<usize, ZerxError> {
-    if seg.is_empty() || !seg.bytes().all(|b| b.is_ascii_digit()) {
+    if seg.is_empty()
+        || !seg.bytes().all(|b| b.is_ascii_digit())
+        || (seg.len() > 1 && seg.starts_with('0'))
+    {
         return Err(ZerxError::new(
             ErrorCode::INVALID_POINTER,
             format!("array/tuple index must be a non-negative decimal integer; got {seg:?}"),
@@ -367,6 +381,29 @@ mod tests {
     #[test]
     fn pointer_unescape_tilde() {
         assert_eq!(parse_pointer("/m~0n").unwrap(), vec!["m~n"]);
+    }
+
+    #[test]
+    fn pointer_rejects_invalid_escape() {
+        // RFC 6901 allows '~' only as "~0" or "~1".
+        for bad in ["/a~2b", "/a~", "/~", "/a/b~x"] {
+            let err = parse_pointer(bad).unwrap_err();
+            assert_eq!(err.code, ErrorCode::INVALID_POINTER, "{bad}");
+        }
+    }
+
+    #[test]
+    fn index_rejects_leading_zero() {
+        // RFC 6901 array-index: "0" or a digit sequence without a leading zero.
+        assert_eq!(parse_index("0", &[]).unwrap(), 0);
+        assert_eq!(parse_index("10", &[]).unwrap(), 10);
+        for bad in ["01", "00", "007"] {
+            let err = parse_index(bad, &[]).unwrap_err();
+            assert_eq!(err.code, ErrorCode::INVALID_POINTER, "{bad}");
+        }
+        let schema: Schema = tuple([string().into(), number().into()]).into();
+        let err = schema.parse_delta("/01", &1i32).unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_POINTER);
     }
 
     #[test]
