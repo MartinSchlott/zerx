@@ -22,12 +22,12 @@ severity: accepted
 
 `object([("a", lazy(|| string().optional()))])` and `lazy(|| string().default("d"))` both reject `{}` with `required`: `parse_field` reads only the outer lazy's modifiers. The Product Owner decided to keep this strict behaviour for now; `docs/architecture/schema-core.md` records it as an open limitation, not as a rule.
 
-### ECMA-valid group names with marks or Nl numerals are refused
+### Non-ASCII group names in patterns are refused
 
 id: {new}
-severity: minor
+severity: accepted
 
-The pattern translator approximates ECMA's GroupName grammar (ID_Start / ID_Continue) with `char::is_alphabetic()` / `is_alphanumeric()`, as std has no Unicode ID tables. An ECMA-valid group name containing a combining mark (Mn), ZWNJ/ZWJ or an Nl numeral (e.g. `Ⅻ`) is refused: `PATTERN_INVALID` on a builder pattern, `IMPORT_MALFORMED` on import. The error only ever narrows. Exact handling needs Unicode ID tables or a dependency. Found in validation of PLAN_T6_ecma_pattern_dialect.
+The pattern translator accepts only ASCII group names (`[A-Za-z_$][A-Za-z0-9_$]*`). ECMA's GroupName grammar uses Unicode ID_Start / ID_Continue, which std does not expose, and `char::is_alphabetic()` / `is_alphanumeric()` are no safe stand-in: in 3.0.0 they let through names ECMA rejects, such as U+0345 (Other_Alphabetic, not ID_Start) and '²' (No, not ID_Continue). Since 3.0.1, any non-ASCII group name is `Unsupported`: `IMPORT_UNSUPPORTED` on import, `PATTERN_INVALID` on a builder pattern. ECMA-valid non-ASCII names such as `ünï` or `Ⅻ` are therefore refused as well. Exact handling would need Unicode ID tables or a dependency.
 
 ## In Progress
 id: zrx9bug0col0inprogress01

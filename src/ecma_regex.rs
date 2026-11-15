@@ -820,13 +820,19 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// Approximate ECMA's GroupName grammar: `char::is_alphabetic()` /
-/// `is_alphanumeric()` stand in for Unicode ID_Start / ID_Continue, which std
-/// does not expose. This accepts only a subset of ECMA-valid names, so it never
-/// lets an invalid name through; the residual is that an ECMA-valid name built
-/// from combining marks (Mn), ZWNJ/ZWJ, or an Nl numeral such as `Ⅻ` is refused
-/// as Malformed rather than reaching the crate.
+/// Check a group name. Only ASCII names (`[A-Za-z_$][A-Za-z0-9_$]*`) are
+/// accepted. ECMA's GroupName grammar uses Unicode ID_Start / ID_Continue,
+/// which std does not expose, and `char::is_alphabetic` / `is_alphanumeric` are
+/// no safe stand-in: they admit U+0345 (Other_Alphabetic, not ID_Start) and
+/// '²' (No, not ID_Continue), which ECMA rejects. A non-ASCII name is therefore
+/// `Unsupported` (it may be valid ECMA, but its validity is never guessed); an
+/// ASCII name outside the grammar (empty, digit-leading) is `Malformed`.
 fn validate_group_name(name: &str) -> Result<(), EcmaError> {
+    if !name.is_ascii() {
+        return Err(EcmaError::Unsupported(format!(
+            "non-ASCII group name `{name}` is not supported"
+        )));
+    }
     let mut chars = name.chars();
     let first = match chars.next() {
         Some(c) => c,
@@ -836,11 +842,11 @@ fn validate_group_name(name: &str) -> Result<(), EcmaError> {
             ))
         }
     };
-    if !(first.is_alphabetic() || first == '_' || first == '$') {
+    if !(first.is_ascii_alphabetic() || first == '_' || first == '$') {
         return Err(EcmaError::Malformed(format!("invalid group name `{name}`")));
     }
     for c in chars {
-        if !(c.is_alphanumeric() || c == '_' || c == '$') {
+        if !(c.is_ascii_alphanumeric() || c == '_' || c == '$') {
             return Err(EcmaError::Malformed(format!("invalid group name `{name}`")));
         }
     }
@@ -919,7 +925,7 @@ mod tests {
 
         // Named groups, quantifiers, laziness, and assertions in a group.
         assert!(matches(r"^(?<y>\d{4})-\d{2}$", "2024-01"));
-        assert!(matches(r"^(?<ünï>\w)$", "a"));
+        assert!(matches(r"^(?<a_B9>\w)$", "a"));
         assert!(matches(r"^a{2,3}?$", "aa"));
         assert!(matches(r"^(?:\b)*a$", "a"));
     }
@@ -958,6 +964,21 @@ mod tests {
         assert!(is_unsupported(&deep));
         let deeper = "(".repeat(100_000);
         assert!(is_unsupported(&deeper));
+    }
+
+    #[test]
+    fn non_ascii_group_names_are_unsupported() {
+        // std has no ID_Start/ID_Continue tables, and `is_alphabetic` /
+        // `is_alphanumeric` admit names ECMA rejects (U+0345 is
+        // Other_Alphabetic but not ID_Start; '²' is No, not ID_Continue).
+        // Validity of a non-ASCII name is therefore never guessed.
+        for pattern in ["(?<\u{0345}>a)", "(?<a²>a)", "(?<ünï>a)", "(?<Ⅻ>a)"] {
+            assert!(
+                is_unsupported(pattern),
+                "expected Unsupported for {pattern:?}"
+            );
+        }
+        assert!(matches(r"^(?<_aZ9>a)$", "a"));
     }
 
     #[test]
