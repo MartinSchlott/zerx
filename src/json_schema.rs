@@ -2041,6 +2041,16 @@ fn import_object(
             prop_path.push(key.clone());
             let mut field_schema = import_value(prop_val, ctx, &prop_path)?;
 
+            // A default fills a missing key before the required check, so a
+            // required field carrying one would accept the key's absence.
+            if required.contains(key.as_str()) && field_schema.modifiers.default.is_some() {
+                return Err(ZerxError::new(
+                    ErrorCode::IMPORT_UNSUPPORTED,
+                    format!("required property `{key}` carries a `default`; a default would satisfy the missing key"),
+                )
+                .at(prop_path));
+            }
+
             if !required.contains(key.as_str()) && prop_val.get("default").is_none() {
                 field_schema = field_schema.optional();
             }
@@ -4509,5 +4519,28 @@ mod tests {
         // Even a programmatic `meta` entry cannot resurface an assertion keyword.
         let s: Schema = string().meta("minimum", 1i64).into();
         assert!(js(&s).get("minimum").is_none());
+    }
+
+    #[test]
+    fn import_required_property_with_default_is_refused() {
+        // A default fills a missing key before the required check runs, so
+        // the reconstruction would accept `{}` although `required` forbids it.
+        for doc in [
+            serde_json::json!({"type": "object", "properties": {"a": {"type": "string", "default": "x"}}, "required": ["a"]}),
+            serde_json::json!({"type": "object", "properties": {"a": {"anyOf": [{"type": "string", "default": "x"}, {"type": "null"}]}}, "required": ["a"]}),
+        ] {
+            let err = from(doc.clone()).unwrap_err();
+            assert_eq!(err.code, ErrorCode::IMPORT_UNSUPPORTED, "{doc}");
+            assert_eq!(err.path, vec!["properties", "a"], "{doc}");
+        }
+        // Not required: the default supplies the value, as before.
+        let s = from(
+            serde_json::json!({"type": "object", "properties": {"a": {"type": "string", "default": "x"}}}),
+        )
+        .unwrap();
+        assert_eq!(
+            validate_zv(&s, obj(&[])).unwrap(),
+            obj(&[("a", ZerxValue::String("x".into()))])
+        );
     }
 }
