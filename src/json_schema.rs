@@ -177,6 +177,16 @@ fn is_plain_any(s: &Schema) -> bool {
 // Export walk
 // ---------------------------------------------------------------------------
 
+// The export of a node that must accept nothing JSON Schema could describe:
+// `false`, or only `null` under `.nullable()`, which the runtime accepts first.
+fn never_export(schema: &Schema) -> serde_json::Value {
+    if schema.modifiers.nullable {
+        serde_json::json!({"type": "null"})
+    } else {
+        serde_json::Value::Bool(false)
+    }
+}
+
 // Whether the runtime rejects every non-null value of this node in a way JSON
 // Schema keywords cannot express.
 fn accepts_nothing(schema: &Schema) -> bool {
@@ -239,21 +249,23 @@ fn export_node(schema: &Schema, ctx: &mut ExportContext) -> serde_json::Value {
     // A node that accepts nothing exports as `false` rather than as a wider
     // schema; `null` stays accepted under `.nullable()`, which precedes it.
     if accepts_nothing(schema) {
-        return if schema.modifiers.nullable {
-            serde_json::json!({"type": "null"})
-        } else {
-            serde_json::Value::Bool(false)
-        };
+        return never_export(schema);
     }
 
     // Step 2 — Base map
     let mut core = base_schema(&schema.kind, ctx);
 
     // Step 3 — Validator fragments. The runtime enforces every validator, so a
-    // repeated lower or upper bound keeps the tightest value; any other key is
-    // last write wins.
+    // repeated lower or upper bound keeps the tightest value, and two different
+    // `pattern`/`format` fragments, which one keyword cannot carry, make the
+    // node export as `false` (fail closed; `allOf` is not imported).
     for v in &schema.validators {
         for (k, val) in v.json_schema() {
+            if matches!(k.as_str(), "pattern" | "format")
+                && core.get(&k).is_some_and(|existing| existing != &val)
+            {
+                return never_export(schema);
+            }
             let keep_existing = match (core.get(&k).and_then(|e| e.as_f64()), val.as_f64()) {
                 (Some(old), Some(new)) => match k.as_str() {
                     "minLength" | "minItems" | "minimum" => old >= new,
@@ -5229,5 +5241,25 @@ mod tests {
         let valid: Schema =
             discriminated_union("k", [Schema::from(object([("k", literal("a").into())]))]).into();
         assert!(js(&valid).get("oneOf").is_some());
+    }
+
+    #[test]
+    fn colliding_pattern_or_format_exports_false() {
+        // One `pattern` / `format` keyword cannot carry two different
+        // validators; keeping only one would export a wider schema.
+        for s in [
+            Schema::from(string().regex("^a").regex("b$")),
+            Schema::from(string().email().uuid()),
+        ] {
+            assert_eq!(js(&s), serde_json::Value::Bool(false));
+        }
+        let n: Schema = string().regex("^a").regex("b$").nullable().into();
+        assert_eq!(js(&n), serde_json::json!({"type": "null"}));
+        // The same validator twice is no collision.
+        let same: Schema = string().regex("^a").regex("^a").min(2).into();
+        assert_eq!(
+            js(&same),
+            serde_json::json!({"type": "string", "pattern": "^a", "minLength": 2})
+        );
     }
 }
