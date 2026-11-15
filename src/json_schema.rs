@@ -5546,7 +5546,10 @@ mod tests {
         let v = js(&seed);
         assert_eq!(v["minimum"], serde_json::json!(i64::MIN));
         assert_eq!(v["maximum"], serde_json::json!(9223372036854774784i64));
-        let re = from_json_schema(&v).unwrap();
+        // The round trip goes through text: serialize, parse, import.
+        let text = serde_json::to_string(&v).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let re = from_json_schema(&parsed).unwrap();
         assert!(re.validate(&i64::MIN).is_ok());
         assert!(re.validate(&(i64::MIN as i128 - 1)).is_err());
         assert!(re.validate(&9223372036854774784i64).is_ok());
@@ -5562,6 +5565,26 @@ mod tests {
         // Fractional bounds stay floats on integer nodes.
         let frac: Schema = number().int().min(0.5).into();
         assert_eq!(js(&frac)["minimum"], serde_json::json!(0.5));
+        // Negative control: the importer still refuses a float literal of
+        // magnitude 2^53 or more on an integer node; serde has already rounded
+        // 9007199254740993.0 to 2^53.
+        let rounded: serde_json::Value =
+            serde_json::from_str(r#"{"type":"integer","minimum":9007199254740993.0}"#).unwrap();
+        assert_eq!(
+            from_json_schema(&rounded).unwrap_err().code,
+            ErrorCode::IMPORT_UNSUPPORTED
+        );
+        // Bounds beyond the i64/u64 range are not converted: they stay floats
+        // on the strict side, and the importer refuses them.
+        let wide: Schema = number().int().min(-1e20).max(1e20).into();
+        let v = js(&wide);
+        assert!(v["minimum"].is_f64() && v["maximum"].is_f64());
+        let text = serde_json::to_string(&v).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            from_json_schema(&parsed).unwrap_err().code,
+            ErrorCode::IMPORT_UNSUPPORTED
+        );
         // Number nodes are unchanged.
         let num: Schema = number().min(0).max(9.0).into();
         let v = js(&num);
