@@ -72,7 +72,7 @@ None.
 - `NumberSchema::min(n: impl Into<f64>)` MUST push a `MinValue(n)` validator; a numeric value whose `f64` representation is less than `n`, or any numeric value when `n` is NaN, MUST yield `Err(NUMBER_TOO_SMALL)`.
 - `NumberSchema::max(n: impl Into<f64>)` MUST push a `MaxValue(n)` validator; a numeric value whose `f64` representation exceeds `n`, or any numeric value when `n` is NaN, MUST yield `Err(NUMBER_TOO_LARGE)`.
 - `NumberSchema::int()` MUST push an `IntValidator`; `I64`/`U64`/`I128`/`U128` MUST always pass; a `F64` with `fract() != 0.0` MUST yield `Err(NOT_INTEGER)`.
-- Bound comparison is performed in `f64`; precision loss at `i128`/`u128` magnitudes beyond 2^53 is accepted for v1.
+- Bound comparison is performed in `f64`. Rule change: the former accepted f64 limit no longer covers imported bounds. An imported `minimum`/`maximum` of magnitude 2^53 or more MUST be refused (`json-schema`), because at that magnitude neighbouring integers share one `f64` and the bound would accept a value beyond it. A bound built programmatically keeps the `f64` comparison as an accepted limitation.
 
 ### JSON Schema fragments
 

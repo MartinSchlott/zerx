@@ -2045,6 +2045,40 @@ fn import_string_type(
 }
 
 // Step 10, `type: "number"`.
+// 2^53: from here on neighbouring integers share one `f64`.
+const EXACT_F64_INTEGER_LIMIT: f64 = 9_007_199_254_740_992.0;
+
+// Reads an imported `minimum`/`maximum`. Bounds compare in `f64`; a bound of
+// magnitude 2^53 or more no longer separates neighbouring integers (2^53 + 1
+// rounds to 2^53, so `maximum: 2^53` would accept it). Such a bound is refused
+// rather than enforced inexactly; below 2^53 every value orders correctly
+// against it, because rounding is monotonic.
+fn import_bound(raw: &serde_json::Value, key: &str, path: &[String]) -> Result<f64, ZerxError> {
+    let n = raw.as_f64().ok_or_else(|| {
+        type_error(
+            path,
+            ErrorCode::IMPORT_MALFORMED,
+            format!("`{key}` must be a number"),
+        )
+    })?;
+    let beyond = match raw
+        .as_i64()
+        .map(|i| i.unsigned_abs())
+        .or_else(|| raw.as_u64())
+    {
+        Some(m) => m >= 1u64 << 53,
+        None => n.abs() >= EXACT_F64_INTEGER_LIMIT,
+    };
+    if beyond {
+        return Err(type_error(
+            path,
+            ErrorCode::IMPORT_UNSUPPORTED,
+            format!("`{key}` of magnitude 2^53 or more cannot be enforced exactly"),
+        ));
+    }
+    Ok(n)
+}
+
 fn import_number_type(
     obj: &serde_json::Map<String, serde_json::Value>,
     path: &[String],
@@ -2054,24 +2088,12 @@ fn import_number_type(
     *base = Some({
         let mut nb = crate::number();
         if let Some(raw) = obj.get("minimum") {
-            let n = raw.as_f64().ok_or_else(|| {
-                type_error(
-                    path,
-                    ErrorCode::IMPORT_MALFORMED,
-                    "`minimum` must be a number",
-                )
-            })?;
+            let n = import_bound(raw, "minimum", path)?;
             nb = nb.min(n);
             consumed.insert("minimum".to_string());
         }
         if let Some(raw) = obj.get("maximum") {
-            let n = raw.as_f64().ok_or_else(|| {
-                type_error(
-                    path,
-                    ErrorCode::IMPORT_MALFORMED,
-                    "`maximum` must be a number",
-                )
-            })?;
+            let n = import_bound(raw, "maximum", path)?;
             nb = nb.max(n);
             consumed.insert("maximum".to_string());
         }
@@ -2090,24 +2112,12 @@ fn import_integer_type(
     *base = Some({
         let mut nb = crate::number().int();
         if let Some(raw) = obj.get("minimum") {
-            let n = raw.as_f64().ok_or_else(|| {
-                type_error(
-                    path,
-                    ErrorCode::IMPORT_MALFORMED,
-                    "`minimum` must be a number",
-                )
-            })?;
+            let n = import_bound(raw, "minimum", path)?;
             nb = nb.min(n);
             consumed.insert("minimum".to_string());
         }
         if let Some(raw) = obj.get("maximum") {
-            let n = raw.as_f64().ok_or_else(|| {
-                type_error(
-                    path,
-                    ErrorCode::IMPORT_MALFORMED,
-                    "`maximum` must be a number",
-                )
-            })?;
+            let n = import_bound(raw, "maximum", path)?;
             nb = nb.max(n);
             consumed.insert("maximum".to_string());
         }
@@ -5260,6 +5270,40 @@ mod tests {
         assert_eq!(
             js(&same),
             serde_json::json!({"type": "string", "pattern": "^a", "minLength": 2})
+        );
+    }
+
+    #[test]
+    fn import_bounds_beyond_2_pow_53_are_refused() {
+        // Bounds compare in f64; past 2^53 a bound no longer separates
+        // neighbouring integers (`maximum: 2^53` would accept 2^53 + 1).
+        for doc in [
+            serde_json::json!({"type": "integer", "maximum": 9007199254740993u64}),
+            serde_json::json!({"type": "integer", "maximum": 9223372036854775806i64}),
+            serde_json::json!({"type": "number", "minimum": -9007199254740993i64}),
+            serde_json::json!({"type": "number", "maximum": 1e300}),
+            serde_json::json!({"type": ["integer", "null"], "minimum": 18446744073709551615u64}),
+        ] {
+            assert_eq!(
+                from(doc.clone()).unwrap_err().code,
+                ErrorCode::IMPORT_UNSUPPORTED,
+                "{doc}"
+            );
+        }
+        // 2^53 itself is refused: 2^53 + 1 rounds to it in f64.
+        assert_eq!(
+            from(serde_json::json!({"type": "integer", "maximum": 9007199254740992u64}))
+                .unwrap_err()
+                .code,
+            ErrorCode::IMPORT_UNSUPPORTED
+        );
+        // Below 2^53 the bound orders every integer exactly.
+        let s = from(serde_json::json!({"type": "integer", "maximum": 9007199254740991u64, "minimum": -9007199254740991i64})).unwrap();
+        assert!(validate_zv(&s, ZerxValue::I64(9007199254740991)).is_ok());
+        assert!(validate_zv(&s, ZerxValue::I64(9007199254740992)).is_err());
+        assert!(validate_zv(&s, ZerxValue::I64(9007199254740993)).is_err());
+        assert!(
+            from(serde_json::json!({"type": "number", "minimum": 0.5, "maximum": 1e15})).is_ok()
         );
     }
 }

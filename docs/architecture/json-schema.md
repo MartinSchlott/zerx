@@ -146,6 +146,7 @@
 - An empty `anyOf`/`oneOf` MUST raise `IMPORT_UNSUPPORTED`; it accepts nothing, and zerx has no never type.
 - `$id` on any node other than the root MUST raise `IMPORT_UNSUPPORTED`; a nested `$id` would re-base the `$ref`s inside it. A root `$id` imports as `meta`.
 - A non-compiling `pattern` on a string, `uri` or `url` node MUST raise `IMPORT_MALFORMED`; it would otherwise reject every string at validation time.
+- A `minimum` or `maximum` of magnitude 2^53 or more MUST raise `IMPORT_UNSUPPORTED`; bounds compare in `f64`, where such a bound no longer separates neighbouring integers (`D-import-fail-closed`).
 - Import nesting, `$ref` resolution included, MUST be bounded by the parse-depth limit; a deeper document MUST raise `IMPORT_UNSUPPORTED`. A flat `$defs` chain nests once per link although the document stays shallow, so the JSON parser's own nesting limit does not bound it.
 - The bound MUST take effect before the import exhausts a 2 MB thread stack, in debug as well as release builds.
 

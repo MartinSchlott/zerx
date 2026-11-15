@@ -32,18 +32,6 @@ triage: needs-decision
 
 Interim fix landed: a colliding node now exports as `false` (fail closed). Open question for the Product Owner: should the extra fragments export under `allOf`, with import accepting an `allOf` of pure string-validator fragments, so the node round-trips?
 
-### Imported integer bounds beyond 2^53 compare in f64
-
-id: {new}
-severity: minor
-triage: needs-decision
-
-`{"type":"integer","maximum":9007199254740992}` accepts `9007199254740993`, and a `maximum` of `i64::MAX - 1` accepts `i64::MAX`. The bound passes through `as_f64`. `docs/architecture/types.md` accepts f64 bound precision for v1, but `D-import-fail-closed` requires every imported assertion to be enforced or refused. Found in the bug sweep source audit.
-
-#### Triage
-
-Does the accepted f64 limit cover imported bounds? Recommendation: refuse integer bounds above 2^53 in magnitude on import, or compare them exactly as `compare_json_numbers` does.
-
 ### `parse_delta` rejects unknown keys on a passthrough object
 
 id: {new}
@@ -73,6 +61,13 @@ id: zrx9bug0col0inprogress01
 
 ## Done
 id: zrx9bug0col0done00000001
+
+### Imported integer bounds beyond 2^53 compare in f64
+
+id: {new}
+severity: minor
+
+`{"type":"integer","maximum":9007199254740992}` accepts `9007199254740993`, and a `maximum` of `i64::MAX - 1` accepts `i64::MAX`. The bound passes through `as_f64`. `docs/architecture/types.md` accepts f64 bound precision for v1, but `D-import-fail-closed` requires every imported assertion to be enforced or refused. Found in the bug sweep source audit.
 
 ### Non-finite number bounds are silently wrong
 
