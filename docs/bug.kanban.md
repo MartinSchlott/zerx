@@ -12,37 +12,28 @@ id: zrx9bug0col0open00000001
 
 id: {new}
 severity: major
-triage: needs-decision
+triage: needs-plan
+covered_by: docs/PLAN_T6_ecma_pattern_dialect.md
 
 The `regex`/`pattern` validator compiles with the `regex` crate in Unicode mode, so `\d`, `\w` and `\b` match beyond ASCII and `.` matches `\r`, unlike ECMA-262, which JSON Schema `pattern` uses. `string().regex("^\\d+$")` and the import of `{"type":"string","pattern":"^\\d+$"}` both accept `"١٢٣"`, which the exported or source schema forbids (`D-import-fail-closed`). Found in the bug sweep source audit.
 
 #### Triage
 
-Which dialect binds `pattern`, and is translating to ASCII classes enough, or must unsupported ECMA constructs be refused? Recommendation: a plan that compiles patterns with ECMA-equivalent classes (`(?-u:\d)` and similar) and refuses constructs it cannot map, for both the builder and import.
+The Product Owner chose intersection semantics: where the dialects disagree, a pattern matches only what both ECMA-262 and the `regex` crate accept. `docs/PLAN_T6_ecma_pattern_dialect.md` carries the fix, released as 3.0.0.
 
 ### Colliding `pattern`/`format` validators export only the last
 
 id: {new}
-severity: major
-triage: needs-decision
+severity: accepted
 
-`string().regex("^a").regex("b$")` exports only `"pattern":"b$"`, and `string().email().uuid()` exports only `format: uuid`, while the runtime enforces both. The export and its roundtrip are wider than the runtime. Repeated bounds were fixed in d92eb97 by keeping the tightest value; two patterns or formats cannot be merged into one keyword. Found in the bug sweep source audit.
-
-#### Triage
-
-Interim fix landed: a colliding node now exports as `false` (fail closed). Open question for the Product Owner: should the extra fragments export under `allOf`, with import accepting an `allOf` of pure string-validator fragments, so the node round-trips?
+`string().regex("^a").regex("b$")` and `string().email().uuid()` carry two `pattern`/`format` fragments, which one keyword cannot hold. Since 7ebe628 such a node exports as `false` (fail closed), so it does not round-trip. Exporting the extra fragments under `allOf`, with an `allOf` import of pure string-validator fragments, was deferred by the Product Owner (Martin); the fail-closed export stays.
 
 ### Missing lazy field ignores the inner schema's optional/default
 
 id: {new}
-severity: minor
-triage: needs-decision
+severity: accepted
 
-`object([("a", lazy(|| string().optional()))])` and `lazy(|| string().default("d"))` both reject `{}` with `required`: `parse_field` reads only the outer lazy's modifiers. The docs specify only the present-value path, so this may be intended. It errs strict. Found in the bug sweep source audit.
-
-#### Triage
-
-Should a missing value consult the resolved inner schema's `optional`/`default`? Recommendation: decide and state it in `docs/architecture/schema-core.md`. Strict behaviour is safe meanwhile.
+`object([("a", lazy(|| string().optional()))])` and `lazy(|| string().default("d"))` both reject `{}` with `required`: `parse_field` reads only the outer lazy's modifiers. The Product Owner decided to keep this strict behaviour for now; `docs/architecture/schema-core.md` records it as an open limitation, not as a rule.
 
 ## In Progress
 id: zrx9bug0col0inprogress01

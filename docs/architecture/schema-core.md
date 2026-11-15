@@ -55,6 +55,7 @@ None.
 - The parse flow for a **missing** value MUST proceed in this fixed order: if `default` is set, parse the default and return it; else if `optional` is set, omit the field from output; else return `Err(REQUIRED)`.
 - A missing optional field MUST be omitted from output; it MUST NOT be emitted as `Null`.
 - An explicit `Null` value MUST NOT trigger `default`; `default` applies only when the value is absent.
+- Open limitation: for a missing field whose schema is a `lazy`, only the outer lazy's `default`/`optional` apply; the resolved inner schema's `optional` and `default` are not consulted, so such a field is required. This errs strict and is not a binding rule; the Product Owner decided to keep the behaviour for now.
 - `ParseContext` MUST track a depth counter incremented by every `parse_present` invocation, including `lazy` wrapper frames; `MAX_PARSE_DEPTH = 100`. A `parse_present` invocation that would exceed this limit MUST return `Err(PARSE_DEPTH_EXCEEDED)` and MUST leave the depth counter unchanged (decrement before returning the error) so the context remains reusable across a failed call.
 - The depth guard counts recursion frames, not concrete-node levels; a `lazy` frame MUST consume one depth level in the same way as any other kind frame.
 - A `lazy` schema MUST memoise its resolved inner `Schema`; the thunk MUST be called at most once, and the cached result MUST be shared across all clones of the same `lazy` schema instance.
