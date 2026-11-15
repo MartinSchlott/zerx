@@ -2,7 +2,7 @@
 // everywhere would worsen ergonomics for callers who always handle the Ok path.
 #![allow(clippy::result_large_err)]
 
-use crate::schema::{ParseContext, SchemaKind};
+use crate::schema::{ParseContext, SchemaKind, MAX_PARSE_DEPTH};
 use crate::types::{float_discriminant_key, DiscriminantKey, DiscriminatorState, ObjectMode};
 use crate::{ErrorCode, Map, Schema, ZerxError, ZerxValue};
 
@@ -51,9 +51,19 @@ impl Schema {
         lua: &LuaValue,
         ctx: &mut ParseContext,
     ) -> Result<ZerxValue, ZerxError> {
-        // Resolve Lazy layers (mirrors delta.rs:resolve_lazy)
+        // Resolve Lazy layers (mirrors delta.rs:resolve_lazy). A lazy that
+        // resolves only to further lazies never reaches a concrete kind, so the
+        // unwrap is bounded by the same limit as the parse pass.
         let mut current = self.clone();
+        let mut layers = 0;
         while let SchemaKind::Lazy(lzy) = &current.kind {
+            if layers > MAX_PARSE_DEPTH {
+                return Err(ZerxError::new(
+                    ErrorCode::PARSE_DEPTH_EXCEEDED,
+                    format!("lazy resolution exceeded maximum depth of {MAX_PARSE_DEPTH}"),
+                ));
+            }
+            layers += 1;
             let inner = lzy.resolve()?;
             current = (*inner).clone();
         }
@@ -1376,5 +1386,26 @@ mod tests {
         );
         let err = obj.validate_lua(&input).unwrap_err();
         assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+    }
+
+    #[test]
+    fn self_resolving_lazy_errors_instead_of_hanging() {
+        // A $ref cycle with no structural node in between resolves only to
+        // further lazies; validate_lua must stop with an error, as validate does.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let doc =
+                serde_json::json!({"$defs": {"S": {"$ref": "#/$defs/S"}}, "$ref": "#/$defs/S"});
+            let schema = crate::from_json_schema(&doc).unwrap();
+            let _ = tx.send(
+                schema
+                    .validate_lua(&LuaValue::Integer(1))
+                    .map_err(|e| e.code),
+            );
+        });
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("validate_lua did not return");
+        assert_eq!(result.unwrap_err(), ErrorCode::PARSE_DEPTH_EXCEEDED);
     }
 }
