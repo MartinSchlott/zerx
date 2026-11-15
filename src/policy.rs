@@ -345,6 +345,14 @@ fn sql_array_items_fallback(value: &Value) -> Result<Value, ZerxError> {
     })
 }
 
+const NUMERIC_ASSERTIONS: &[&str] = &[
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+];
+
 fn sql_pg_type_substitute(value: &Value) -> Result<Value, ZerxError> {
     deep_map_schema(value, &|node: &Value| {
         let obj = match node.as_object() {
@@ -396,6 +404,18 @@ fn sql_pg_type_substitute(value: &Value) -> Result<Value, ZerxError> {
         }
 
         if typ == Some("number") {
+            let string_rewrite = matches!(fmt, Some("int64") | Some("numeric") | Some("decimal"))
+                || matches!(pg, Some("int8") | Some("numeric"));
+            // A string cannot carry numeric bounds: the core importer would
+            // read them as vacuous for the rewritten type and drop them.
+            if string_rewrite {
+                if let Some(kw) = NUMERIC_ASSERTIONS.iter().find(|k| obj.contains_key(**k)) {
+                    return Err(ZerxError::new(
+                        ErrorCode::IMPORT_UNSUPPORTED,
+                        format!("sql: '{kw}' cannot be enforced on a number imported as a string"),
+                    ));
+                }
+            }
             // int64 / int8 → string  (also remove x-pg-type)
             if fmt == Some("int64") {
                 let mut new_obj = obj.clone();
@@ -1357,5 +1377,36 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code, ErrorCode::IMPORT_UNSUPPORTED);
+    }
+
+    #[test]
+    fn test_sql_numeric_rewrite_refuses_numeric_assertions() {
+        // The string rewrite cannot carry numeric bounds; the core importer
+        // would treat them as vacuous for a string and drop them.
+        for signal in [
+            json!({"format": "int64"}),
+            json!({"x-pg-type": "int8"}),
+            json!({"format": "numeric"}),
+            json!({"format": "decimal"}),
+            json!({"x-pg-type": "numeric"}),
+        ] {
+            for (kw, val) in [
+                ("minimum", json!(0)),
+                ("maximum", json!(10)),
+                ("exclusiveMinimum", json!(0)),
+                ("exclusiveMaximum", json!(10)),
+                ("multipleOf", json!(2)),
+            ] {
+                let mut node = json!({"type": "number"});
+                for (k, v) in signal.as_object().unwrap() {
+                    node[k] = v.clone();
+                }
+                node[kw] = val;
+                let err = import_sql(node.clone()).unwrap_err();
+                assert_eq!(err.code, ErrorCode::IMPORT_UNSUPPORTED, "{node}");
+            }
+        }
+        // Without numeric assertions the documented rewrite still applies.
+        assert!(import_sql(json!({"type": "number", "format": "int64"})).is_ok());
     }
 }
