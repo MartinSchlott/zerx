@@ -185,6 +185,10 @@ fn accepts_nothing(schema: &Schema) -> bool {
         // (`null` for a non-finite float or a 128-bit integer, a number array
         // for bytes) that the literal itself rejects.
         SchemaKind::Literal(c) => !json_representable(c),
+        // A structurally invalid discriminated union rejects every value.
+        SchemaKind::DiscriminatedUnion(body) => {
+            matches!(body.state, DiscriminatorState::Invalid(_))
+        }
         _ => false,
     };
     kind_rejects_all || schema.validators.iter().any(|v| v.accepts_nothing())
@@ -5205,5 +5209,25 @@ mod tests {
         assert_eq!(js(&s), serde_json::json!({"const": u64::MAX}));
         let s: Schema = literal(i64::MIN).into();
         assert_eq!(js(&s), serde_json::json!({"const": i64::MIN}));
+    }
+
+    #[test]
+    fn invalid_discriminated_union_exports_false() {
+        // A structural defect makes the runtime reject every value; the
+        // `oneOf` export would accept the variants' values.
+        let du: Schema = discriminated_union(
+            "k",
+            [Schema::from(object([(
+                "k",
+                literal("a").optional().into(),
+            )]))],
+        )
+        .into();
+        assert!(du.validate(&serde_json::json!({"k": "a"})).is_err());
+        assert_eq!(js(&du), serde_json::Value::Bool(false));
+
+        let valid: Schema =
+            discriminated_union("k", [Schema::from(object([("k", literal("a").into())]))]).into();
+        assert!(js(&valid).get("oneOf").is_some());
     }
 }
