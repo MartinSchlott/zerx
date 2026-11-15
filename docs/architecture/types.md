@@ -71,8 +71,8 @@ None.
 
 ### Number validators
 
-- `NumberSchema::min(n)` MUST push a `MinValue(n)` validator; a numeric value less than `n`, or any numeric value when `n` is NaN, MUST yield `Err(NUMBER_TOO_SMALL)`.
-- `NumberSchema::max(n)` MUST push a `MaxValue(n)` validator; a numeric value greater than `n`, or any numeric value when `n` is NaN, MUST yield `Err(NUMBER_TOO_LARGE)`.
+- `NumberSchema::min(n)` (any `Into<f64>`, the pre-3.1.0 signature kept for source compatibility) and `NumberSchema::min_bound(n)` (any `Into<NumberBound>`, holding integer bounds exactly) MUST push a `MinValue(n)` validator; a numeric value less than `n`, or any numeric value when `n` is NaN, MUST yield `Err(NUMBER_TOO_SMALL)`.
+- `NumberSchema::max(n)` (any `Into<f64>`) and `NumberSchema::max_bound(n)` (any `Into<NumberBound>`) MUST push a `MaxValue(n)` validator; a numeric value greater than `n`, or any numeric value when `n` is NaN, MUST yield `Err(NUMBER_TOO_LARGE)`.
 - `NumberSchema::int()` MUST push an `IntValidator`; `I64`/`U64`/`I128`/`U128` MUST always pass; a `F64` with `fract() != 0.0` MUST yield `Err(NOT_INTEGER)`.
 - An integer bound MUST be held and compared exactly against every numeric value (`I64`, `U64`, `I128`, `U128`, integral and fractional `F64`), with no rounding through `f64`; a float bound is compared exactly as a float. Rule change: this replaces the former `f64` bound comparison and its accepted precision limit, because an `f64` comparison lets a bound of magnitude 2^53 or more accept a neighbouring integer beyond it.
 

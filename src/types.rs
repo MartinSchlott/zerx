@@ -745,12 +745,28 @@ impl StringSchema {
 }
 
 impl NumberSchema {
-    pub fn min(mut self, n: impl Into<NumberBound>) -> Self {
+    /// Lower bound, compared exactly as an `f64`. For an integer bound beyond
+    /// 2^53 use [`NumberSchema::min_bound`], which holds integers exactly.
+    pub fn min(self, n: impl Into<f64>) -> Self {
+        self.min_bound(n.into())
+    }
+
+    /// Lower bound given as a [`NumberBound`]: integer bounds of any primitive
+    /// integer type are held and compared exactly.
+    pub fn min_bound(mut self, n: impl Into<NumberBound>) -> Self {
         self.0.validators.push(Rc::new(MinValue(n.into())));
         self
     }
 
-    pub fn max(mut self, n: impl Into<NumberBound>) -> Self {
+    /// Upper bound, compared exactly as an `f64`. For an integer bound beyond
+    /// 2^53 use [`NumberSchema::max_bound`], which holds integers exactly.
+    pub fn max(self, n: impl Into<f64>) -> Self {
+        self.max_bound(n.into())
+    }
+
+    /// Upper bound given as a [`NumberBound`]: integer bounds of any primitive
+    /// integer type are held and compared exactly.
+    pub fn max_bound(mut self, n: impl Into<NumberBound>) -> Self {
         self.0.validators.push(Rc::new(MaxValue(n.into())));
         self
     }
@@ -2189,57 +2205,61 @@ mod tests {
             assert_eq!(schema.validate(&v).is_ok(), ok, "{v:?}");
         };
         // pygmalion's maximum and its neighbours.
-        let m = number().int().max(9223372036854774784i64);
+        let m = number().int().max_bound(9223372036854774784i64);
         check(&m, V::I64(9223372036854774783), true);
         check(&m, V::I64(9223372036854774784), true);
         check(&m, V::I64(9223372036854774785), false);
         // i64::MAX via I64, and i64::MAX + 1 via U64 and integral F64.
-        let m = number().int().max(i64::MAX);
+        let m = number().int().max_bound(i64::MAX);
         check(&m, V::I64(i64::MAX), true);
         check(&m, V::U64(i64::MAX as u64 + 1), false);
         check(&m, V::F64(9223372036854775808.0), false);
         // i64::MIN and i64::MIN - 1 via I128.
-        let m = number().int().min(i64::MIN);
+        let m = number().int().min_bound(i64::MIN);
         check(&m, V::I64(i64::MIN), true);
         check(&m, V::I128(i64::MIN as i128 - 1), false);
         // 2^53 bound and both neighbours, signed, unsigned and integral F64.
-        let m = number().int().max(p53);
+        let m = number().int().max_bound(p53);
         check(&m, V::I64(p53 - 1), true);
         check(&m, V::I64(p53), true);
         check(&m, V::I64(p53 + 1), false);
         check(&m, V::U64(p53 as u64 + 1), false);
         check(&m, V::F64(p53 as f64), true);
         check(&m, V::F64(9007199254740994.0), false);
-        let m = number().int().min(p53);
+        let m = number().int().min_bound(p53);
         check(&m, V::I64(p53 - 1), false);
         check(&m, V::U64(p53 as u64), true);
         check(&m, V::I128(p53 as i128 + 1), true);
         // u64 and 128-bit bounds.
-        let m = number().int().max(u64::MAX);
+        let m = number().int().max_bound(u64::MAX);
         check(&m, V::U64(u64::MAX), true);
         check(&m, V::U128(u64::MAX as u128 + 1), false);
-        let m = number().int().min(i128::MIN).max(u128::MAX);
+        let m = number().int().min_bound(i128::MIN).max_bound(u128::MAX);
         check(&m, V::I128(i128::MIN), true);
         check(&m, V::U128(u128::MAX), true);
         // A non-integral F64 against an integer bound compares exactly.
-        let m = number().min(3i64);
+        let m = number().min_bound(3i64);
         check(&m, V::F64(2.5), false);
         check(&m, V::F64(3.5), true);
-        let m = number().max(3i64);
+        let m = number().max_bound(3i64);
         check(&m, V::F64(2.5), true);
         check(&m, V::F64(3.5), false);
         // Nullable integer.
-        let n: Schema = number().int().max(i64::MAX).nullable().into();
+        let n: Schema = number().int().max_bound(i64::MAX).nullable().into();
         assert!(n.validate(&()).is_ok());
         assert!(n.validate(&V::U64(i64::MAX as u64 + 1)).is_err());
         // Integer bounds export exactly.
-        let e: Schema = number().int().min(i64::MIN).max(i64::MAX).into();
+        let e: Schema = number()
+            .int()
+            .min_bound(i64::MIN)
+            .max_bound(i64::MAX)
+            .into();
         let j = e.to_json_schema();
         assert_eq!(j["minimum"], serde_json::json!(i64::MIN));
         assert_eq!(j["maximum"], serde_json::json!(i64::MAX));
         // Values beyond the signed ranges, and huge integral floats, compare
         // by exact magnitude (no wrapping or saturating casts).
-        let m = number().int().min(i64::MIN).max(i64::MAX);
+        let m = number().int().min_bound(i64::MIN).max_bound(i64::MAX);
         check(&m, V::U64(u64::MAX), false);
         check(&m, V::U128(i128::MAX as u128 + 1), false);
         check(&m, V::U128(u128::MAX), false);
@@ -2247,16 +2267,20 @@ mod tests {
         check(&m, V::F64(-1e40), false);
         check(&m, V::F64(1e300), false);
         check(&m, V::I128(i128::MIN), false);
-        let lo = number().int().min(i64::MIN);
+        let lo = number().int().min_bound(i64::MIN);
         check(&lo, V::F64(1e40), true);
         check(&lo, V::U128(u128::MAX), true);
         check(&lo, V::I64(i64::MIN + 1), true);
-        let hi = number().int().max(u128::MAX);
+        let hi = number().int().max_bound(u128::MAX);
         check(&hi, V::F64(1e40), false);
         check(&hi, V::F64(3.0e38), true);
         // A 128-bit bound JSON cannot hold exports as the nearest float on
         // the strict side: never below a minimum, never above a maximum.
-        let w: Schema = number().int().min(i128::MAX).max(u128::MAX).into();
+        let w: Schema = number()
+            .int()
+            .min_bound(i128::MAX)
+            .max_bound(u128::MAX)
+            .into();
         let j = w.to_json_schema();
         let lo = j["minimum"].as_f64().unwrap();
         let hi = j["maximum"].as_f64().unwrap();
@@ -2268,6 +2292,30 @@ mod tests {
             cmp_float_int(hi, (false, u128::MAX)),
             Some(std::cmp::Ordering::Greater)
         );
+    }
+
+    #[test]
+    fn min_max_accept_any_into_f64() {
+        // Source compatibility with the pre-3.1.0 signature: generic
+        // `T: Into<f64>` helpers and user types convertible to f64 compile.
+        struct Celsius(f64);
+        impl From<Celsius> for f64 {
+            fn from(c: Celsius) -> f64 {
+                c.0
+            }
+        }
+        fn at_least<T: Into<f64>>(n: T) -> NumberSchema {
+            number().min(n)
+        }
+        fn at_most<T: Into<f64>>(n: T) -> NumberSchema {
+            number().max(n)
+        }
+        let s: Schema = at_least(Celsius(-5.0)).into();
+        assert!(s.validate(&-5i32).is_ok());
+        assert!(s.validate(&-6i32).is_err());
+        let s: Schema = at_most(10u8).into();
+        assert!(s.validate(&10i32).is_ok());
+        assert!(s.validate(&11i32).is_err());
     }
 
     // 8. number int

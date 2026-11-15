@@ -2170,12 +2170,12 @@ fn import_integer_type(
         let mut nb = crate::number().int();
         if let Some(raw) = obj.get("minimum") {
             let n = import_integer_bound(raw, "minimum", path)?;
-            nb = nb.min(n);
+            nb = nb.min_bound(n);
             consumed.insert("minimum".to_string());
         }
         if let Some(raw) = obj.get("maximum") {
             let n = import_integer_bound(raw, "maximum", path)?;
-            nb = nb.max(n);
+            nb = nb.max_bound(n);
             consumed.insert("maximum".to_string());
         }
         nb.into()
@@ -2704,7 +2704,12 @@ mod tests {
         let s: Schema = number().int().min(0).max(9).into();
         let v = js(&s);
         assert_eq!(get(&v, "type"), Some(&serde_json::json!("integer")));
-        // Integer bounds export as exact JSON integers.
+        // `min`/`max` take `Into<f64>` and export floats, as before 3.1.0;
+        // `min_bound`/`max_bound` hold integers and export exact integers.
+        assert_eq!(get(&v, "minimum"), Some(&serde_json::json!(0.0)));
+        assert_eq!(get(&v, "maximum"), Some(&serde_json::json!(9.0)));
+        let exact: Schema = number().int().min_bound(0).max_bound(9).into();
+        let v = js(&exact);
         assert_eq!(get(&v, "minimum"), Some(&serde_json::json!(0)));
         assert_eq!(get(&v, "maximum"), Some(&serde_json::json!(9)));
     }
@@ -5480,9 +5485,9 @@ mod tests {
         for (wide, tight, key, excluded) in cases {
             for (a, b) in [(wide, tight), (tight, wide)] {
                 let s: Schema = if key == "maximum" {
-                    number().int().max(a).max(b).into()
+                    number().int().max_bound(a).max_bound(b).into()
                 } else {
-                    number().int().min(a).min(b).into()
+                    number().int().min_bound(a).min_bound(b).into()
                 };
                 assert!(s.validate(&excluded).is_err(), "{key} {a} {b}");
                 let v = js(&s);
