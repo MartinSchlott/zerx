@@ -1223,6 +1223,15 @@ fn import_string_validators(
                 "`pattern` must be a string",
             )
         })?;
+        // Compiled here as in static evaluation: a non-compiling pattern would
+        // otherwise import and reject every string at validation time.
+        if regex::Regex::new(pat).is_err() {
+            return Err(type_error(
+                path,
+                ErrorCode::IMPORT_MALFORMED,
+                "`pattern` does not compile",
+            ));
+        }
         sb = sb.regex(pat);
         consumed.insert("pattern".to_string());
     }
@@ -4694,5 +4703,21 @@ mod tests {
         let (long, short) = handle.join().unwrap();
         assert_eq!(long.unwrap_err(), ErrorCode::IMPORT_UNSUPPORTED);
         assert!(short.is_ok());
+    }
+
+    #[test]
+    fn import_non_compiling_pattern_is_malformed() {
+        // Same outcome as the static path for `{"enum":["a"],"pattern":"["}`.
+        for doc in [
+            serde_json::json!({"type": "string", "pattern": "["}),
+            serde_json::json!({"type": "string", "format": "uri", "pattern": "("}),
+        ] {
+            assert_eq!(
+                from(doc.clone()).unwrap_err().code,
+                ErrorCode::IMPORT_MALFORMED,
+                "{doc}"
+            );
+        }
+        assert!(from(serde_json::json!({"type": "string", "pattern": "^a+$"})).is_ok());
     }
 }
