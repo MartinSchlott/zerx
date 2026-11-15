@@ -8,6 +8,102 @@ id: zrx9bug0board0tracking0001
 ## Open
 id: zrx9bug0col0open00000001
 
+### `pattern` uses Rust regex semantics, not ECMA-262
+
+id: {new}
+severity: major
+triage: needs-decision
+
+The `regex`/`pattern` validator compiles with the `regex` crate in Unicode mode, so `\d`, `\w` and `\b` match beyond ASCII and `.` matches `\r`, unlike ECMA-262, which JSON Schema `pattern` uses. `string().regex("^\\d+$")` and the import of `{"type":"string","pattern":"^\\d+$"}` both accept `"١٢٣"`, which the exported or source schema forbids (`D-import-fail-closed`). Found in the bug sweep source audit.
+
+#### Triage
+
+Which dialect binds `pattern`, and is translating to ASCII classes enough, or must unsupported ECMA constructs be refused? Recommendation: a plan that compiles patterns with ECMA-equivalent classes (`(?-u:\d)` and similar) and refuses constructs it cannot map, for both the builder and import.
+
+### Colliding `pattern`/`format` validators export only the last
+
+id: {new}
+severity: major
+triage: needs-decision
+
+`string().regex("^a").regex("b$")` exports only `"pattern":"b$"`, and `string().email().uuid()` exports only `format: uuid`, while the runtime enforces both. The export and its roundtrip are wider than the runtime. Repeated bounds were fixed in d92eb97 by keeping the tightest value; two patterns or formats cannot be merged into one keyword. Found in the bug sweep source audit.
+
+#### Triage
+
+How should a second pattern or format export? `allOf` is refused on import. Recommendation: export the extra fragments under `allOf`, and let import accept an `allOf` of pure string-validator fragments; the alternative is that the builder refuses a second pattern or format.
+
+### Non-finite number bounds are silently wrong
+
+id: {new}
+severity: minor
+triage: needs-decision
+
+`number().min(f64::NAN)` accepts every number (no-op validator, fail-open). `number().min(f64::INFINITY)` and `.max(f64::NAN)` export as `minimum`/`maximum` `0` through the `Number::from_f64` fallback, so the export disagrees with the runtime in both directions. Found in the bug sweep source audit.
+
+#### Triage
+
+Should a non-finite bound fail closed (NaN or `+∞` minimum rejects everything) and export as `false`, or be clamped? Recommendation: fail closed at runtime and export the node as `false`.
+
+### Literals that JSON cannot hold export as `const: null`
+
+id: {new}
+severity: minor
+triage: needs-decision
+
+`literal(u128::MAX)`, `literal(i128::MIN)` and `literal(f64::NAN)` export `{"const":null}` through the documented `unwrap_or(Null)` fallback. The runtime rejects `null` and the export accepts only `null`, and the re-import becomes `literal(null)`. Found in the bug sweep source audit.
+
+#### Triage
+
+Replace the fallback with an export that accepts nothing? Recommendation: export `false` for an unrepresentable constant. The `unwrap_or(Null)` rule in `docs/architecture/json-schema.md` changes with it.
+
+### Invalid discriminated union exports as an accepting `oneOf`
+
+id: {new}
+severity: minor
+triage: needs-decision
+
+`discriminated_union("k", [object([("k", literal("a").optional())])])` is `DiscriminatorState::Invalid` and rejects every value, but exports `{"oneOf":[…],"discriminator":…}`, which accepts `{"k":"a"}`. The re-import becomes `OneOf`, which accepts it. Found in the bug sweep source audit.
+
+#### Triage
+
+What should a defective schema export, given that `to_json_schema` is infallible? Recommendation: export `false` for an invalid discriminated union.
+
+### Imported integer bounds beyond 2^53 compare in f64
+
+id: {new}
+severity: minor
+triage: needs-decision
+
+`{"type":"integer","maximum":9007199254740992}` accepts `9007199254740993`, and a `maximum` of `i64::MAX - 1` accepts `i64::MAX`. The bound passes through `as_f64`. `docs/architecture/types.md` accepts f64 bound precision for v1, but `D-import-fail-closed` requires every imported assertion to be enforced or refused. Found in the bug sweep source audit.
+
+#### Triage
+
+Does the accepted f64 limit cover imported bounds? Recommendation: refuse integer bounds above 2^53 in magnitude on import, or compare them exactly as `compare_json_numbers` does.
+
+### `parse_delta` rejects unknown keys on a passthrough object
+
+id: {new}
+severity: minor
+triage: needs-decision
+
+With `object([("a", string())]).passthrough()`, `validate({"a":"x","b":1})` succeeds but `parse_delta("/b", &1)` fails with `unknown_property`. Navigation looks only at `shape`. This is a wrong rejection, not fail-open, and no doc rule decides it. Found in the bug sweep source audit.
+
+#### Triage
+
+Should a passthrough object's unknown key navigate to `any()`? Recommendation: yes, matching root validation; strict and strip objects keep rejecting.
+
+### Missing lazy field ignores the inner schema's optional/default
+
+id: {new}
+severity: minor
+triage: needs-decision
+
+`object([("a", lazy(|| string().optional()))])` and `lazy(|| string().default("d"))` both reject `{}` with `required`: `parse_field` reads only the outer lazy's modifiers. The docs specify only the present-value path, so this may be intended. It errs strict. Found in the bug sweep source audit.
+
+#### Triage
+
+Should a missing value consult the resolved inner schema's `optional`/`default`? Recommendation: decide and state it in `docs/architecture/schema-core.md`. Strict behaviour is safe meanwhile.
+
 ## In Progress
 id: zrx9bug0col0inprogress01
 
