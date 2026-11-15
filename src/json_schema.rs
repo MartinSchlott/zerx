@@ -222,6 +222,27 @@ fn json_representable(v: &ZerxValue) -> bool {
     }
 }
 
+// An integral float within the i64/u64 range as the equal JSON integer; any
+// other value (a JSON integer already, fractional, or out of range) is `None`.
+fn integral_float_as_integer(v: &serde_json::Value) -> Option<serde_json::Value> {
+    let n = v.as_number()?;
+    if n.is_i64() || n.is_u64() {
+        return None;
+    }
+    let f = n.as_f64()?;
+    if f.fract() != 0.0 {
+        return None;
+    }
+    // -2^63 and 2^64 are exact floats; within [-2^63, 2^64) the casts are exact.
+    if (-9_223_372_036_854_775_808.0..0.0).contains(&f) {
+        Some(serde_json::Value::from(f as i64))
+    } else if (0.0..18_446_744_073_709_551_616.0).contains(&f) {
+        Some(serde_json::Value::from(f as u64))
+    } else {
+        None
+    }
+}
+
 fn export_node(schema: &Schema, ctx: &mut ExportContext) -> serde_json::Value {
     // Step 1 — Lazy short-circuit
     if let SchemaKind::Lazy(lzy) = &schema.kind {
@@ -278,6 +299,18 @@ fn export_node(schema: &Schema, ctx: &mut ExportContext) -> serde_json::Value {
             };
             if !keep_existing {
                 core.insert(k, val);
+            }
+        }
+    }
+
+    // On an integer node an integral float bound is an exact integer: export
+    // it as a JSON integer, because the importer refuses float literals of
+    // magnitude 2^53 or more on integer nodes (the parser may have rounded
+    // them) and would otherwise refuse zerx's own export.
+    if core.get("type").and_then(|t| t.as_str()) == Some("integer") {
+        for key in ["minimum", "maximum"] {
+            if let Some(int) = core.get(key).and_then(integral_float_as_integer) {
+                core.insert(key.to_owned(), int);
             }
         }
     }
@@ -2704,10 +2737,10 @@ mod tests {
         let s: Schema = number().int().min(0).max(9).into();
         let v = js(&s);
         assert_eq!(get(&v, "type"), Some(&serde_json::json!("integer")));
-        // `min`/`max` take `Into<f64>` and export floats, as before 3.1.0;
-        // `min_bound`/`max_bound` hold integers and export exact integers.
-        assert_eq!(get(&v, "minimum"), Some(&serde_json::json!(0.0)));
-        assert_eq!(get(&v, "maximum"), Some(&serde_json::json!(9.0)));
+        // An integer node exports integral bounds as exact JSON integers,
+        // whether they came from `min`/`max` (f64) or `min_bound`/`max_bound`.
+        assert_eq!(get(&v, "minimum"), Some(&serde_json::json!(0)));
+        assert_eq!(get(&v, "maximum"), Some(&serde_json::json!(9)));
         let exact: Schema = number().int().min_bound(0).max_bound(9).into();
         let v = js(&exact);
         assert_eq!(get(&v, "minimum"), Some(&serde_json::json!(0)));
@@ -5497,5 +5530,42 @@ mod tests {
                 assert!(re.validate(&tight).is_ok(), "{key} {a} {b}");
             }
         }
+    }
+
+    #[test]
+    fn integer_node_float_bounds_export_as_integers() {
+        // pygmalion builds its seed bounds as f64. An integral f64 is an
+        // exact integer, so an integer node exports it as a JSON integer and
+        // the export re-imports (the importer refuses float literals >= 2^53
+        // on integer nodes, as the parser may have rounded them).
+        let seed: Schema = number()
+            .int()
+            .min(-9223372036854775808.0)
+            .max(9223372036854774784.0)
+            .into();
+        let v = js(&seed);
+        assert_eq!(v["minimum"], serde_json::json!(i64::MIN));
+        assert_eq!(v["maximum"], serde_json::json!(9223372036854774784i64));
+        let re = from_json_schema(&v).unwrap();
+        assert!(re.validate(&i64::MIN).is_ok());
+        assert!(re.validate(&(i64::MIN as i128 - 1)).is_err());
+        assert!(re.validate(&9223372036854774784i64).is_ok());
+        assert!(re.validate(&9223372036854774785i64).is_err());
+        // Inside a nullable wrap as well.
+        let n: Schema = number().int().max(9223372036854774784.0).nullable().into();
+        assert!(from_json_schema(&js(&n)).is_ok());
+        // Small integral bounds on integer nodes: `0`, not `0.0`.
+        let small: Schema = number().int().min(0).max(9.0).into();
+        let v = js(&small);
+        assert_eq!(v["minimum"], serde_json::json!(0));
+        assert_eq!(v["maximum"], serde_json::json!(9));
+        // Fractional bounds stay floats on integer nodes.
+        let frac: Schema = number().int().min(0.5).into();
+        assert_eq!(js(&frac)["minimum"], serde_json::json!(0.5));
+        // Number nodes are unchanged.
+        let num: Schema = number().min(0).max(9.0).into();
+        let v = js(&num);
+        assert_eq!(v["minimum"], serde_json::json!(0.0));
+        assert_eq!(v["maximum"], serde_json::json!(9.0));
     }
 }

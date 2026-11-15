@@ -45,6 +45,7 @@
 - The `format` modifier MUST NOT overwrite a semantically meaningful `format` key produced in step (1) or (2) (kind markers and validator-contributed formats take precedence).
 - `meta` entries MUST be skipped when the key is export-reserved or already present in the output map.
 - Repeated bound fragments of one node MUST export the tightest value: the largest `minLength`/`minItems`/`minimum` and the smallest `maxLength`/`maxItems`/`maximum`, because the runtime enforces every validator.
+- On a `type: integer` node, an integral float `minimum`/`maximum` within the `i64`/`u64` range MUST export as the equal JSON integer, so the export re-imports (the import refuses float literals of magnitude 2^53 or more on integer nodes); bounds outside that range keep their strict-side float, and `type: number` nodes and fractional bounds export unchanged.
 
 ### Fail-closed export
 
