@@ -73,3 +73,7 @@ id: zrx9backlog0col0someday1
 - [ ] CI wiring
   > There is no `.github/workflows/`. `scripts/verify all` is the natural single CI
   > step if the project ever wants CI.
+  > Binding constraint (Martin, 2026-11-19): any non-Darwin build or test (Windows,
+  > Linux, other) runs only on Martin's own runner, never on GitHub-hosted runners. If
+  > that runner is unavailable, the build or test does not happen, and its absence is
+  > not a blocker. No repo or org secrets and no personal credentials in CI.
