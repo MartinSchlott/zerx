@@ -114,7 +114,7 @@
 
 ### Export-reserved keyword set
 
-- The following keys MUST NOT be written by the `meta` step: `type`, `properties`, `required`, `additionalProperties`, `items`, `prefixItems`, `minItems`, `maxItems`, `anyOf`, `oneOf`, `discriminator`, `const`, `enum`, `$ref`, `$defs`, `$schema`, `format`, `contentMediaType`, `minLength`, `maxLength`, `pattern`, `minimum`, `maximum`, `description`, `default`, `examples`, `deprecated`, `readOnly`, `writeOnly`, `title`.
+- The following keys MUST NOT be written by the `meta` step: `type`, `properties`, `required`, `additionalProperties`, `items`, `prefixItems`, `minItems`, `maxItems`, `uniqueItems`, `anyOf`, `oneOf`, `discriminator`, `const`, `enum`, `$ref`, `$defs`, `$schema`, `format`, `contentMediaType`, `minLength`, `maxLength`, `pattern`, `minimum`, `maximum`, `description`, `default`, `examples`, `deprecated`, `readOnly`, `writeOnly`, `title`.
 - Every assertion keyword of the import coverage table MUST also be export-reserved, so `meta` can never emit an assertion. `$id` is not reserved: a root `$id` round-trips as `meta`.
 
 ### Import pipeline order
@@ -142,6 +142,8 @@
 - Each reconstruction branch MUST consume exactly the keywords it rebuilds into the schema; a keyword the branch reads but does not enforce MUST NOT count as consumed.
 - An object node MUST refuse a `required` name that is not a key of `properties`, because strict mode would reject the key instead of requiring it.
 - A tuple node MUST refuse `minItems` above, or `maxItems` below, the number of `prefixItems`; bracketing values are consumed.
+- On an `items` array node, `uniqueItems: true` MUST import as `unique_items()` and `uniqueItems: false` MUST be consumed as a no-op.
+- On a `prefixItems` tuple node, `uniqueItems: true` MUST raise `IMPORT_UNSUPPORTED`, because zerx has no unique tuple; `uniqueItems: false` is consumed.
 - A tuple MAY import narrower than its source: `prefixItems` with `items:false` reconstructs a fixed-length tuple, although the source also accepts shorter arrays. This is a named narrowing under `D-import-fail-closed`.
 - An imported `pattern` MAY accept less than ECMA-262 does where the ECMA and `regex` crate dialects disagree (`\D`, `\W`, `\s`, `\S`, `\b`, `\B`): it matches only what both accept (`types`). This is a named narrowing under `D-import-fail-closed`.
 - A consumed keyword whose value violates the Draft 2020-12 grammar MUST raise `IMPORT_MALFORMED`; an integral float counts as an integer.

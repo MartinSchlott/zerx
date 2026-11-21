@@ -114,6 +114,10 @@ None.
 - `ArraySchema::min(n)` MUST push an `ArrayMinLength(n)` validator; an array whose length is less than `n` MUST yield `Err(ARRAY_TOO_SHORT)`; the JSON Schema fragment MUST be `{"minItems": n}`.
 - `ArraySchema::max(n)` MUST push an `ArrayMaxLength(n)` validator; an array whose length exceeds `n` MUST yield `Err(ARRAY_TOO_LONG)`; the JSON Schema fragment MUST be `{"maxItems": n}`.
 - Array-length validators run in the `validators` step, before element descent in `parse_inner`.
+- `ArraySchema::unique_items()` MUST push a `UniqueItems` validator; an array holding two equal elements MUST yield `Err(ARRAY_NOT_UNIQUE)` with the decimal-string index of the later duplicate as `path`; the JSON Schema fragment MUST be `{"uniqueItems": true}`.
+- Element equality for `unique_items()` MUST be literal equality; two `Bytes` elements compare byte-wise and a `Bytes` element MUST NOT equal any non-`Bytes` element. Bytes uniqueness is a zerx extension, because JSON Schema has no bytes.
+- `unique_items()` MUST evaluate the input instance in the `validators` step, before element descent and before refinement predicates, as JSON Schema applies `uniqueItems` to the instance; elements that become equal only through stripping or defaults are not duplicates.
+- Literal equality and the uniqueness check MUST NOT recurse once per nesting level of the compared values, because validators run before the parse-depth guard sees the elements.
 
 #### `record`
 
@@ -161,7 +165,7 @@ None.
 
 ### Error codes — complex types
 
-- Codes: `UNKNOWN_PROPERTY`, `ARRAY_TOO_SHORT`, `ARRAY_TOO_LONG`, `TUPLE_LENGTH_MISMATCH`, `INVALID_LITERAL`, `INVALID_DISCRIMINANT`, `INVALID_DISCRIMINATED_UNION`, `ONE_OF_AMBIGUOUS`.
+- Codes: `UNKNOWN_PROPERTY`, `ARRAY_TOO_SHORT`, `ARRAY_TOO_LONG`, `ARRAY_NOT_UNIQUE`, `TUPLE_LENGTH_MISMATCH`, `INVALID_LITERAL`, `INVALID_DISCRIMINANT`, `INVALID_DISCRIMINATED_UNION`, `ONE_OF_AMBIGUOUS`.
 
 ### Special types
 

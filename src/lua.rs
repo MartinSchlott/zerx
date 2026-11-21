@@ -621,6 +621,14 @@ mod tests {
     }
 
     #[test]
+    fn unique_items_rejects_integer_and_float_duplicates() {
+        let schema: Schema = array(number()).unique_items().into();
+        let t = table(vec![LuaValue::Integer(1), LuaValue::Float(1.0)], vec![]);
+        let err = schema.validate_lua(&t).unwrap_err();
+        assert_eq!(err.code, ErrorCode::ARRAY_NOT_UNIQUE);
+    }
+
+    #[test]
     fn array_with_hash_part_yields_shape_mismatch() {
         let schema: Schema = array(number()).into();
         let t = table(

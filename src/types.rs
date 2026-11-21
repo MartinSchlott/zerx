@@ -2,6 +2,8 @@
 // everywhere would worsen ergonomics for callers who always handle the Ok path.
 #![allow(clippy::result_large_err)]
 
+use std::collections::HashMap;
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::rc::Rc;
 
 use crate::schema::{BuilderInner, Schema, SchemaKind, Validator};
@@ -785,6 +787,7 @@ impl ErrorCode {
     pub const UNKNOWN_PROPERTY: ErrorCode = ErrorCode::new("unknown_property");
     pub const ARRAY_TOO_SHORT: ErrorCode = ErrorCode::new("array_too_short");
     pub const ARRAY_TOO_LONG: ErrorCode = ErrorCode::new("array_too_long");
+    pub const ARRAY_NOT_UNIQUE: ErrorCode = ErrorCode::new("array_not_unique");
     pub const TUPLE_LENGTH_MISMATCH: ErrorCode = ErrorCode::new("tuple_length_mismatch");
     pub const INVALID_LITERAL: ErrorCode = ErrorCode::new("invalid_literal");
     pub const INVALID_DISCRIMINANT: ErrorCode = ErrorCode::new("invalid_discriminant");
@@ -883,24 +886,151 @@ fn exact_integer_form(value: &ZerxValue) -> Option<(bool, u128)> {
 }
 
 // JSON Schema literal equality: numbers by exact value across variants, never
-// through a lossy f64 conversion; recursive through containers; object key
-// order irrelevant. Everything else stays variant-strict.
+// through a lossy f64 conversion; object key order irrelevant. Everything else
+// stays variant-strict. The comparison is iterative because both operands can
+// be arbitrary input values: recursing per nesting level would overflow the
+// stack before the parse flow's depth guard ever sees them.
 pub(crate) fn literal_eq(value: &ZerxValue, constant: &ZerxValue) -> bool {
-    match (value, constant) {
-        (ZerxValue::Array(a), ZerxValue::Array(b)) => {
-            a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| literal_eq(x, y))
+    let mut stack: Vec<(&ZerxValue, &ZerxValue)> = vec![(value, constant)];
+    while let Some((a, b)) = stack.pop() {
+        match (a, b) {
+            (ZerxValue::Array(x), ZerxValue::Array(y)) => {
+                if x.len() != y.len() {
+                    return false;
+                }
+                for (xe, ye) in x.iter().zip(y.iter()) {
+                    stack.push((xe, ye));
+                }
+            }
+            (ZerxValue::Object(x), ZerxValue::Object(y)) => {
+                if x.len() != y.len() {
+                    return false;
+                }
+                for (key, xv) in x.iter() {
+                    match y.get(key) {
+                        Some(yv) => stack.push((xv, yv)),
+                        None => return false,
+                    }
+                }
+            }
+            (ZerxValue::F64(x), ZerxValue::F64(y)) => {
+                if x != y {
+                    return false;
+                }
+            }
+            _ => match (exact_integer_form(a), exact_integer_form(b)) {
+                (Some(x), Some(y)) => {
+                    if x != y {
+                        return false;
+                    }
+                }
+                _ => {
+                    if a != b {
+                        return false;
+                    }
+                }
+            },
         }
-        (ZerxValue::Object(a), ZerxValue::Object(b)) => {
-            a.len() == b.len()
-                && a.iter()
-                    .all(|(key, av)| b.get(key).is_some_and(|bv| literal_eq(av, bv)))
-        }
-        (ZerxValue::F64(a), ZerxValue::F64(b)) => a == b,
-        _ => match (exact_integer_form(value), exact_integer_form(constant)) {
-            (Some(a), Some(b)) => a == b,
-            _ => value == constant,
-        },
     }
+    true
+}
+
+// Elements are bucketed by a hash consistent with `literal_eq`: values it
+// calls equal hash equally. The hash descends at most `UNIQUE_HASH_DEPTH`
+// levels — beyond that a container contributes only its tag and length — so
+// hashing is bounded-recursion even on arbitrarily deep inputs.
+const UNIQUE_HASH_DEPTH: usize = 32;
+
+fn unique_hash(
+    value: &ZerxValue,
+    depth: usize,
+    state: &std::collections::hash_map::RandomState,
+) -> u64 {
+    let mut h = state.build_hasher();
+    hash_value(value, depth, state, &mut h);
+    h.finish()
+}
+
+fn hash_value(
+    value: &ZerxValue,
+    depth: usize,
+    state: &std::collections::hash_map::RandomState,
+    h: &mut impl Hasher,
+) {
+    match value {
+        ZerxValue::Null => 0u8.hash(h),
+        ZerxValue::Bool(b) => {
+            1u8.hash(h);
+            b.hash(h);
+        }
+        ZerxValue::I64(_)
+        | ZerxValue::U64(_)
+        | ZerxValue::I128(_)
+        | ZerxValue::U128(_)
+        | ZerxValue::F64(_) => {
+            2u8.hash(h);
+            match exact_integer_form(value) {
+                Some((negative, magnitude)) => {
+                    negative.hash(h);
+                    magnitude.hash(h);
+                }
+                // Only a fractional, non-finite, or >= 2^128 float lands here.
+                None => {
+                    if let ZerxValue::F64(f) = value {
+                        f.to_bits().hash(h);
+                    }
+                }
+            }
+        }
+        ZerxValue::String(s) => {
+            3u8.hash(h);
+            s.hash(h);
+        }
+        ZerxValue::Bytes(b) => {
+            4u8.hash(h);
+            b.hash(h);
+        }
+        ZerxValue::Array(a) => {
+            5u8.hash(h);
+            a.len().hash(h);
+            if depth < UNIQUE_HASH_DEPTH {
+                for item in a {
+                    unique_hash(item, depth + 1, state).hash(h);
+                }
+            }
+        }
+        ZerxValue::Object(map) => {
+            6u8.hash(h);
+            map.len().hash(h);
+            if depth < UNIQUE_HASH_DEPTH {
+                let mut combined = 0u64;
+                for (key, val) in map.iter() {
+                    let mut entry = state.build_hasher();
+                    key.hash(&mut entry);
+                    unique_hash(val, depth + 1, state).hash(&mut entry);
+                    combined = combined.wrapping_add(entry.finish());
+                }
+                combined.hash(h);
+            }
+        }
+    }
+}
+
+/// The first duplicate pair `(i, j)`, `i < j`: `j` is the smallest index with
+/// an earlier equal element and `i` the smallest earlier index equal to it.
+pub(crate) fn first_duplicate(items: &[ZerxValue]) -> Option<(usize, usize)> {
+    let state = std::collections::hash_map::RandomState::new();
+    let mut buckets: HashMap<u64, Vec<usize>> = HashMap::new();
+    for (j, item) in items.iter().enumerate() {
+        let bucket = buckets.entry(unique_hash(item, 0, &state)).or_default();
+        for &i in bucket.iter() {
+            if literal_eq(&items[i], item) {
+                return Some((i, j));
+            }
+        }
+        bucket.push(j);
+    }
+    None
 }
 
 fn literal_descriptor(value: &ZerxValue) -> String {
@@ -1317,6 +1447,31 @@ impl Validator for ArrayMaxLength {
     }
 }
 
+pub(crate) struct UniqueItems;
+
+impl Validator for UniqueItems {
+    fn validate(&self, value: &ZerxValue) -> Result<(), ZerxError> {
+        let items = match value {
+            ZerxValue::Array(a) => a,
+            _ => return Ok(()),
+        };
+        match first_duplicate(items) {
+            Some((i, j)) => Err(ZerxError::new(
+                ErrorCode::ARRAY_NOT_UNIQUE,
+                format!("array items at index {i} and {j} are equal"),
+            )
+            .at(vec![j.to_string()])),
+            None => Ok(()),
+        }
+    }
+
+    fn json_schema(&self) -> serde_json::Map<String, serde_json::Value> {
+        let mut m = serde_json::Map::new();
+        m.insert("uniqueItems".to_owned(), serde_json::Value::Bool(true));
+        m
+    }
+}
+
 // ---------------------------------------------------------------------------
 // T2 builder newtypes
 // ---------------------------------------------------------------------------
@@ -1528,6 +1683,20 @@ impl ArraySchema {
 
     pub fn max(mut self, n: usize) -> Self {
         self.0.validators.push(Rc::new(ArrayMaxLength(n)));
+        self
+    }
+
+    /// Require every pair of items to differ under JSON Schema value equality:
+    /// numbers by exact value, objects by key set and per-key value in any key
+    /// order, arrays element-wise, other scalars variant-strict. `Bytes` compare
+    /// byte-wise and only to `Bytes` — a zerx extension, since JSON Schema has
+    /// no bytes.
+    ///
+    /// The check runs on the *input* instance in the validators step, before
+    /// element defaults, object `strip`/`passthrough` handling, nested parsing
+    /// and refinement, so later transforms do not affect it.
+    pub fn unique_items(mut self) -> Self {
+        self.0.validators.push(Rc::new(UniqueItems));
         self
     }
 }
@@ -3537,5 +3706,223 @@ mod tests {
         let without: Schema = Schema::from(base);
         assert_eq!(with_mime.modifiers.mime.as_deref(), Some("image/png"));
         assert_eq!(without.modifiers.mime, None);
+    }
+
+    // --- unique_items ---
+
+    fn uniq(items: Vec<ZerxValue>) -> Result<(), ZerxError> {
+        UniqueItems.validate(&ZerxValue::Array(items))
+    }
+
+    #[test]
+    fn unique_items_accepts_distinct_items() {
+        use serde_json::json;
+        assert!(val(array(string()).unique_items(), &json!(["a", "b"])).is_ok());
+        assert!(val(array(number()).unique_items(), &json!([1, 2])).is_ok());
+        assert!(val(
+            array(object([("id", string().into())])).unique_items(),
+            &json!([{"id": "a"}, {"id": "b"}])
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn unique_items_rejects_duplicate_scalar_and_object() {
+        use serde_json::json;
+        let err = val(array(string()).unique_items(), &json!(["a", "b", "a"])).unwrap_err();
+        assert_eq!(err.code, ErrorCode::ARRAY_NOT_UNIQUE);
+        assert_eq!(err.path, vec!["2"]);
+
+        let err2 = val(
+            array(object([("id", string().into())])).unique_items(),
+            &json!([{"id": "a"}, {"id": "a"}]),
+        )
+        .unwrap_err();
+        assert_eq!(err2.code, ErrorCode::ARRAY_NOT_UNIQUE);
+        assert_eq!(err2.path, vec!["1"]);
+    }
+
+    #[test]
+    fn unique_items_numeric_equality_is_exact() {
+        assert_eq!(
+            uniq(vec![ZerxValue::I64(1), ZerxValue::F64(1.0)])
+                .unwrap_err()
+                .code,
+            ErrorCode::ARRAY_NOT_UNIQUE
+        );
+        assert!(uniq(vec![ZerxValue::U64(1), ZerxValue::I128(1)]).is_err());
+        assert!(uniq(vec![ZerxValue::F64(0.0), ZerxValue::F64(-0.0)]).is_err());
+        assert!(uniq(vec![ZerxValue::F64(f64::NAN), ZerxValue::F64(f64::NAN)]).is_ok());
+
+        let n = 1u64 << 53;
+        assert!(uniq(vec![ZerxValue::U64(n), ZerxValue::U64(n + 1)]).is_ok());
+        assert!(uniq(vec![ZerxValue::U64(n + 1), ZerxValue::F64(n as f64)]).is_ok());
+    }
+
+    #[test]
+    fn unique_items_ignores_object_key_order() {
+        let mut a = crate::Map::new();
+        a.insert("a", ZerxValue::I64(1));
+        a.insert("b", ZerxValue::I64(2));
+        let mut b = crate::Map::new();
+        b.insert("b", ZerxValue::I64(2));
+        b.insert("a", ZerxValue::I64(1));
+        let err = uniq(vec![ZerxValue::Object(a), ZerxValue::Object(b)]).unwrap_err();
+        assert_eq!(err.code, ErrorCode::ARRAY_NOT_UNIQUE);
+    }
+
+    #[test]
+    fn unique_items_nested_arrays_are_order_sensitive() {
+        let one_two = || ZerxValue::Array(vec![ZerxValue::I64(1), ZerxValue::I64(2)]);
+        assert!(uniq(vec![one_two(), one_two()]).is_err());
+        let two_one = ZerxValue::Array(vec![ZerxValue::I64(2), ZerxValue::I64(1)]);
+        assert!(uniq(vec![one_two(), two_one]).is_ok());
+    }
+
+    #[test]
+    fn unique_items_bytes_only_equal_bytes() {
+        assert!(uniq(vec![ZerxValue::Bytes(vec![1]), ZerxValue::Bytes(vec![1])]).is_err());
+        assert!(uniq(vec![
+            ZerxValue::Bytes(vec![1]),
+            ZerxValue::Array(vec![ZerxValue::I64(1)])
+        ])
+        .is_ok());
+        assert!(uniq(vec![
+            ZerxValue::Bytes(b"a".to_vec()),
+            ZerxValue::String("a".to_string())
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn unique_items_nullable_short_circuits_null() {
+        use serde_json::json;
+        let schema = array(string()).unique_items().nullable();
+        assert!(val(schema.clone(), &json!(null)).is_ok());
+        let err = val(schema, &json!(["x", "x"])).unwrap_err();
+        assert_eq!(err.code, ErrorCode::ARRAY_NOT_UNIQUE);
+    }
+
+    #[test]
+    fn unique_items_error_path_prepends_parent_segments() {
+        use serde_json::json;
+        let schema = object([("tags", array(string()).unique_items().into())]);
+        let err = val(schema, &json!({"tags": ["a", "a"]})).unwrap_err();
+        assert_eq!(err.code, ErrorCode::ARRAY_NOT_UNIQUE);
+        assert_eq!(err.path, vec!["tags", "1"]);
+    }
+
+    #[test]
+    fn unique_items_checks_input_before_element_processing() {
+        use serde_json::json;
+
+        // The inputs differ in the stripped `x` key, so uniqueness accepts even
+        // though `strip` makes the parsed outputs equal.
+        let stripped = array(object([("a", number().into())]).strip()).unique_items();
+        assert!(val(stripped, &json!([{"a": 1, "x": 1}, {"a": 1, "x": 2}])).is_ok());
+
+        // The validator runs before the array's refinement.
+        let refined = array(number()).unique_items().refine(|_| false, "never");
+        let err = val(refined, &json!([1, 1])).unwrap_err();
+        assert_eq!(err.code, ErrorCode::ARRAY_NOT_UNIQUE);
+    }
+
+    fn deep_value(depth: usize, leaf: ZerxValue) -> ZerxValue {
+        let mut v = leaf;
+        for _ in 0..depth {
+            v = ZerxValue::Array(vec![v]);
+        }
+        v
+    }
+
+    #[test]
+    fn unique_items_deep_values_do_not_overflow_the_stack() {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                const DEPTH: usize = 100_000;
+
+                let a = deep_value(DEPTH, ZerxValue::Null);
+                let b = deep_value(DEPTH, ZerxValue::Null);
+                assert!(literal_eq(&a, &b));
+                assert!(check_literal(&a, &b).is_ok());
+                std::mem::forget((a, b));
+
+                let a = deep_value(DEPTH, ZerxValue::Null);
+                let b = deep_value(DEPTH, ZerxValue::Bool(true));
+                assert!(!literal_eq(&a, &b));
+                assert!(check_literal(&a, &b).is_err());
+                std::mem::forget((a, b));
+
+                let items = vec![
+                    deep_value(DEPTH, ZerxValue::Null),
+                    deep_value(DEPTH, ZerxValue::Null),
+                ];
+                assert_eq!(first_duplicate(&items), Some((0, 1)));
+                let v = ZerxValue::Array(items);
+                assert_eq!(
+                    UniqueItems.validate(&v).unwrap_err().code,
+                    ErrorCode::ARRAY_NOT_UNIQUE
+                );
+                std::mem::forget(v);
+
+                let items = vec![
+                    deep_value(DEPTH, ZerxValue::Null),
+                    deep_value(DEPTH, ZerxValue::Bool(true)),
+                ];
+                assert_eq!(first_duplicate(&items), None);
+                let v = ZerxValue::Array(items);
+                assert!(UniqueItems.validate(&v).is_ok());
+                std::mem::forget(v);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn unique_items_deep_values_through_schema() {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                const DEPTH: usize = 1_000;
+                let schema: Schema = array(crate::any()).unique_items().into();
+
+                let dup = ZerxValue::Array(vec![
+                    deep_value(DEPTH, ZerxValue::Null),
+                    deep_value(DEPTH, ZerxValue::Null),
+                ]);
+                let err = schema
+                    .parse_present(&dup, &mut ParseContext::new())
+                    .unwrap_err();
+                assert_eq!(err.code, ErrorCode::ARRAY_NOT_UNIQUE);
+                assert_eq!(err.path, vec!["1"]);
+                std::mem::forget(dup);
+
+                let distinct = ZerxValue::Array(vec![
+                    deep_value(DEPTH, ZerxValue::Null),
+                    deep_value(DEPTH, ZerxValue::Bool(true)),
+                ]);
+                let out = schema
+                    .parse_present(&distinct, &mut ParseContext::new())
+                    .expect("distinct deep values accepted");
+                std::mem::forget(distinct);
+                std::mem::forget(out);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn unique_items_large_array_is_bucketed() {
+        use serde_json::json;
+        let schema = array(object([("id", number().into())])).unique_items();
+        let mut items: Vec<serde_json::Value> = (0..50_000).map(|i| json!({"id": i})).collect();
+        assert!(val(schema.clone(), &items).is_ok());
+        items.push(json!({"id": 0}));
+        let err = val(schema, &items).unwrap_err();
+        assert_eq!(err.code, ErrorCode::ARRAY_NOT_UNIQUE);
+        assert_eq!(err.path, vec!["50000"]);
     }
 }

@@ -29,6 +29,13 @@ severity: accepted
 
 The pattern translator accepts only ASCII group names (`[A-Za-z_$][A-Za-z0-9_$]*`). ECMA's GroupName grammar uses Unicode ID_Start / ID_Continue, which std does not expose, and `char::is_alphabetic()` / `is_alphanumeric()` are no safe stand-in: in 3.0.0 they let through names ECMA rejects, such as U+0345 (Other_Alphabetic, not ID_Start) and '²' (No, not ID_Continue). Since 3.0.1, any non-ASCII group name is `Unsupported`: `IMPORT_UNSUPPORTED` on import, `PATTERN_INVALID` on a builder pattern. ECMA-valid non-ASCII names such as `ünï` or `Ⅻ` are therefore refused as well. Exact handling would need Unicode ID tables or a dependency.
 
+### Deep `ZerxValue` clone and drop recurse per nesting level
+
+id: {new}
+severity: minor
+
+`ZerxValue`'s derived `Clone` and `Drop` recurse once per nesting level. The identity parse of `any()`, `json()` and `literal` returns `value.clone()`, so validating an accepted value a few thousand levels deep overflows a 2 MB debug stack and aborts the process (measured during PLAN_T7_unique_items plan review: ~2 000 survives, 5 000 aborts; 50 000 aborts on 8 MB). `MAX_PARSE_DEPTH` bounds schema recursion, not value depth below a leaf kind. `literal_eq` and the `uniqueItems` check are iterative since PLAN_T7.
+
 ## In Progress
 id: zrx9bug0col0inprogress01
 

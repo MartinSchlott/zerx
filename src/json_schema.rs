@@ -677,6 +677,7 @@ const IMPORT_HANDLED: &[&str] = &[
     "maximum",
     "minItems",
     "maxItems",
+    "uniqueItems",
     "format",
     "contentMediaType",
     "description",
@@ -1003,16 +1004,11 @@ fn static_keyword_holds(
                 return Ok(true);
             }
             let arr = member.as_array().map(|a| a.as_slice()).unwrap_or(&[]);
-            for i in 0..arr.len() {
-                for j in (i + 1)..arr.len() {
-                    let a = ZerxValue::from_serialize(&arr[i]).map_err(|e| e.at(path.to_vec()))?;
-                    let b = ZerxValue::from_serialize(&arr[j]).map_err(|e| e.at(path.to_vec()))?;
-                    if crate::types::literal_eq(&a, &b) {
-                        return Ok(false);
-                    }
-                }
+            let mut values = Vec::with_capacity(arr.len());
+            for item in arr {
+                values.push(ZerxValue::from_serialize(item).map_err(|e| e.at(path.to_vec()))?);
             }
-            true
+            crate::types::first_duplicate(&values).is_none()
         }
         "required" => {
             let names = required_names(val).unwrap_or_default();
@@ -2364,6 +2360,20 @@ fn check_tuple_bounds(
         }
         consumed.insert("maxItems".to_string());
     }
+    if let Some(raw) = obj.get("uniqueItems") {
+        let unique = raw.as_bool().ok_or_else(|| {
+            type_error(
+                path,
+                ErrorCode::IMPORT_MALFORMED,
+                "`uniqueItems` must be a boolean",
+            )
+        })?;
+        // `true` is left unconsumed so the coverage check refuses it: zerx has
+        // no unique tuple. `false` asserts nothing.
+        if !unique {
+            consumed.insert("uniqueItems".to_string());
+        }
+    }
     consumed.insert("prefixItems".to_string());
     consumed.insert("items".to_string());
     Ok(())
@@ -2397,6 +2407,19 @@ fn apply_array_bounds(
         })?;
         ab = ab.max(n as usize);
         consumed.insert("maxItems".to_string());
+    }
+    if let Some(raw) = obj.get("uniqueItems") {
+        let unique = raw.as_bool().ok_or_else(|| {
+            type_error(
+                path,
+                ErrorCode::IMPORT_MALFORMED,
+                "`uniqueItems` must be a boolean",
+            )
+        })?;
+        if unique {
+            ab = ab.unique_items();
+        }
+        consumed.insert("uniqueItems".to_string());
     }
     consumed.insert("items".to_string());
     Ok(ab.into())
@@ -4597,7 +4620,6 @@ mod tests {
         for bad in [
             serde_json::json!({"type": "number", "exclusiveMinimum": 0}),
             serde_json::json!({"type": "integer", "multipleOf": 2}),
-            serde_json::json!({"type": "array", "items": {}, "uniqueItems": true}),
             serde_json::json!({"type": "object", "minProperties": 1}),
             serde_json::json!({"type": "object", "maxProperties": 1}),
             serde_json::json!({"type": "number", "exclusiveMaximum": 5}),
@@ -5590,5 +5612,158 @@ mod tests {
         let v = js(&num);
         assert_eq!(v["minimum"], serde_json::json!(0.0));
         assert_eq!(v["maximum"], serde_json::json!(9.0));
+    }
+
+    // --- uniqueItems ---
+
+    #[test]
+    fn export_unique_items_fragment() {
+        let with: Schema = array(string()).unique_items().into();
+        assert_eq!(
+            get(&js(&with), "uniqueItems"),
+            Some(&serde_json::json!(true))
+        );
+
+        let without: Schema = array(string()).into();
+        assert!(get(&js(&without), "uniqueItems").is_none());
+
+        let meta_only: Schema = array(string()).meta("uniqueItems", true).into();
+        assert!(get(&js(&meta_only), "uniqueItems").is_none());
+    }
+
+    #[test]
+    fn import_unique_items_true_false_and_malformed() {
+        let unique = from(serde_json::json!({
+            "type": "array",
+            "items": {"type": "string"},
+            "uniqueItems": true
+        }))
+        .unwrap();
+        let duplicate = || {
+            ZerxValue::Array(vec![
+                ZerxValue::String("a".to_string()),
+                ZerxValue::String("a".to_string()),
+            ])
+        };
+        let err = validate_zv(&unique, duplicate()).unwrap_err();
+        assert_eq!(err.code, ErrorCode::ARRAY_NOT_UNIQUE);
+        assert_eq!(err.path, vec!["1"]);
+
+        let not_unique = from(serde_json::json!({
+            "type": "array",
+            "items": {"type": "string"},
+            "uniqueItems": false
+        }))
+        .unwrap();
+        assert!(validate_zv(&not_unique, duplicate()).is_ok());
+
+        for bad in [
+            serde_json::json!({"type":"array","items":{"type":"string"},"uniqueItems":"yes"}),
+            serde_json::json!({"type":"array","items":{"type":"string"},"uniqueItems":1}),
+        ] {
+            assert_eq!(code_of(bad.clone()), ErrorCode::IMPORT_MALFORMED, "{bad}");
+        }
+    }
+
+    #[test]
+    fn import_unique_items_nullable_array() {
+        let schema = from(serde_json::json!({
+            "type": ["array", "null"],
+            "items": {"type": "string"},
+            "uniqueItems": true
+        }))
+        .unwrap();
+        assert_eq!(
+            validate_zv(&schema, ZerxValue::Null).unwrap(),
+            ZerxValue::Null
+        );
+        assert_eq!(
+            validate_zv(
+                &schema,
+                ZerxValue::Array(vec![
+                    ZerxValue::String("a".to_string()),
+                    ZerxValue::String("a".to_string()),
+                ])
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::ARRAY_NOT_UNIQUE
+        );
+    }
+
+    #[test]
+    fn import_unique_items_on_tuple() {
+        let tuple_doc = serde_json::json!({
+            "type": "array",
+            "prefixItems": [{"type": "string"}],
+            "items": false,
+            "uniqueItems": true
+        });
+        assert_eq!(code_of(tuple_doc), ErrorCode::IMPORT_UNSUPPORTED);
+
+        let ok = from(serde_json::json!({
+            "type": "array",
+            "prefixItems": [{"type": "string"}],
+            "items": false,
+            "uniqueItems": false
+        }));
+        assert!(ok.is_ok());
+    }
+
+    fn harness_schema() -> Schema {
+        object([
+            (
+                "steps",
+                array(object([
+                    ("id", string().into()),
+                    ("kind", enumerate(["a", "b"]).into()),
+                ]))
+                .unique_items()
+                .into(),
+            ),
+            ("tags", array(string()).unique_items().into()),
+        ])
+        .into()
+    }
+
+    #[test]
+    fn unique_items_round_trip_and_native_import_parity() {
+        let native = harness_schema();
+        let exported = js(&native);
+        let imported = from(exported.clone()).unwrap();
+        assert_eq!(js(&imported), exported);
+
+        for case in [
+            serde_json::json!({
+                "tags": ["a", "b"],
+                "steps": [{"id": "s1", "kind": "a"}]
+            }),
+            serde_json::json!({
+                "tags": ["a", "a"],
+                "steps": [{"id": "s1", "kind": "a"}]
+            }),
+            serde_json::json!({
+                "tags": ["a", "b"],
+                "steps": [
+                    {"id": "s1", "kind": "a"},
+                    {"kind": "a", "id": "s1"}
+                ]
+            }),
+            serde_json::json!({
+                "tags": ["a", "b"],
+                "steps": [{"id": "s1", "kind": "a", "extra": 1}]
+            }),
+        ] {
+            let n = validate_zv(&native, ZerxValue::from_serialize(&case).unwrap());
+            let i = validate_zv(&imported, ZerxValue::from_serialize(&case).unwrap());
+            match (&n, &i) {
+                (Ok(_), Ok(_)) => {}
+                (Err(a), Err(b)) => {
+                    assert_eq!(a.code, b.code, "case {case}");
+                    assert_eq!(a.path, b.path, "case {case}");
+                }
+                _ => panic!("native and imported differ on {case}: {n:?} vs {i:?}"),
+            }
+        }
     }
 }

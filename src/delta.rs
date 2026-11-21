@@ -705,6 +705,15 @@ mod tests {
     }
 
     #[test]
+    fn replace_duplicate_under_unique_items_is_rejected() {
+        let schema: Schema = array(number()).unique_items().into();
+        let instance = make_arr(vec![ZerxValue::I64(1), ZerxValue::I64(2)]);
+        let err = schema.replace(&instance, "/1", &1i32).unwrap_err();
+        assert_eq!(err.code, ErrorCode::ARRAY_NOT_UNIQUE);
+        assert_eq!(err.path, vec!["1"]);
+    }
+
+    #[test]
     fn replace_tuple_element() {
         let schema: Schema = tuple([string().into(), number().into()]).into();
         let instance = make_arr(vec![

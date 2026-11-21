@@ -25,8 +25,9 @@ id: zrx9backlog0col0backlog1
   > embedded self-description, divergent column set). Cosmetic today, but it blocks any
   > tooling that parses the template block.
 
-- [ ] Enforce `exclusiveMinimum`/`exclusiveMaximum`/`multipleOf`/`uniqueItems`/`minProperties`/`maxProperties`
+- [ ] Enforce `exclusiveMinimum`/`exclusiveMaximum`/`multipleOf`/`minProperties`/`maxProperties`
   > PLAN_J5_import_assertions_fail_closed refuses these keywords at import (`D-import-fail-closed`).
+  > `uniqueItems` is done (PLAN_T7_unique_items, zerx 3.2.0); the others stay open.
   > Real validators on the builders, exported as their keywords, would let such schemas import
   > instead. Common in generated schemas (e.g. `exclusiveMinimum` for "greater than").
 
@@ -48,6 +49,12 @@ id: zrx9backlog0col0backlog1
   > a marker node carrying assertions the marker cannot enforce as a plain string with a `format`
   > annotation (JSON Schema's own reading). Reported to the supervisor with PLAN_J6.
 
+- [ ] Import preserves object field order
+  > Import rebuilds `properties` (and so `required`) in `serde_json`'s sorted key order, so a
+  > native object declared in non-alphabetical field order does not re-export byte-identically
+  > after import. Behaviour is unaffected; matters only if exact text round-trip is wanted.
+  > Found during PLAN_T7_unique_items.
+
 ## Next
 id: zrx9backlog0col0next0001
 
@@ -56,6 +63,11 @@ id: zrx9backlog0col0inprog01
 
 ## Done
 id: zrx9backlog0col0done0001
+
+- [x] Enforce `uniqueItems`
+  > `ArraySchema::unique_items()` enforces JSON Schema `uniqueItems` with literal equality,
+  > exports `uniqueItems: true` and imports it on array nodes (PLAN_T7_unique_items, zerx 3.2.0).
+  > Split off the "Enforce `exclusiveMinimum`/…" card, whose other keywords stay open.
 
 ## Someday
 id: zrx9backlog0col0someday1
