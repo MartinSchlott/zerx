@@ -74,6 +74,8 @@
 - The deref transform MUST act only on nodes whose `$ref` string does NOT start with `#/`; local `#/$defs/…` refs MUST be left untouched for J2's core importer.
 - On a non-local `$ref` node the deref transform MUST replace the node with the resolver's result, merging every sibling keyword (every key except `$ref`) onto the resolved object, with the sibling keys taking precedence over the resolved object's keys.
 - An external ref met again while its own resolved content is walked MUST raise `IMPORT_UNSUPPORTED`; inlining cannot represent a recursive external schema. External ref nesting beyond the parse-depth limit MUST raise `IMPORT_UNSUPPORTED`.
+- `from_json_schema_with` MUST hold the caller's document, every schema-transform output and every deref resolver result to the import document depth bound of `json-schema`, refusing beyond it with `IMPORT_UNSUPPORTED` before cloning or walking the value.
+- The deref walk MUST count its JSON position depth against the same bound, because inlining resolver results can make the document deeper than the caller's input.
 - Resolved content that carries `$defs` or a `$ref` starting with `#` MUST raise `IMPORT_UNSUPPORTED`; such refs are relative to the external document and would bind to the importing document's `$defs` (`D-import-fail-closed`).
 
 ### Built-in `sql` policy schema transforms (pre-parse, in order)

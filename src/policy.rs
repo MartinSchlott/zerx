@@ -7,6 +7,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::Value;
 
+use crate::json_schema::{
+    check_import_document_depth, dispose_json_value, import_document_depth_error,
+    json_depth_exceeds, MAX_IMPORT_DOCUMENT_DEPTH,
+};
 use crate::schema::{Schema, MAX_PARSE_DEPTH};
 use crate::{ErrorCode, ZerxError};
 
@@ -175,28 +179,53 @@ fn map_child_schemas(
 // ---------------------------------------------------------------------------
 
 fn make_deref_transform(resolver: RefResolver) -> SchemaTransform {
-    Arc::new(move |value: &Value| deref_walk(value, &resolver, &mut Vec::new()))
+    Arc::new(move |value: &Value| deref_walk(value, &resolver, &mut Vec::new(), 0))
 }
 
 // Inlines every external `$ref`, then walks the result. `active` holds the
 // external refs whose resolved content is being walked: meeting one of them
 // again is a recursive external schema, which inlining cannot represent, and
-// an unbounded chain of distinct refs is cut at MAX_PARSE_DEPTH.
+// an unbounded chain of distinct refs is cut at MAX_PARSE_DEPTH. `depth` is how
+// many JSON containers sit above `node`; inlining grows the document, so the
+// walk stops at the document bound rather than only at the ref-chain cut. The
+// walk is split so each nesting level keeps only two small frames on the stack:
+// an importable document reaches the bound in debug builds on a 2 MB thread.
 fn deref_walk(
     node: &Value,
     resolver: &RefResolver,
     active: &mut Vec<String>,
+    depth: usize,
 ) -> Result<Value, ZerxError> {
+    if depth >= MAX_IMPORT_DOCUMENT_DEPTH {
+        return Err(import_document_depth_error());
+    }
     let obj = match node.as_object() {
         Some(o) => o,
         None => return Ok(node.clone()),
     };
     let ref_str = match obj.get("$ref").and_then(|v| v.as_str()) {
         // Local #/$defs/… refs are left untouched for J2's core importer.
-        Some(s) if !s.starts_with("#/") => s.to_owned(),
-        _ => return map_child_schemas(node.clone(), &mut |c| deref_walk(c, resolver, active)),
+        Some(s) if !s.starts_with("#/") => s,
+        _ => return deref_children(obj, resolver, active, depth),
     };
-    if active.contains(&ref_str) {
+    // The resolved document runs before `has_document_local_refs`, which
+    // recurses over the whole tree, and is inlined into a document already
+    // `depth` deep.
+    let merged = deref_resolve(obj, ref_str, resolver, active)?;
+    active.push(ref_str.to_owned());
+    let result = deref_walk(&merged, resolver, active, depth);
+    active.pop();
+    result
+}
+
+// Resolves one external ref and merges its sibling keywords (siblings win).
+fn deref_resolve(
+    obj: &serde_json::Map<String, Value>,
+    ref_str: &str,
+    resolver: &RefResolver,
+    active: &[String],
+) -> Result<Value, ZerxError> {
+    if active.iter().any(|r| r == ref_str) {
         return Err(ZerxError::new(
             ErrorCode::IMPORT_UNSUPPORTED,
             format!("deref: external ref '{ref_str}' refers to itself; recursive external schemas are not supported"),
@@ -208,8 +237,13 @@ fn deref_walk(
             format!("deref: external ref nesting exceeded maximum depth of {MAX_PARSE_DEPTH}"),
         ));
     }
-    // External ref: resolve, then merge sibling keywords (siblings win).
-    let resolved = resolver(&ref_str)?;
+    let resolved = resolver(ref_str)?;
+    if json_depth_exceeds(&resolved, MAX_IMPORT_DOCUMENT_DEPTH) {
+        // Dispose iteratively: this value is ours now, and its own drop would
+        // recurse once per level.
+        dispose_json_value(resolved);
+        return Err(import_document_depth_error());
+    }
     if has_document_local_refs(&resolved) {
         return Err(ZerxError::new(
             ErrorCode::IMPORT_UNSUPPORTED,
@@ -230,10 +264,80 @@ fn deref_walk(
             merged.insert(k.clone(), v.clone());
         }
     }
-    active.push(ref_str);
-    let result = deref_walk(&Value::Object(merged), resolver, active);
-    active.pop();
-    result
+    Ok(Value::Object(merged))
+}
+
+// Walks every child schema position of an object node, one JSON container level
+// per keyword container (`properties`/`$defs`, an `items`/`prefixItems`/
+// `anyOf`/`oneOf`/`allOf` array) and one per directly held child (`items` as a
+// single schema, `additionalProperties`).
+fn deref_children(
+    obj: &serde_json::Map<String, Value>,
+    resolver: &RefResolver,
+    active: &mut Vec<String>,
+    depth: usize,
+) -> Result<Value, ZerxError> {
+    let mut out = obj.clone();
+
+    if let Some(Value::Object(props)) = out.get("properties").cloned() {
+        let mut new_props = serde_json::Map::new();
+        for (k, v) in &props {
+            new_props.insert(k.clone(), deref_walk(v, resolver, active, depth + 2)?);
+        }
+        out.insert("properties".to_owned(), Value::Object(new_props));
+    }
+
+    if let Some(Value::Object(defs)) = out.get("$defs").cloned() {
+        let mut new_defs = serde_json::Map::new();
+        for (k, v) in &defs {
+            new_defs.insert(k.clone(), deref_walk(v, resolver, active, depth + 2)?);
+        }
+        out.insert("$defs".to_owned(), Value::Object(new_defs));
+    }
+
+    match out.get("items").cloned() {
+        Some(Value::Array(arr)) => {
+            let mut new_items = Vec::with_capacity(arr.len());
+            for v in &arr {
+                new_items.push(deref_walk(v, resolver, active, depth + 2)?);
+            }
+            out.insert("items".to_owned(), Value::Array(new_items));
+        }
+        Some(v) => {
+            out.insert(
+                "items".to_owned(),
+                deref_walk(&v, resolver, active, depth + 1)?,
+            );
+        }
+        None => {}
+    }
+
+    if let Some(Value::Array(arr)) = out.get("prefixItems").cloned() {
+        let mut new_arr = Vec::with_capacity(arr.len());
+        for v in &arr {
+            new_arr.push(deref_walk(v, resolver, active, depth + 2)?);
+        }
+        out.insert("prefixItems".to_owned(), Value::Array(new_arr));
+    }
+
+    if let Some(Value::Object(ap)) = out.get("additionalProperties").cloned() {
+        out.insert(
+            "additionalProperties".to_owned(),
+            deref_walk(&Value::Object(ap), resolver, active, depth + 1)?,
+        );
+    }
+
+    for key in &["anyOf", "oneOf", "allOf"] {
+        if let Some(Value::Array(arr)) = out.get(*key).cloned() {
+            let mut new_arr = Vec::with_capacity(arr.len());
+            for v in &arr {
+                new_arr.push(deref_walk(v, resolver, active, depth + 2)?);
+            }
+            out.insert(key.to_string(), Value::Array(new_arr));
+        }
+    }
+
+    Ok(Value::Object(out))
 }
 
 // Local refs and `$defs` in resolved content are relative to the external
@@ -481,8 +585,24 @@ pub fn apply_type_transforms(
     Ok(current)
 }
 
+/// Bound a transformed document this function now owns. An over-bound value is
+/// disposed iteratively rather than dropped, since its own drop would recurse
+/// once per nesting level.
+fn guard_owned_document(value: &mut Value) -> Result<(), ZerxError> {
+    if json_depth_exceeds(value, MAX_IMPORT_DOCUMENT_DEPTH) {
+        dispose_json_value(std::mem::replace(value, Value::Null));
+        return Err(import_document_depth_error());
+    }
+    Ok(())
+}
+
 /// Import a JSON Schema with policy and transform options.
 pub fn from_json_schema_with(value: &Value, opts: &ImportOptions) -> Result<Schema, ZerxError> {
+    // Bound the caller's document before the first clone, and every transform
+    // output before it is handed on: no raw `Value` on this path may be cloned,
+    // compared or walked beyond the import document bound.
+    check_import_document_depth(value)?;
+
     // Step 1: Resolve named policy.
     let policy = if let Some(name) = &opts.policy {
         lookup_policy(name).ok_or_else(|| {
@@ -499,12 +619,15 @@ pub fn from_json_schema_with(value: &Value, opts: &ImportOptions) -> Result<Sche
     let mut effective = value.clone();
     if let Some(resolver) = opts.deref.clone() {
         effective = make_deref_transform(resolver)(&effective)?;
+        guard_owned_document(&mut effective)?;
     }
     for t in &policy.schema_transforms {
         effective = t(&effective)?;
+        guard_owned_document(&mut effective)?;
     }
     for t in &opts.schema_transforms {
         effective = t(&effective)?;
+        guard_owned_document(&mut effective)?;
     }
 
     // Step 3: J2 core import.
@@ -1408,5 +1531,222 @@ mod tests {
         }
         // Without numeric assertions the documented rewrite still applies.
         assert!(import_sql(json!({"type": "number", "format": "int64"})).is_ok());
+    }
+
+    // ------------------------------------------------------------------
+    // Import document depth bound
+    // ------------------------------------------------------------------
+
+    fn on_2mb_thread<F: FnOnce() + Send + 'static>(f: F) {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(f)
+            .expect("spawn deep-test thread")
+            .join()
+            .expect("deep-test thread panicked");
+    }
+
+    fn deep_json_arrays(depth: usize) -> Value {
+        let mut v = json!(0);
+        for _ in 0..depth {
+            v = Value::Array(vec![v]);
+        }
+        v
+    }
+
+    fn deep_schema_chain(kind: &str, levels: usize) -> Value {
+        let mut v = Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("type".to_string(), Value::String("string".to_string()));
+            m
+        });
+        for _ in 0..levels {
+            let mut node = serde_json::Map::new();
+            match kind {
+                "items" => {
+                    node.insert("type".to_string(), Value::String("array".to_string()));
+                    node.insert("items".to_string(), v);
+                }
+                "properties" => {
+                    node.insert("type".to_string(), Value::String("object".to_string()));
+                    let mut props = serde_json::Map::new();
+                    props.insert("a".to_string(), v);
+                    node.insert("properties".to_string(), Value::Object(props));
+                    node.insert(
+                        "required".to_string(),
+                        Value::Array(vec![Value::String("a".to_string())]),
+                    );
+                }
+                _ => unreachable!("unsupported chain kind: {kind}"),
+            }
+            v = Value::Object(node);
+        }
+        v
+    }
+
+    fn unused_defs_document(member: Value) -> Value {
+        let mut entry = serde_json::Map::new();
+        entry.insert("const".to_string(), member);
+        let mut defs = serde_json::Map::new();
+        defs.insert("X".to_string(), Value::Object(entry));
+        let mut root = serde_json::Map::new();
+        root.insert("$defs".to_string(), Value::Object(defs));
+        Value::Object(root)
+    }
+
+    fn assert_document_depth_refused(doc: &Value, opts: &ImportOptions) {
+        let err = from_json_schema_with(doc, opts).unwrap_err();
+        assert_eq!(err.code, ErrorCode::IMPORT_UNSUPPORTED);
+        assert!(
+            err.message.contains("document depth limit"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_all_entries_refuse_over_deep_documents() {
+        on_2mb_thread(|| {
+            let defs_doc = unused_defs_document(deep_json_arrays(10_000));
+            let items_doc = deep_schema_chain("items", 100_000);
+            let properties_doc = deep_schema_chain("properties", 100_000);
+
+            let default_opts = ImportOptions::default();
+            let sql_opts = ImportOptions {
+                policy: Some("sql".into()),
+                ..Default::default()
+            };
+            let resolver: RefResolver = Arc::new(|_r: &str| Ok(json!({"type": "string"})));
+            let deref_opts = ImportOptions {
+                deref: Some(resolver),
+                ..Default::default()
+            };
+
+            for doc in [&defs_doc, &items_doc, &properties_doc] {
+                for opts in [&default_opts, &sql_opts, &deref_opts] {
+                    assert_document_depth_refused(doc, opts);
+                }
+            }
+
+            std::mem::forget(defs_doc);
+            std::mem::forget(items_doc);
+            std::mem::forget(properties_doc);
+        });
+    }
+
+    #[test]
+    fn test_over_deep_schema_transform_output_refused() {
+        on_2mb_thread(|| {
+            let transform: SchemaTransform =
+                Arc::new(|_v: &Value| Ok(unused_defs_document(deep_json_arrays(10_000))));
+            let err = from_json_schema_with(
+                &json!({"type": "string"}),
+                &ImportOptions {
+                    schema_transforms: vec![transform],
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            assert_eq!(err.code, ErrorCode::IMPORT_UNSUPPORTED);
+            assert!(
+                err.message.contains("document depth limit"),
+                "{}",
+                err.message
+            );
+        });
+    }
+
+    #[test]
+    fn test_over_deep_deref_resolver_result_refused() {
+        on_2mb_thread(|| {
+            let resolver: RefResolver = Arc::new(|_r: &str| {
+                let mut v = json!({"type": "string"});
+                for _ in 0..10_000 {
+                    let mut m = serde_json::Map::new();
+                    m.insert("const".to_string(), v);
+                    v = Value::Object(m);
+                }
+                Ok(v)
+            });
+            let err = from_json_schema_with(
+                &json!({"$ref": "deep.json"}),
+                &ImportOptions {
+                    deref: Some(resolver),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            assert_eq!(err.code, ErrorCode::IMPORT_UNSUPPORTED);
+            assert!(
+                err.message.contains("document depth limit"),
+                "{}",
+                err.message
+            );
+        });
+    }
+
+    #[test]
+    fn test_deref_combined_inline_depth_refused() {
+        on_2mb_thread(|| {
+            // Every resolved document adds six JSON levels around the next ref,
+            // so the inlined result outgrows the bound while each single
+            // resolution stays shallow. The ref-chain cut (100) must not be
+            // what stops it.
+            let resolver: RefResolver = Arc::new(|r: &str| {
+                let n: u32 = r.trim_start_matches('r').parse().unwrap();
+                if n == 0 {
+                    return Ok(json!({"type": "string"}));
+                }
+                let mut node = json!({"$ref": format!("r{}", n - 1)});
+                for _ in 0..3 {
+                    node = json!({
+                        "type": "object",
+                        "properties": {"a": node},
+                        "required": ["a"]
+                    });
+                }
+                Ok(node)
+            });
+            let err = from_json_schema_with(
+                &json!({"$ref": "r80"}),
+                &ImportOptions {
+                    deref: Some(resolver),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            assert_eq!(err.code, ErrorCode::IMPORT_UNSUPPORTED);
+            assert!(
+                err.message.contains("document depth limit"),
+                "{}",
+                err.message
+            );
+        });
+    }
+
+    #[test]
+    fn test_properties_chain_under_bound_reaches_import_walk() {
+        on_2mb_thread(|| {
+            // 199 nested object levels sit near 400 JSON levels: under the
+            // document bound, so the import walk's own nesting guard reports it
+            // after deref and the `sql` policy have run on the 2 MB thread.
+            let doc = deep_schema_chain("properties", 199);
+            let resolver: RefResolver = Arc::new(|_r: &str| Ok(json!({"type": "string"})));
+            let err = from_json_schema_with(
+                &doc,
+                &ImportOptions {
+                    policy: Some("sql".into()),
+                    deref: Some(resolver),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            assert_eq!(err.code, ErrorCode::IMPORT_UNSUPPORTED);
+            assert!(
+                err.message.contains("import depth limit of 100"),
+                "{}",
+                err.message
+            );
+        });
     }
 }

@@ -154,6 +154,7 @@
 - Rule change: the 2^53 refusal is limited to `type: number` nodes, where a `minimum`/`maximum` of magnitude 2^53 or more MUST raise `IMPORT_UNSUPPORTED` (`D-import-fail-closed`).
 - Import nesting, `$ref` resolution included, MUST be bounded by the parse-depth limit; a deeper document MUST raise `IMPORT_UNSUPPORTED`. A flat `$defs` chain nests once per link although the document stays shallow, so the JSON parser's own nesting limit does not bound it.
 - The bound MUST take effect before the import exhausts a 2 MB thread stack, in debug as well as release builds.
+- Every import entry MUST refuse a raw document nested deeper than four times `MAX_PARSE_DEPTH` JSON levels with `IMPORT_UNSUPPORTED` before cloning, comparing or walking it, because a programmatically built `serde_json::Value` is not bounded by the JSON parser; the bound lies above the depth of every document the walk and the value bound admit.
 
 ### Import keyword→modifier mapping (inverse of export)
 

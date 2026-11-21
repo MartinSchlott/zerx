@@ -645,6 +645,91 @@ impl ErrorCode {
 }
 
 // ---------------------------------------------------------------------------
+// Import document depth bound
+// ---------------------------------------------------------------------------
+
+/// Hard bound on the JSON nesting of any raw document an import entry accepts,
+/// measured before it is cloned, compared or walked.
+///
+/// `serde_json`'s text parser stops at 128 levels, but a programmatically built
+/// `serde_json::Value` is unbounded, and the import path clones and walks the
+/// caller's document long before the import walk's own `MAX_PARSE_DEPTH` guard
+/// runs. Four times the walk limit leaves every used part of a valid document
+/// under the bound: a schema position spends at most two JSON levels per walk
+/// level (`properties`/`$defs`/`anyOf`/`prefixItems` → container → schema), and
+/// a `const`/`default`/`enum`/annotation member is capped at `MAX_PARSE_DEPTH`
+/// containers by the value bound. Only an *unused* deep part of a document 3.2.1
+/// could import can therefore cross it.
+pub(crate) const MAX_IMPORT_DOCUMENT_DEPTH: usize = 4 * MAX_PARSE_DEPTH;
+
+/// Whether any container in `value` sits deeper than `limit` JSON levels
+/// (arrays and objects count one level, scalars none). Iterative, so the guard
+/// is never the recursion that exhausts the stack, and it returns as soon as
+/// the limit is crossed instead of walking a whole huge document.
+pub(crate) fn json_depth_exceeds(value: &serde_json::Value, limit: usize) -> bool {
+    let mut stack: Vec<(&serde_json::Value, usize)> = vec![(value, 0)];
+    while let Some((node, depth)) = stack.pop() {
+        match node {
+            serde_json::Value::Array(items) => {
+                let child = depth + 1;
+                if child > limit {
+                    return true;
+                }
+                for item in items {
+                    stack.push((item, child));
+                }
+            }
+            serde_json::Value::Object(map) => {
+                let child = depth + 1;
+                if child > limit {
+                    return true;
+                }
+                for entry in map.values() {
+                    stack.push((entry, child));
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Refuse a raw document that exceeds [`MAX_IMPORT_DOCUMENT_DEPTH`].
+pub(crate) fn check_import_document_depth(value: &serde_json::Value) -> Result<(), ZerxError> {
+    if json_depth_exceeds(value, MAX_IMPORT_DOCUMENT_DEPTH) {
+        return Err(import_document_depth_error());
+    }
+    Ok(())
+}
+
+/// Tear an owned `serde_json::Value` down without recursing per nesting level.
+/// A value that failed the document bound can be deeper than `Value`'s own drop
+/// recursion can take on a 2 MB thread, so every owned over-bound value is
+/// disposed this way instead of dropped.
+pub(crate) fn dispose_json_value(value: serde_json::Value) {
+    let mut stack = vec![value];
+    while let Some(node) = stack.pop() {
+        match node {
+            serde_json::Value::Array(items) => stack.extend(items),
+            serde_json::Value::Object(map) => {
+                stack.extend(map.into_iter().map(|(_, v)| v));
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cold]
+pub(crate) fn import_document_depth_error() -> ZerxError {
+    ZerxError::new(
+        ErrorCode::IMPORT_UNSUPPORTED,
+        format!(
+            "schema document nesting exceeds the import document depth limit of {MAX_IMPORT_DOCUMENT_DEPTH}"
+        ),
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Public import surface
 // ---------------------------------------------------------------------------
 
@@ -658,6 +743,9 @@ pub(crate) fn from_json_schema_inner(
     value: &serde_json::Value,
     strip_unknown: bool,
 ) -> Result<Schema, ZerxError> {
+    // Bound the caller's document before `ImportContext::new` clones `$defs`
+    // and the walk recurses: neither may run on an unbounded raw `Value`.
+    check_import_document_depth(value)?;
     let ctx = ImportContext::new(value, strip_unknown);
     import_value(value, &ctx, &[])
 }
@@ -5816,7 +5904,7 @@ mod tests {
             const_obj.insert("const".to_string(), deep_json_arrays(100_000));
             let const_doc = serde_json::Value::Object(const_obj);
             let err = crate::from_json_schema(&const_doc).unwrap_err();
-            assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+            assert_eq!(err.code, ErrorCode::IMPORT_UNSUPPORTED);
             std::mem::forget(const_doc);
 
             let mut property = serde_json::Map::new();
@@ -5843,6 +5931,166 @@ mod tests {
                     || err.code == ErrorCode::IMPORT_UNSUPPORTED
             );
             std::mem::forget(default_doc);
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Import document depth bound
+    // ------------------------------------------------------------------
+
+    // Iteratively wraps a leaf schema `levels` times, so a deep fixture is
+    // built from Maps without `json!` recursing through serde_json per level.
+    fn deep_schema_chain(kind: &str, levels: usize) -> serde_json::Value {
+        let mut v = serde_json::Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert(
+                "type".to_string(),
+                serde_json::Value::String("string".to_string()),
+            );
+            m
+        });
+        for _ in 0..levels {
+            let mut node = serde_json::Map::new();
+            match kind {
+                "items" => {
+                    node.insert(
+                        "type".to_string(),
+                        serde_json::Value::String("array".to_string()),
+                    );
+                    node.insert("items".to_string(), v);
+                }
+                "properties" => {
+                    node.insert(
+                        "type".to_string(),
+                        serde_json::Value::String("object".to_string()),
+                    );
+                    let mut props = serde_json::Map::new();
+                    props.insert("a".to_string(), v);
+                    node.insert("properties".to_string(), serde_json::Value::Object(props));
+                    node.insert(
+                        "required".to_string(),
+                        serde_json::Value::Array(vec![serde_json::Value::String("a".to_string())]),
+                    );
+                }
+                _ => unreachable!("unsupported chain kind: {kind}"),
+            }
+            v = serde_json::Value::Object(node);
+        }
+        v
+    }
+
+    fn unused_defs_document(member: serde_json::Value) -> serde_json::Value {
+        let mut entry = serde_json::Map::new();
+        entry.insert("const".to_string(), member);
+        let mut defs = serde_json::Map::new();
+        defs.insert("X".to_string(), serde_json::Value::Object(entry));
+        let mut root = serde_json::Map::new();
+        root.insert("$defs".to_string(), serde_json::Value::Object(defs));
+        serde_json::Value::Object(root)
+    }
+
+    #[test]
+    fn import_unused_defs_deep_document_refused() {
+        on_2mb_thread(|| {
+            // `ImportContext::new` clones the whole `$defs` map before any
+            // depth guard; an unused deep entry must not reach that clone.
+            let doc = unused_defs_document(deep_json_arrays(10_000));
+            let err = crate::from_json_schema(&doc).unwrap_err();
+            assert_eq!(err.code, ErrorCode::IMPORT_UNSUPPORTED);
+            std::mem::forget(doc);
+        });
+    }
+
+    #[test]
+    fn import_ref_to_deep_defs_and_deep_enum_refused() {
+        on_2mb_thread(|| {
+            // A `$ref` forces the deep definition through the import walk.
+            let mut ref_doc = unused_defs_document(deep_json_arrays(10_000));
+            ref_doc.as_object_mut().unwrap().insert(
+                "$ref".to_string(),
+                serde_json::Value::String("#/$defs/X".to_string()),
+            );
+            let err = crate::from_json_schema(&ref_doc).unwrap_err();
+            assert_eq!(err.code, ErrorCode::IMPORT_UNSUPPORTED);
+            std::mem::forget(ref_doc);
+
+            // `enum` clones its raw members before conversion.
+            let mut root = serde_json::Map::new();
+            root.insert(
+                "enum".to_string(),
+                serde_json::Value::Array(vec![deep_json_arrays(10_000)]),
+            );
+            let enum_doc = serde_json::Value::Object(root);
+            let err = crate::from_json_schema(&enum_doc).unwrap_err();
+            assert_eq!(err.code, ErrorCode::IMPORT_UNSUPPORTED);
+            std::mem::forget(enum_doc);
+        });
+    }
+
+    #[test]
+    fn import_deep_items_and_properties_chains_refused() {
+        on_2mb_thread(|| {
+            for kind in ["items", "properties"] {
+                let doc = deep_schema_chain(kind, 100_000);
+                let err = crate::from_json_schema(&doc).unwrap_err();
+                assert_eq!(err.code, ErrorCode::IMPORT_UNSUPPORTED, "{kind}");
+                assert!(
+                    err.message.contains("document depth limit"),
+                    "{kind}: {}",
+                    err.message
+                );
+                std::mem::forget(doc);
+            }
+        });
+    }
+
+    #[test]
+    fn import_document_depth_boundary() {
+        on_2mb_thread(|| {
+            // root 1 + `$defs` 2 + entry 3 + array levels 4..(3 + array_depth).
+            fn boundary_doc(array_depth: usize) -> serde_json::Value {
+                let mut entry = serde_json::Map::new();
+                entry.insert("x-unknown".to_string(), deep_json_arrays(array_depth));
+                let mut defs = serde_json::Map::new();
+                defs.insert("X".to_string(), serde_json::Value::Object(entry));
+                let mut root = serde_json::Map::new();
+                root.insert("$defs".to_string(), serde_json::Value::Object(defs));
+                serde_json::Value::Object(root)
+            }
+
+            // Exactly 400 JSON levels: the unused entry is never walked, so the
+            // document still imports.
+            let at_bound = boundary_doc(397);
+            assert!(crate::from_json_schema(&at_bound).is_ok());
+            std::mem::forget(at_bound);
+
+            // One level more is refused before the import walk.
+            let over = boundary_doc(398);
+            let err = crate::from_json_schema(&over).unwrap_err();
+            assert_eq!(err.code, ErrorCode::IMPORT_UNSUPPORTED);
+            assert!(
+                err.message.contains("document depth limit"),
+                "{}",
+                err.message
+            );
+            std::mem::forget(over);
+        });
+    }
+
+    #[test]
+    fn import_shallow_document_still_hits_walk_nesting_guard() {
+        on_2mb_thread(|| {
+            // A 100-level `properties` chain sits near 200 JSON levels, well
+            // under the document bound, so the import walk's own nesting guard
+            // must still be the one that refuses it.
+            let doc = deep_schema_chain("properties", 100);
+            let err = crate::from_json_schema(&doc).unwrap_err();
+            assert_eq!(err.code, ErrorCode::IMPORT_UNSUPPORTED);
+            assert!(
+                err.message.contains("import depth limit of 100"),
+                "{}",
+                err.message
+            );
         });
     }
 }
