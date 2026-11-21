@@ -32,9 +32,9 @@ The pattern translator accepts only ASCII group names (`[A-Za-z_$][A-Za-z0-9_$]*
 ### Caller-held deep `ZerxValue`/`LuaValue` clone and drop recurse per nesting level
 
 id: {new}
-severity: minor
+severity: accepted
 
-`ZerxValue`'s and `LuaValue`'s derived `Clone`, `Drop`, `PartialEq`, `Debug` and `Serialize` recurse once per nesting level; a value a few thousand levels deep overflows a 2 MB debug stack (clone/eq/Debug ~5 000, drop ~20 000, as `serde_json::Value`). Since 3.2.1 zerx never builds or keeps such a value: serde input, Lua input, `replace` results and builder values (`default`/`meta`/`example`/`literal`) are bounded at `MAX_PARSE_DEPTH` (PLAN_VM1_value_depth_bound). Still outside that guarantee: a caller's own clone/drop/`==`/`Debug`/`Serialize` of a deep value it built itself, and deep values captured in the caller's `refine` closures or custom `Validator`s. An iterative `impl Drop` on the public enum would break by-value variant destructuring (E0509) and needs a major version; open decision for the supervisor.
+`ZerxValue`'s and `LuaValue`'s derived `Clone`, `Drop`, `PartialEq`, `Debug` and `Serialize` recurse once per nesting level; a value a few thousand levels deep overflows a 2 MB debug stack (clone/eq/Debug ~5 000, drop ~20 000, as `serde_json::Value`). Since 3.2.1 zerx never builds or keeps such a value: serde input, Lua input, `replace` results and builder values (`default`/`meta`/`example`/`literal`) are bounded at `MAX_PARSE_DEPTH` (PLAN_VM1_value_depth_bound). Still outside that guarantee: a caller's own clone/drop/`==`/`Debug`/`Serialize` of a deep value it built itself, and deep values captured in the caller's `refine` closures or custom `Validator`s. An iterative `impl Drop` on the public enum would break by-value variant destructuring (E0509) and needs a major version. Decided by the supervisor (DevLead, 2026-11-21): no `impl Drop` and no major version for this; revisit only if a consumer needs it.
 
 ### Lua depth boundary is one level stricter than the serde boundary
 
