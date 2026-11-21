@@ -29,12 +29,19 @@ severity: accepted
 
 The pattern translator accepts only ASCII group names (`[A-Za-z_$][A-Za-z0-9_$]*`). ECMA's GroupName grammar uses Unicode ID_Start / ID_Continue, which std does not expose, and `char::is_alphabetic()` / `is_alphanumeric()` are no safe stand-in: in 3.0.0 they let through names ECMA rejects, such as U+0345 (Other_Alphabetic, not ID_Start) and '²' (No, not ID_Continue). Since 3.0.1, any non-ASCII group name is `Unsupported`: `IMPORT_UNSUPPORTED` on import, `PATTERN_INVALID` on a builder pattern. ECMA-valid non-ASCII names such as `ünï` or `Ⅻ` are therefore refused as well. Exact handling would need Unicode ID tables or a dependency.
 
-### Deep `ZerxValue` clone and drop recurse per nesting level
+### Caller-held deep `ZerxValue`/`LuaValue` clone and drop recurse per nesting level
 
 id: {new}
 severity: minor
 
-`ZerxValue`'s derived `Clone` and `Drop` recurse once per nesting level. The identity parse of `any()`, `json()` and `literal` returns `value.clone()`, so validating an accepted value a few thousand levels deep overflows a 2 MB debug stack and aborts the process (measured during PLAN_T7_unique_items plan review: ~2 000 survives, 5 000 aborts; 50 000 aborts on 8 MB). `MAX_PARSE_DEPTH` bounds schema recursion, not value depth below a leaf kind. `literal_eq` and the `uniqueItems` check are iterative since PLAN_T7.
+`ZerxValue`'s and `LuaValue`'s derived `Clone`, `Drop`, `PartialEq`, `Debug` and `Serialize` recurse once per nesting level; a value a few thousand levels deep overflows a 2 MB debug stack (clone/eq/Debug ~5 000, drop ~20 000, as `serde_json::Value`). Since 3.2.1 zerx never builds or keeps such a value: serde input, Lua input, `replace` results and builder values (`default`/`meta`/`example`/`literal`) are bounded at `MAX_PARSE_DEPTH` (PLAN_VM1_value_depth_bound). Still outside that guarantee: a caller's own clone/drop/`==`/`Debug`/`Serialize` of a deep value it built itself, and deep values captured in the caller's `refine` closures or custom `Validator`s. An iterative `impl Drop` on the public enum would break by-value variant destructuring (E0509) and needs a major version; open decision for the supervisor.
+
+### Lua depth boundary is one level stricter than the serde boundary
+
+id: {new}
+severity: minor
+
+`any().validate(..)` accepts serde input with exactly `MAX_PARSE_DEPTH` (100) nested containers, while `any().validate_lua(..)` refuses 100 nested tables: the root `lua_transform` frame counts one level on top of the per-table count in `free_convert`. Both refuse with `PARSE_DEPTH_EXCEEDED`; only the boundary differs by one. Found while re-probing PLAN_VM1_value_depth_bound.
 
 ## In Progress
 id: zrx9bug0col0inprogress01

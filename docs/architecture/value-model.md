@@ -39,6 +39,8 @@ None.
 - zerx MUST NOT depend on `serde_bytes`; bytes fidelity via `serialize_bytes` is a documented caller-side contract.
 - Signed integers `i8..i64` MUST map to `I64`; `i128` MUST map to `I128`; unsigned `u8..u64` MUST map to `U64`; `u128` MUST map to `U128`; floats MUST map to `F64`; `char` MUST map to a one-character `String`.
 - `ZerxValue::from_serialize` MUST accept any `T: Serialize + ?Sized` and return `Result<ZerxValue, ZerxError>`; the `Bytes` variant MUST be produced when the source calls `serialize_bytes`.
+- `ZerxValue::from_serialize` MUST refuse input nested more than `MAX_PARSE_DEPTH` containers deep with `PARSE_DEPTH_EXCEEDED` before recursing further, counting each container; an enum variant's two output containers count as one level.
+- `ZerxValue::from_serialize` MUST bound the total of nested serializer calls, transparent wrappers (`Option`, newtype structs, newtype map keys) included, at three times `MAX_PARSE_DEPTH`, refusing beyond it with `PARSE_DEPTH_EXCEEDED`, because wrappers recurse without adding a value level.
 - `ZerxValue` MUST implement `Serialize`; the `Bytes` variant MUST serialise via `serialize_bytes` to preserve byte fidelity on byte-aware formats and MUST degrade to a number array on JSON.
 - Object entries MUST be stored and serialised in insertion order; the position of the first occurrence of a key MUST be preserved when the key is overwritten.
 - `Map::insert` MUST overwrite the existing value in place for a duplicate key and MUST preserve the insertion position of the first occurrence.

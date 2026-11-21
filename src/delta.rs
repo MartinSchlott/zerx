@@ -3,6 +3,7 @@
 #![allow(clippy::result_large_err)]
 
 use crate::schema::{ParseContext, SchemaKind, MAX_PARSE_DEPTH};
+use crate::value::value_depth;
 use crate::{ErrorCode, Schema, ZerxError, ZerxValue};
 
 // ---------------------------------------------------------------------------
@@ -318,6 +319,14 @@ impl Schema {
 
         let current = ZerxValue::from_serialize(instance)?;
         let rebuilt = set_at(&current, &segments, &new_value, &[])?;
+        // Instance and replacement are each within the bound, but their
+        // combination can nest deeper than either.
+        if value_depth(&rebuilt) > MAX_PARSE_DEPTH {
+            return Err(ZerxError::new(
+                ErrorCode::PARSE_DEPTH_EXCEEDED,
+                format!("result value nesting exceeds maximum depth of {MAX_PARSE_DEPTH}"),
+            ));
+        }
         self.parse_present(&rebuilt, &mut ParseContext::new())
     }
 }
@@ -907,5 +916,61 @@ mod tests {
             .unwrap_err();
         assert_eq!(err2.code, ErrorCode::TYPE_MISMATCH);
         assert_eq!(err2.path, vec!["profile", "city"]);
+    }
+
+    // ------------------------------------------------------------------
+    // Result nesting bound
+    // ------------------------------------------------------------------
+
+    fn on_2mb_thread<F: FnOnce() + Send + 'static>(f: F) {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(f)
+            .expect("spawn deep-test thread")
+            .join()
+            .expect("deep-test thread panicked");
+    }
+
+    fn deep_json_arrays(depth: usize) -> serde_json::Value {
+        let mut v = serde_json::json!(0);
+        for _ in 0..depth {
+            v = serde_json::Value::Array(vec![v]);
+        }
+        v
+    }
+
+    #[test]
+    fn delta_deep_inputs_refused() {
+        on_2mb_thread(|| {
+            let schema: Schema = any_schema().into();
+            let deep = deep_json_arrays(100_000);
+            assert_eq!(
+                schema.parse_delta("", &deep).unwrap_err().code,
+                ErrorCode::PARSE_DEPTH_EXCEEDED
+            );
+            assert_eq!(
+                schema.replace(&deep, "/0", &1i64).unwrap_err().code,
+                ErrorCode::PARSE_DEPTH_EXCEEDED
+            );
+            std::mem::forget(deep);
+        });
+    }
+
+    #[test]
+    fn replace_combined_result_bound() {
+        let schema: Schema = any_schema().into();
+
+        let instance = deep_json_arrays(80);
+        let pointer = "/0".repeat(80);
+        let value = deep_json_arrays(40);
+        let err = schema.replace(&instance, &pointer, &value).unwrap_err();
+        assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+
+        // 40 + 40 containers stays within the limit.
+        let instance = deep_json_arrays(40);
+        let pointer = "/0".repeat(40);
+        let value = deep_json_arrays(40);
+        let out = schema.replace(&instance, &pointer, &value).unwrap();
+        assert!(out.as_array().is_some());
     }
 }

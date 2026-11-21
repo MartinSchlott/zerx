@@ -1416,4 +1416,23 @@ mod tests {
             .expect("validate_lua did not return");
         assert_eq!(result.unwrap_err(), ErrorCode::PARSE_DEPTH_EXCEEDED);
     }
+
+    #[test]
+    fn free_convert_extreme_table_is_depth_guarded() {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                let mut v = LuaValue::Integer(1);
+                for _ in 0..100_000 {
+                    v = table(vec![v], vec![]);
+                }
+                let schema: Schema = any().into();
+                let err = schema.validate_lua(&v).unwrap_err();
+                assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+                std::mem::forget(v);
+            })
+            .expect("spawn deep-test thread")
+            .join()
+            .expect("deep-test thread panicked");
+    }
 }

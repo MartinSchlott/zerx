@@ -239,7 +239,7 @@ Strict is the default. The first unknown key errors `unknown_property` and field
 
 `discriminated_union` construction is infallible; a structural defect (e.g. a variant whose discriminator is not a required literal) surfaces as `invalid_discriminated_union` at validate time and wins over `type_mismatch` for any input.
 
-Deep or cyclic serde input errors `parse_depth_exceeded` at depth 100 rather than overflowing the stack; `lazy` schemas carry a reentrance guard (`lazy_reentrance`) that must not be bypassed.
+Deep or cyclic serde input errors `parse_depth_exceeded` rather than overflowing the stack: input nested more than 100 containers deep, or needing more than 300 nested serializer calls (`Option`/newtype wrappers included), is refused; a value deeper than 100 levels passed to `default`/`meta`/`example`/`literal` is not kept, and that schema node rejects every non-null value with `parse_depth_exceeded` and exports as `false`. Values you build and clone or drop yourself are outside this guard; `lazy` schemas carry a reentrance guard (`lazy_reentrance`) that must not be bypassed.
 
 ## Verification
 

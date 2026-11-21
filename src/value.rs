@@ -8,7 +8,21 @@ use serde::ser::{
 };
 use serde::{Serialize, Serializer};
 
+use crate::schema::MAX_PARSE_DEPTH;
 use crate::{ErrorCode, ZerxError};
+
+// Transparent wrappers (`Option`, newtype structs) add no value level, only a
+// serializer stack frame. `3 * MAX_PARSE_DEPTH` lets ordinary data of the full
+// depth carry two nested `Option`s per level (exactly 300 calls) while a chain
+// made only of wrappers is still bounded.
+const MAX_SERIALIZER_FRAMES: usize = 3 * MAX_PARSE_DEPTH;
+
+fn input_depth_error() -> ZerxError {
+    ZerxError::new(
+        ErrorCode::PARSE_DEPTH_EXCEEDED,
+        format!("input value nesting exceeds maximum depth of {MAX_PARSE_DEPTH}"),
+    )
+}
 
 // ---------------------------------------------------------------------------
 // Open error-code catalogue entry for this module (no edit to error.rs)
@@ -66,6 +80,11 @@ impl Map {
 
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// Owned entries, for callers that must tear a value down iteratively.
+    pub(crate) fn into_entries(self) -> Vec<(std::string::String, ZerxValue)> {
+        self.0
     }
 }
 
@@ -235,6 +254,55 @@ impl From<&str> for ZerxValue {
 }
 
 // ---------------------------------------------------------------------------
+// Iterative depth measurement and disposal
+// ---------------------------------------------------------------------------
+
+/// Number of nested containers in `value`; scalars add no level. Iterative so
+/// it stays safe on values deeper than the stack could recurse.
+pub(crate) fn value_depth(value: &ZerxValue) -> usize {
+    let mut max = 0;
+    let mut stack: Vec<(&ZerxValue, usize)> = vec![(value, 0)];
+    while let Some((v, depth)) = stack.pop() {
+        match v {
+            ZerxValue::Array(items) => {
+                let child = depth + 1;
+                max = max.max(child);
+                for item in items {
+                    stack.push((item, child));
+                }
+            }
+            ZerxValue::Object(map) => {
+                let child = depth + 1;
+                max = max.max(child);
+                for (_, entry) in map.iter() {
+                    stack.push((entry, child));
+                }
+            }
+            _ => {}
+        }
+    }
+    max
+}
+
+/// Tear a value down without recursing per nesting level. Each popped node is
+/// shallow once its children are moved onto the stack; `ZerxValue` has no
+/// `Drop`, so that move is a plain field move.
+pub(crate) fn dispose(value: ZerxValue) {
+    let mut stack = vec![value];
+    while let Some(v) = stack.pop() {
+        match v {
+            ZerxValue::Array(items) => stack.extend(items),
+            ZerxValue::Object(map) => {
+                for (_, entry) in map.into_entries() {
+                    stack.push(entry);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Serialize for ZerxValue (serde out)
 // ---------------------------------------------------------------------------
 
@@ -275,13 +343,27 @@ impl Serialize for ZerxValue {
 
 impl ZerxValue {
     pub fn from_serialize<T: serde::Serialize + ?Sized>(value: &T) -> Result<ZerxValue, ZerxError> {
-        value.serialize(ValueSerializer)
+        value.serialize(ValueSerializer::root())
     }
 }
 
 // --- map key serializer (mirrors serde_json MapKeySerializer) ---
 
-struct MapKeySerializer;
+#[derive(Clone, Copy)]
+struct MapKeySerializer {
+    frame: usize,
+}
+
+impl MapKeySerializer {
+    /// Re-enter for a nested (newtype) key, charging one serializer frame.
+    fn nested(self) -> Result<Self, ZerxError> {
+        let frame = self.frame + 1;
+        if frame > MAX_SERIALIZER_FRAMES {
+            return Err(input_depth_error());
+        }
+        Ok(MapKeySerializer { frame })
+    }
+}
 
 impl Serializer for MapKeySerializer {
     type Ok = std::string::String;
@@ -359,7 +441,7 @@ impl Serializer for MapKeySerializer {
         _name: &'static str,
         value: &T,
     ) -> Result<std::string::String, ZerxError> {
-        value.serialize(self)
+        value.serialize(self.nested()?)
     }
     fn serialize_newtype_variant<T: Serialize + ?Sized>(
         self,
@@ -435,7 +517,46 @@ impl Serializer for MapKeySerializer {
 
 // --- main Serializer ---
 
-struct ValueSerializer;
+#[derive(Clone, Copy)]
+struct ValueSerializer {
+    /// Container levels already open on the path to this value.
+    depth: usize,
+    /// Nested serializer calls of any kind on this path, including wrappers.
+    frame: usize,
+}
+
+impl ValueSerializer {
+    fn root() -> Self {
+        ValueSerializer { depth: 0, frame: 0 }
+    }
+
+    /// Open one container level and produce the template serializer for its
+    /// children. Struct and tuple variants count as one level even though they
+    /// emit two containers, so their inner children keep this depth.
+    fn open_container(self) -> Result<Self, ZerxError> {
+        let depth = self.depth + 1;
+        if depth > MAX_PARSE_DEPTH {
+            return Err(input_depth_error());
+        }
+        let frame = self.frame + 1;
+        if frame > MAX_SERIALIZER_FRAMES {
+            return Err(input_depth_error());
+        }
+        Ok(ValueSerializer { depth, frame })
+    }
+
+    /// Re-enter for a transparent wrapper: same value level, one more frame.
+    fn nested(self) -> Result<Self, ZerxError> {
+        let frame = self.frame + 1;
+        if frame > MAX_SERIALIZER_FRAMES {
+            return Err(input_depth_error());
+        }
+        Ok(ValueSerializer {
+            depth: self.depth,
+            frame,
+        })
+    }
+}
 
 impl Serializer for ValueSerializer {
     type Ok = ZerxValue;
@@ -516,14 +637,14 @@ impl Serializer for ValueSerializer {
         Ok(ZerxValue::Null)
     }
     fn serialize_some<T: Serialize + ?Sized>(self, value: &T) -> Result<ZerxValue, ZerxError> {
-        value.serialize(self)
+        value.serialize(self.nested()?)
     }
     fn serialize_newtype_struct<T: Serialize + ?Sized>(
         self,
         _name: &'static str,
         value: &T,
     ) -> Result<ZerxValue, ZerxError> {
-        value.serialize(self)
+        value.serialize(self.nested()?)
     }
     fn serialize_newtype_variant<T: Serialize + ?Sized>(
         self,
@@ -532,23 +653,32 @@ impl Serializer for ValueSerializer {
         variant: &'static str,
         value: &T,
     ) -> Result<ZerxValue, ZerxError> {
-        let inner = value.serialize(ValueSerializer)?;
+        let inner = value.serialize(self.open_container()?)?;
         let mut map = Map::new();
         map.insert(variant, inner);
         Ok(ZerxValue::Object(map))
     }
     fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq, ZerxError> {
-        Ok(SeqBuilder(Vec::new()))
+        Ok(SeqBuilder {
+            items: Vec::new(),
+            field: self.open_container()?,
+        })
     }
     fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, ZerxError> {
-        Ok(SeqBuilder(Vec::new()))
+        Ok(SeqBuilder {
+            items: Vec::new(),
+            field: self.open_container()?,
+        })
     }
     fn serialize_tuple_struct(
         self,
         _name: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleStruct, ZerxError> {
-        Ok(SeqBuilder(Vec::new()))
+        Ok(SeqBuilder {
+            items: Vec::new(),
+            field: self.open_container()?,
+        })
     }
     fn serialize_tuple_variant(
         self,
@@ -560,12 +690,14 @@ impl Serializer for ValueSerializer {
         Ok(TupleVariantBuilder {
             variant: variant.to_owned(),
             items: Vec::new(),
+            field: self.open_container()?,
         })
     }
     fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, ZerxError> {
         Ok(MapBuilder {
             map: Map::new(),
             next_key: None,
+            field: self.open_container()?,
         })
     }
     fn serialize_struct(
@@ -576,6 +708,7 @@ impl Serializer for ValueSerializer {
         Ok(MapBuilder {
             map: Map::new(),
             next_key: None,
+            field: self.open_container()?,
         })
     }
     fn serialize_struct_variant(
@@ -588,24 +721,28 @@ impl Serializer for ValueSerializer {
         Ok(StructVariantBuilder {
             variant: variant.to_owned(),
             map: Map::new(),
+            field: self.open_container()?,
         })
     }
 }
 
 // --- sequence helper ---
 
-struct SeqBuilder(Vec<ZerxValue>);
+struct SeqBuilder {
+    items: Vec<ZerxValue>,
+    field: ValueSerializer,
+}
 
 impl SerializeSeq for SeqBuilder {
     type Ok = ZerxValue;
     type Error = ZerxError;
 
     fn serialize_element<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), ZerxError> {
-        self.0.push(value.serialize(ValueSerializer)?);
+        self.items.push(value.serialize(self.field)?);
         Ok(())
     }
     fn end(self) -> Result<ZerxValue, ZerxError> {
-        Ok(ZerxValue::Array(self.0))
+        Ok(ZerxValue::Array(self.items))
     }
 }
 
@@ -614,11 +751,11 @@ impl SerializeTuple for SeqBuilder {
     type Error = ZerxError;
 
     fn serialize_element<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), ZerxError> {
-        self.0.push(value.serialize(ValueSerializer)?);
+        self.items.push(value.serialize(self.field)?);
         Ok(())
     }
     fn end(self) -> Result<ZerxValue, ZerxError> {
-        Ok(ZerxValue::Array(self.0))
+        Ok(ZerxValue::Array(self.items))
     }
 }
 
@@ -627,11 +764,11 @@ impl SerializeTupleStruct for SeqBuilder {
     type Error = ZerxError;
 
     fn serialize_field<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), ZerxError> {
-        self.0.push(value.serialize(ValueSerializer)?);
+        self.items.push(value.serialize(self.field)?);
         Ok(())
     }
     fn end(self) -> Result<ZerxValue, ZerxError> {
-        Ok(ZerxValue::Array(self.0))
+        Ok(ZerxValue::Array(self.items))
     }
 }
 
@@ -640,6 +777,7 @@ impl SerializeTupleStruct for SeqBuilder {
 struct TupleVariantBuilder {
     variant: std::string::String,
     items: Vec<ZerxValue>,
+    field: ValueSerializer,
 }
 
 impl SerializeTupleVariant for TupleVariantBuilder {
@@ -647,7 +785,7 @@ impl SerializeTupleVariant for TupleVariantBuilder {
     type Error = ZerxError;
 
     fn serialize_field<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), ZerxError> {
-        self.items.push(value.serialize(ValueSerializer)?);
+        self.items.push(value.serialize(self.field)?);
         Ok(())
     }
     fn end(self) -> Result<ZerxValue, ZerxError> {
@@ -662,6 +800,7 @@ impl SerializeTupleVariant for TupleVariantBuilder {
 struct MapBuilder {
     map: Map,
     next_key: Option<std::string::String>,
+    field: ValueSerializer,
 }
 
 impl SerializeMap for MapBuilder {
@@ -669,7 +808,9 @@ impl SerializeMap for MapBuilder {
     type Error = ZerxError;
 
     fn serialize_key<T: Serialize + ?Sized>(&mut self, key: &T) -> Result<(), ZerxError> {
-        self.next_key = Some(key.serialize(MapKeySerializer)?);
+        self.next_key = Some(key.serialize(MapKeySerializer {
+            frame: self.field.frame,
+        })?);
         Ok(())
     }
     fn serialize_value<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), ZerxError> {
@@ -677,7 +818,7 @@ impl SerializeMap for MapBuilder {
             .next_key
             .take()
             .ok_or_else(|| serde::ser::Error::custom("map value without preceding key"))?;
-        self.map.insert(key, value.serialize(ValueSerializer)?);
+        self.map.insert(key, value.serialize(self.field)?);
         Ok(())
     }
     fn end(self) -> Result<ZerxValue, ZerxError> {
@@ -694,7 +835,7 @@ impl SerializeStruct for MapBuilder {
         key: &'static str,
         value: &T,
     ) -> Result<(), ZerxError> {
-        self.map.insert(key, value.serialize(ValueSerializer)?);
+        self.map.insert(key, value.serialize(self.field)?);
         Ok(())
     }
     fn end(self) -> Result<ZerxValue, ZerxError> {
@@ -707,6 +848,7 @@ impl SerializeStruct for MapBuilder {
 struct StructVariantBuilder {
     variant: std::string::String,
     map: Map,
+    field: ValueSerializer,
 }
 
 impl SerializeStructVariant for StructVariantBuilder {
@@ -718,7 +860,7 @@ impl SerializeStructVariant for StructVariantBuilder {
         key: &'static str,
         value: &T,
     ) -> Result<(), ZerxError> {
-        self.map.insert(key, value.serialize(ValueSerializer)?);
+        self.map.insert(key, value.serialize(self.field)?);
         Ok(())
     }
     fn end(self) -> Result<ZerxValue, ZerxError> {
@@ -973,5 +1115,275 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.code, ErrorCode::SERIALIZATION_FAILED);
         assert!(err.message.contains("boom"));
+    }
+
+    // ------------------------------------------------------------------
+    // Depth bound at the serde input boundary
+    // ------------------------------------------------------------------
+
+    use crate::schema::MAX_PARSE_DEPTH;
+
+    fn on_2mb_thread<F: FnOnce() + Send + 'static>(f: F) {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(f)
+            .expect("spawn deep-test thread")
+            .join()
+            .expect("deep-test thread panicked");
+    }
+
+    fn json_arrays(depth: usize) -> serde_json::Value {
+        let mut v = serde_json::json!(0);
+        for _ in 0..depth {
+            v = serde_json::Value::Array(vec![v]);
+        }
+        v
+    }
+
+    fn json_objects(depth: usize) -> serde_json::Value {
+        let mut v = serde_json::json!(0);
+        for _ in 0..depth {
+            let mut m = serde_json::Map::new();
+            m.insert("k".to_string(), v);
+            v = serde_json::Value::Object(m);
+        }
+        v
+    }
+
+    fn zerx_arrays(depth: usize) -> ZerxValue {
+        let mut v = ZerxValue::I64(0);
+        for _ in 0..depth {
+            v = ZerxValue::Array(vec![v]);
+        }
+        v
+    }
+
+    #[test]
+    fn depth_boundary_arrays_and_objects() {
+        assert!(ZerxValue::from_serialize(&json_arrays(MAX_PARSE_DEPTH)).is_ok());
+        let err = ZerxValue::from_serialize(&json_arrays(MAX_PARSE_DEPTH + 1)).unwrap_err();
+        assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+
+        assert!(ZerxValue::from_serialize(&json_objects(MAX_PARSE_DEPTH)).is_ok());
+        let err = ZerxValue::from_serialize(&json_objects(MAX_PARSE_DEPTH + 1)).unwrap_err();
+        assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+    }
+
+    #[test]
+    fn depth_boundary_zerx_source() {
+        assert!(ZerxValue::from_serialize(&zerx_arrays(MAX_PARSE_DEPTH)).is_ok());
+        let err = ZerxValue::from_serialize(&zerx_arrays(MAX_PARSE_DEPTH + 1)).unwrap_err();
+        assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+    }
+
+    // A recursive user struct: one input level per struct.
+    #[derive(Serialize)]
+    struct Node {
+        next: Option<Box<Node>>,
+    }
+
+    fn nodes(depth: usize) -> Node {
+        let mut node = Node { next: None };
+        for _ in 0..depth {
+            node = Node {
+                next: Some(Box::new(node)),
+            };
+        }
+        node
+    }
+
+    #[test]
+    fn depth_extreme_json_zerx_and_struct() {
+        on_2mb_thread(|| {
+            let jv = json_arrays(100_000);
+            let err = ZerxValue::from_serialize(&jv).unwrap_err();
+            assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+            std::mem::forget(jv);
+
+            let jv = json_objects(100_000);
+            let err = ZerxValue::from_serialize(&jv).unwrap_err();
+            assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+            std::mem::forget(jv);
+
+            let zv = zerx_arrays(100_000);
+            let err = ZerxValue::from_serialize(&zv).unwrap_err();
+            assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+            std::mem::forget(zv);
+
+            let n = nodes(100_000);
+            let err = ZerxValue::from_serialize(&n).unwrap_err();
+            assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+            std::mem::forget(n);
+        });
+    }
+
+    // A pure wrapper chain: no container level, but every link is a frame.
+    #[derive(Serialize)]
+    struct W(Option<Box<W>>);
+
+    fn wrappers(depth: usize) -> W {
+        let mut w = W(None);
+        for _ in 0..depth {
+            w = W(Some(Box::new(w)));
+        }
+        w
+    }
+
+    #[test]
+    fn depth_extreme_newtype_chain() {
+        on_2mb_thread(|| {
+            let w = wrappers(100_000);
+            let err = ZerxValue::from_serialize(&w).unwrap_err();
+            assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+            std::mem::forget(w);
+        });
+    }
+
+    // 100 level-1 containers, each carrying two nested `Option`s: exactly 300
+    // nested serializer calls, which stays within the wrapper budget.
+    #[derive(Serialize)]
+    struct Opt2 {
+        next: Option<Option<Box<Opt2>>>,
+    }
+
+    fn opt2(depth: usize) -> Opt2 {
+        let mut v = Opt2 { next: None };
+        for _ in 0..depth.saturating_sub(1) {
+            v = Opt2 {
+                next: Some(Some(Box::new(v))),
+            };
+        }
+        v
+    }
+
+    #[derive(Serialize)]
+    struct Opt3 {
+        next: Option<Option<Option<Box<Opt3>>>>,
+    }
+
+    fn opt3(depth: usize) -> Opt3 {
+        let mut v = Opt3 { next: None };
+        for _ in 0..depth.saturating_sub(1) {
+            v = Opt3 {
+                next: Some(Some(Some(Box::new(v)))),
+            };
+        }
+        v
+    }
+
+    #[test]
+    fn wrapper_budget_boundary() {
+        let two = opt2(MAX_PARSE_DEPTH);
+        assert!(ZerxValue::from_serialize(&two).is_ok());
+        drop(two);
+
+        let three = opt3(MAX_PARSE_DEPTH);
+        let err = ZerxValue::from_serialize(&three).unwrap_err();
+        assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+        drop(three);
+    }
+
+    // Map key as a newtype chain: the key serializer must charge frames too.
+    struct DeepKey(usize);
+
+    impl Serialize for DeepKey {
+        fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+            if self.0 == 0 {
+                ser.serialize_str("k")
+            } else {
+                ser.serialize_newtype_struct("K", &DeepKey(self.0 - 1))
+            }
+        }
+    }
+
+    struct KeyedMap(DeepKey);
+
+    impl Serialize for KeyedMap {
+        fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeMap;
+            let mut m = ser.serialize_map(Some(1))?;
+            m.serialize_entry(&self.0, &1i64)?;
+            m.end()
+        }
+    }
+
+    #[test]
+    fn map_key_newtype_chain_is_bounded() {
+        on_2mb_thread(|| {
+            let m = KeyedMap(DeepKey(100_000));
+            let err = ZerxValue::from_serialize(&m).unwrap_err();
+            assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+        });
+    }
+
+    #[test]
+    fn map_key_few_newtypes_convert() {
+        let v = ZerxValue::from_serialize(&KeyedMap(DeepKey(5))).unwrap();
+        assert_eq!(v.get("k"), Some(&ZerxValue::I64(1)));
+    }
+
+    // Struct variants count as one level although they emit two containers.
+    #[derive(Serialize)]
+    enum VariantNode {
+        B { child: Box<VariantNode> },
+        L,
+    }
+
+    fn variant_nodes(depth: usize) -> VariantNode {
+        let mut n = VariantNode::L;
+        for _ in 0..depth {
+            n = VariantNode::B { child: Box::new(n) };
+        }
+        n
+    }
+
+    #[test]
+    fn struct_variant_counts_one_level() {
+        assert!(ZerxValue::from_serialize(&variant_nodes(60)).is_ok());
+        let err = ZerxValue::from_serialize(&variant_nodes(MAX_PARSE_DEPTH + 1)).unwrap_err();
+        assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+    }
+
+    // Compiles only while `ZerxValue` has no `Drop`: moving a payload out of a
+    // variant is E0509 under an `impl Drop` on the enum.
+    #[test]
+    fn variant_payloads_move_out() {
+        fn take(v: ZerxValue) {
+            match v {
+                ZerxValue::Null => {}
+                ZerxValue::Bool(_) => {}
+                ZerxValue::I64(_) => {}
+                ZerxValue::U64(_) => {}
+                ZerxValue::I128(_) => {}
+                ZerxValue::U128(_) => {}
+                ZerxValue::F64(_) => {}
+                ZerxValue::String(s) => {
+                    let _owned: std::string::String = s;
+                }
+                ZerxValue::Bytes(b) => {
+                    let _owned: Vec<u8> = b;
+                }
+                ZerxValue::Array(items) => {
+                    let _owned: Vec<ZerxValue> = items;
+                }
+                ZerxValue::Object(map) => {
+                    let _owned: Map = map;
+                }
+            }
+        }
+
+        let mut m = Map::new();
+        m.insert("k", ZerxValue::Null);
+        take(ZerxValue::Null);
+        take(ZerxValue::Bool(true));
+        take(ZerxValue::I64(1));
+        take(ZerxValue::U64(1));
+        take(ZerxValue::I128(1));
+        take(ZerxValue::U128(1));
+        take(ZerxValue::F64(1.0));
+        take(ZerxValue::String("s".into()));
+        take(ZerxValue::Bytes(vec![1]));
+        take(ZerxValue::Array(vec![ZerxValue::Null]));
+        take(ZerxValue::Object(m));
     }
 }

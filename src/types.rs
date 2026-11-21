@@ -6,7 +6,8 @@ use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::rc::Rc;
 
-use crate::schema::{BuilderInner, Schema, SchemaKind, Validator};
+use crate::schema::{BuilderInner, Schema, SchemaKind, Validator, MAX_PARSE_DEPTH};
+use crate::value::{dispose, value_depth};
 use crate::{ErrorCode, ZerxError, ZerxValue};
 
 // ---------------------------------------------------------------------------
@@ -1859,7 +1860,17 @@ fn build_discriminator_state(key: &str, variants: &[Schema]) -> DiscriminatorSta
 }
 
 pub fn literal(value: impl Into<ZerxValue>) -> LiteralSchema {
-    LiteralSchema(Schema::new(SchemaKind::Literal(value.into())))
+    let value = value.into();
+    let mut schema = Schema::new(SchemaKind::Literal(ZerxValue::Null));
+    if value_depth(&value) > MAX_PARSE_DEPTH {
+        // The constant cannot be stored without deep clones/exports; a
+        // shallow placeholder keeps the node fail-closed via the marker.
+        dispose(value);
+        schema.modifiers.defective = true;
+    } else {
+        schema.kind = SchemaKind::Literal(value);
+    }
+    LiteralSchema(schema)
 }
 
 // ---------------------------------------------------------------------------
@@ -3924,5 +3935,57 @@ mod tests {
         let err = val(schema, &items).unwrap_err();
         assert_eq!(err.code, ErrorCode::ARRAY_NOT_UNIQUE);
         assert_eq!(err.path, vec!["50000"]);
+    }
+
+    // ------------------------------------------------------------------
+    // Literal constants and the value nesting bound
+    // ------------------------------------------------------------------
+
+    fn on_2mb_thread<F: FnOnce() + Send + 'static>(f: F) {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(f)
+            .expect("spawn deep-test thread")
+            .join()
+            .expect("deep-test thread panicked");
+    }
+
+    fn nested_value(depth: usize) -> ZerxValue {
+        let mut v = ZerxValue::I64(0);
+        for _ in 0..depth {
+            v = ZerxValue::Array(vec![v]);
+        }
+        v
+    }
+
+    #[test]
+    fn literal_deep_value_fails_closed() {
+        on_2mb_thread(|| {
+            let s: Schema = literal(nested_value(100_000)).into();
+            let cloned = s.clone();
+            assert_eq!(
+                cloned.validate(&1i64).unwrap_err().code,
+                ErrorCode::PARSE_DEPTH_EXCEEDED
+            );
+            assert_eq!(s.to_json_schema(), serde_json::Value::Bool(false));
+            drop(s);
+        });
+    }
+
+    #[test]
+    fn literal_deep_value_nullable_exports_null() {
+        on_2mb_thread(|| {
+            let s: Schema = literal(nested_value(100_000)).nullable().into();
+            assert_eq!(s.validate(&ZerxValue::Null).unwrap(), ZerxValue::Null);
+            assert_eq!(s.to_json_schema(), serde_json::json!({"type": "null"}));
+        });
+    }
+
+    #[test]
+    fn literal_value_at_limit_is_kept() {
+        let v = nested_value(MAX_PARSE_DEPTH);
+        let s: Schema = literal(v.clone()).into();
+        assert!(s.validate(&v).is_ok());
+        assert_eq!(s.to_json_schema(), serde_json::json!({"const": v}));
     }
 }

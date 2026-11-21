@@ -159,7 +159,8 @@ fn zerx_to_json(v: &crate::ZerxValue) -> serde_json::Value {
 // ---------------------------------------------------------------------------
 
 fn is_plain_any(s: &Schema) -> bool {
-    matches!(s.kind, SchemaKind::Any)
+    !s.modifiers.defective
+        && matches!(s.kind, SchemaKind::Any)
         && s.validators.is_empty()
         && !s.modifiers.nullable
         && s.modifiers.description.is_none()
@@ -202,7 +203,9 @@ fn accepts_nothing(schema: &Schema) -> bool {
         }
         _ => false,
     };
-    kind_rejects_all || schema.validators.iter().any(|v| v.accepts_nothing())
+    schema.modifiers.defective
+        || kind_rejects_all
+        || schema.validators.iter().any(|v| v.accepts_nothing())
 }
 
 // Whether `v` converts to JSON without a stand-in value.
@@ -244,6 +247,12 @@ fn integral_float_as_integer(v: &serde_json::Value) -> Option<serde_json::Value>
 }
 
 fn export_node(schema: &Schema, ctx: &mut ExportContext) -> serde_json::Value {
+    // A defective node fails closed before the Lazy short-circuit and before
+    // any `$defs` registration.
+    if schema.modifiers.defective {
+        return never_export(schema);
+    }
+
     // Step 1 — Lazy short-circuit
     if let SchemaKind::Lazy(lzy) = &schema.kind {
         let (id, is_new) = ctx.id_for(lzy.export_id());
@@ -1839,6 +1848,17 @@ fn import_enum_const_step(
     let has_const = obj.contains_key("const");
     let enum_arr = obj.get("enum").and_then(|v| v.as_array());
 
+    // Convert the constant before any deep clone or type walk: the input bound
+    // must refuse a too-deep constant before serde_json recurses over it.
+    let const_zv = if has_const {
+        Some(
+            ZerxValue::from_serialize(obj.get("const").expect("`const` present"))
+                .map_err(|e| e.at(path.to_vec()))?,
+        )
+    } else {
+        None
+    };
+
     // The PLAN_J4 type-membership rule applies first.
     if let Some(t) = spec {
         if let Some(arr) = enum_arr {
@@ -1865,11 +1885,11 @@ fn import_enum_const_step(
     let members: Vec<serde_json::Value> = if has_enum && has_const {
         let arr = enum_arr.expect("`enum` is an array per grammar check");
         let const_val = obj.get("const").expect("`const` present");
-        let const_zv = ZerxValue::from_serialize(const_val).map_err(|e| e.at(path.to_vec()))?;
+        let const_zv = const_zv.as_ref().expect("`const` present");
         let mut is_member = false;
         for member in arr {
             let member_zv = ZerxValue::from_serialize(member).map_err(|e| e.at(path.to_vec()))?;
-            if crate::types::literal_eq(&member_zv, &const_zv) {
+            if crate::types::literal_eq(&member_zv, const_zv) {
                 is_member = true;
                 break;
             }
@@ -1902,8 +1922,7 @@ fn import_enum_const_step(
     }
 
     if has_const {
-        let const_val = obj.get("const").expect("`const` present");
-        let zv = ZerxValue::from_serialize(const_val).map_err(|e| e.at(path.to_vec()))?;
+        let zv = const_zv.expect("`const` present");
         *base = Some(crate::literal(zv).into());
     } else {
         let arr = enum_arr.expect("`enum` is an array per grammar check");
@@ -5765,5 +5784,65 @@ mod tests {
                 _ => panic!("native and imported differ on {case}: {n:?} vs {i:?}"),
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Imported constants/defaults and the value nesting bound
+    // ------------------------------------------------------------------
+
+    fn on_2mb_thread<F: FnOnce() + Send + 'static>(f: F) {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(f)
+            .expect("spawn deep-test thread")
+            .join()
+            .expect("deep-test thread panicked");
+    }
+
+    fn deep_json_arrays(depth: usize) -> serde_json::Value {
+        let mut v = serde_json::json!(0);
+        for _ in 0..depth {
+            v = serde_json::Value::Array(vec![v]);
+        }
+        v
+    }
+
+    #[test]
+    fn import_deep_const_and_default_refused() {
+        on_2mb_thread(|| {
+            // Build the documents field by field: `json!` would serialise the
+            // deep child through serde_json itself and recurse per level.
+            let mut const_obj = serde_json::Map::new();
+            const_obj.insert("const".to_string(), deep_json_arrays(100_000));
+            let const_doc = serde_json::Value::Object(const_obj);
+            let err = crate::from_json_schema(&const_doc).unwrap_err();
+            assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+            std::mem::forget(const_doc);
+
+            let mut property = serde_json::Map::new();
+            property.insert(
+                "type".to_string(),
+                serde_json::Value::String("string".to_string()),
+            );
+            property.insert("default".to_string(), deep_json_arrays(100_000));
+            let mut properties = serde_json::Map::new();
+            properties.insert("a".to_string(), serde_json::Value::Object(property));
+            let mut default_obj = serde_json::Map::new();
+            default_obj.insert(
+                "type".to_string(),
+                serde_json::Value::String("object".to_string()),
+            );
+            default_obj.insert(
+                "properties".to_string(),
+                serde_json::Value::Object(properties),
+            );
+            let default_doc = serde_json::Value::Object(default_obj);
+            let err = crate::from_json_schema(&default_doc).unwrap_err();
+            assert!(
+                err.code == ErrorCode::PARSE_DEPTH_EXCEEDED
+                    || err.code == ErrorCode::IMPORT_UNSUPPORTED
+            );
+            std::mem::forget(default_doc);
+        });
     }
 }

@@ -5,6 +5,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::value::{dispose, value_depth};
 use crate::{ErrorCode, Map, ZerxError, ZerxValue};
 
 // ---------------------------------------------------------------------------
@@ -68,6 +69,9 @@ pub(crate) struct Modifiers {
     pub(crate) meta: Map,
     pub(crate) example: Option<ZerxValue>,
     pub(crate) title: Option<String>,
+    /// A value this node was asked to store was nested too deeply and was
+    /// discarded; the node fails closed at validation and export.
+    pub(crate) defective: bool,
 }
 
 impl std::fmt::Debug for Modifiers {
@@ -86,6 +90,7 @@ impl std::fmt::Debug for Modifiers {
             .field("meta", &self.meta)
             .field("example", &self.example)
             .field("title", &self.title)
+            .field("defective", &self.defective)
             .finish()
     }
 }
@@ -360,6 +365,15 @@ impl Schema {
             return Ok(ZerxValue::Null);
         }
 
+        // A value this node was asked to store did not fit the nesting bound,
+        // so the node fails closed for every non-null value.
+        if self.modifiers.defective {
+            return Err(ZerxError::new(
+                ErrorCode::PARSE_DEPTH_EXCEEDED,
+                format!("schema value nesting exceeds maximum depth of {MAX_PARSE_DEPTH}"),
+            ));
+        }
+
         // Lazy: resolve and delegate; the outer lazy's refine runs on the non-null result
         if let SchemaKind::Lazy(lzy) = &self.kind {
             let inner = lzy.resolve()?;
@@ -398,6 +412,12 @@ impl Schema {
     ) -> Result<Option<ZerxValue>, ZerxError> {
         match value {
             None => {
+                if self.modifiers.defective {
+                    return Err(ZerxError::new(
+                        ErrorCode::PARSE_DEPTH_EXCEEDED,
+                        format!("schema value nesting exceeds maximum depth of {MAX_PARSE_DEPTH}"),
+                    ));
+                }
                 if let Some(def) = &self.modifiers.default {
                     // Clone to avoid holding an immutable borrow through parse_present
                     let def = def.clone();
@@ -461,7 +481,14 @@ impl<T: BuilderInner> Modify for T {
         self
     }
     fn default(mut self, value: impl Into<ZerxValue>) -> Self {
-        self.schema_mut().modifiers.default = Some(value.into());
+        let value = value.into();
+        let schema = self.schema_mut();
+        if value_depth(&value) > MAX_PARSE_DEPTH {
+            dispose(value);
+            schema.modifiers.defective = true;
+        } else {
+            schema.modifiers.default = Some(value);
+        }
         self
     }
     fn describe(mut self, text: impl Into<String>) -> Self {
@@ -500,14 +527,25 @@ impl<T: BuilderInner> Modify for T {
         self
     }
     fn meta(mut self, key: impl Into<String>, value: impl Into<ZerxValue>) -> Self {
-        self.schema_mut()
-            .modifiers
-            .meta
-            .insert(key.into(), value.into());
+        let value = value.into();
+        let schema = self.schema_mut();
+        if value_depth(&value) > MAX_PARSE_DEPTH {
+            dispose(value);
+            schema.modifiers.defective = true;
+        } else {
+            schema.modifiers.meta.insert(key.into(), value);
+        }
         self
     }
     fn example(mut self, value: impl Into<ZerxValue>) -> Self {
-        self.schema_mut().modifiers.example = Some(value.into());
+        let value = value.into();
+        let schema = self.schema_mut();
+        if value_depth(&value) > MAX_PARSE_DEPTH {
+            dispose(value);
+            schema.modifiers.defective = true;
+        } else {
+            schema.modifiers.example = Some(value);
+        }
         self
     }
     fn title(mut self, text: impl Into<String>) -> Self {
@@ -896,5 +934,181 @@ mod tests {
     fn lazy_over_nullable_inner_accepts_null() {
         let s: Schema = lazy(|| crate::string().nullable().into()).into();
         assert_eq!(s.validate(&ZerxValue::Null).unwrap(), ZerxValue::Null);
+    }
+
+    // ------------------------------------------------------------------
+    // Value nesting bound — serde input paths and builder-stored values
+    // ------------------------------------------------------------------
+
+    fn on_2mb_thread<F: FnOnce() + Send + 'static>(f: F) {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(f)
+            .expect("spawn deep-test thread")
+            .join()
+            .expect("deep-test thread panicked");
+    }
+
+    fn deep_json_arrays(depth: usize) -> serde_json::Value {
+        let mut v = serde_json::json!(0);
+        for _ in 0..depth {
+            v = serde_json::Value::Array(vec![v]);
+        }
+        v
+    }
+
+    fn deep_value(depth: usize) -> ZerxValue {
+        let mut v = ZerxValue::I64(0);
+        for _ in 0..depth {
+            v = ZerxValue::Array(vec![v]);
+        }
+        v
+    }
+
+    fn self_ref_array() -> Schema {
+        let cell: Rc<RefCell<Option<Schema>>> = Rc::new(RefCell::new(None));
+        let c = cell.clone();
+        let l: Schema = lazy(move || {
+            let inner = c.borrow().clone().unwrap_or_else(|| any().into());
+            crate::array(inner).into()
+        })
+        .into();
+        *cell.borrow_mut() = Some(l.clone());
+        l
+    }
+
+    #[test]
+    fn serde_input_depth_on_validate_paths() {
+        on_2mb_thread(|| {
+            let deep = deep_json_arrays(100_000);
+            let schemas: Vec<Schema> = vec![
+                any().into(),
+                crate::json().into(),
+                crate::array(any()).into(),
+                self_ref_array(),
+                crate::literal(0i64).into(),
+            ];
+            for s in &schemas {
+                let err = s.validate(&deep).unwrap_err();
+                assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+            }
+            std::mem::forget(deep);
+        });
+    }
+
+    #[test]
+    fn serde_input_at_limit_passes_through() {
+        let s: Schema = any().into();
+        let input = deep_json_arrays(MAX_PARSE_DEPTH);
+        let out = s.validate(&input).unwrap();
+        assert_eq!(out, ZerxValue::from_serialize(&input).unwrap());
+    }
+
+    #[test]
+    fn builder_default_deep_value_fails_closed() {
+        on_2mb_thread(|| {
+            let s: Schema =
+                crate::object([("a", any().default(deep_value(100_000)).into())]).into();
+            let cloned = s.clone();
+            let err = cloned.validate(&serde_json::json!({})).unwrap_err();
+            assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+            assert_eq!(err.path, vec!["a".to_string()]);
+
+            let err = s.validate(&serde_json::json!({"a": 1})).unwrap_err();
+            assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+
+            let js = s.to_json_schema();
+            assert_eq!(js["properties"]["a"], serde_json::Value::Bool(false));
+            drop(s);
+        });
+    }
+
+    #[test]
+    fn builder_meta_example_deep_values_fail_closed() {
+        on_2mb_thread(|| {
+            let meta: Schema = any().meta("k", deep_value(100_000)).into();
+            assert_eq!(
+                meta.validate(&1i64).unwrap_err().code,
+                ErrorCode::PARSE_DEPTH_EXCEEDED
+            );
+            assert_eq!(
+                meta.clone().to_json_schema(),
+                serde_json::Value::Bool(false)
+            );
+            drop(meta);
+
+            let example: Schema = any().example(deep_value(100_000)).into();
+            assert_eq!(
+                example.validate(&1i64).unwrap_err().code,
+                ErrorCode::PARSE_DEPTH_EXCEEDED
+            );
+            assert_eq!(
+                example.clone().to_json_schema(),
+                serde_json::Value::Bool(false)
+            );
+            drop(example);
+        });
+    }
+
+    #[test]
+    fn builder_defective_nullable_accepts_null() {
+        on_2mb_thread(|| {
+            let s: Schema = any().default(deep_value(100_000)).nullable().into();
+            assert_eq!(s.validate(&ZerxValue::Null).unwrap(), ZerxValue::Null);
+            assert_eq!(s.to_json_schema(), serde_json::json!({"type": "null"}));
+        });
+    }
+
+    #[test]
+    fn builder_defective_lazy_fails_closed() {
+        on_2mb_thread(|| {
+            let s: Schema = lazy(|| any().into()).default(deep_value(100_000)).into();
+            assert_eq!(
+                s.validate(&1i64).unwrap_err().code,
+                ErrorCode::PARSE_DEPTH_EXCEEDED
+            );
+            assert_eq!(s.to_json_schema(), serde_json::Value::Bool(false));
+        });
+    }
+
+    #[test]
+    fn builder_defective_record_export_and_validation() {
+        on_2mb_thread(|| {
+            let s: Schema = crate::record(any().default(deep_value(100_000))).into();
+            let js = s.to_json_schema();
+            assert_eq!(js["additionalProperties"], serde_json::Value::Bool(false));
+            // No value is parsed, so the defect never fires.
+            assert!(s.validate(&serde_json::json!({})).is_ok());
+            let err = s.validate(&serde_json::json!({"k": 1})).unwrap_err();
+            assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+            assert_eq!(err.path, vec!["k".to_string()]);
+
+            let nullable: Schema =
+                crate::record(any().default(deep_value(100_000)).nullable()).into();
+            assert_eq!(
+                nullable.to_json_schema()["additionalProperties"],
+                serde_json::json!({"type": "null"})
+            );
+        });
+    }
+
+    #[test]
+    fn builder_values_at_limit_are_kept() {
+        let default: Schema =
+            crate::object([("a", any().default(deep_value(MAX_PARSE_DEPTH)).into())]).into();
+        let out = default.validate(&serde_json::json!({})).unwrap();
+        assert_eq!(out.get("a"), Some(&deep_value(MAX_PARSE_DEPTH)));
+
+        let meta: Schema = any().meta("k", deep_value(MAX_PARSE_DEPTH)).into();
+        assert_eq!(
+            meta.to_json_schema()["k"],
+            serde_json::json!(deep_value(MAX_PARSE_DEPTH))
+        );
+
+        let example: Schema = any().example(deep_value(MAX_PARSE_DEPTH)).into();
+        assert_eq!(
+            example.to_json_schema()["examples"][0],
+            serde_json::json!(deep_value(MAX_PARSE_DEPTH))
+        );
     }
 }
