@@ -43,6 +43,12 @@ severity: minor
 
 `any().validate(..)` accepts serde input with exactly `MAX_PARSE_DEPTH` (100) nested containers, while `any().validate_lua(..)` refuses 100 nested tables: the root `lua_transform` frame counts one level on top of the per-table count in `free_convert`. Both refuse with `PARSE_DEPTH_EXCEEDED`; only the boundary differs by one. Found while re-probing PLAN_VM1_value_depth_bound.
 
+## In Progress
+id: zrx9bug0col0inprogress01
+
+## Done
+id: zrx9bug0col0done00000001
+
 ### `parse_delta` navigates past a defective schema node
 
 id: {new}
@@ -61,8 +67,13 @@ severity: minor
 
 id: {new}
 severity: minor
+triage: fix
 
 The `sql` nullable rewrite lifts only `$defs` and `$schema` to the outer node when it wraps a `type: [T, "null"]` node in `anyOf`; a root `$id` lands inside the `anyOf` member, and the importer refuses `$id` on a non-root node. A root `{"$id": …, "type": ["string", "null"]}` therefore fails with `IMPORT_UNSUPPORTED` under `sql`.
+
+#### Triage
+
+Decided by the supervisor (DevLead, 2026-11-22): a wrong refusal; keep a root `$id` with `$schema`/`$defs` on the outer node, resolving as plain import; fix in 3.2.3.
 
 ### Local `#` and `#anchor` refs are sent to the external resolver
 
@@ -82,8 +93,13 @@ Export registers `{}` in `$defs` before resolving a lazy and overwrites it only 
 
 id: {new}
 severity: minor
+triage: fix
 
 Import raises `IMPORT_MALFORMED` for an array node without `items`, although `{"type":"array"}` is valid Draft 2020-12. It could import as `array(any())`, or at least raise `IMPORT_UNSUPPORTED`. Behaviour and `docs/architecture/json-schema.md` agree; the classification is the question.
+
+#### Triage
+
+Decided by the supervisor (DevLead, 2026-11-22): a wrong refusal; import as `array(any())` with every sibling assertion still enforced or refused; fix in 3.2.3.
 
 ### `allOf`/`not` next to `$ref` lose the refusal hint
 
@@ -103,8 +119,13 @@ A non-string `description`/`title`/`format`/`contentMediaType`, a non-array `exa
 
 id: {new}
 severity: minor
+triage: fix
 
 An empty `enum` imports as `enumerate([])`, which accepts nothing, while an empty `anyOf` and the `false` schema are refused because "zerx has no never type". Safe, but the stated refusal reason is inaccurate for one path.
+
+#### Triage
+
+Decided by the supervisor (DevLead, 2026-11-22): keep the import; an empty `enum` is valid Draft 2020-12 and fails closed. Docs-only fix: the refusals of an empty `anyOf`/`oneOf` and the `false` schema state that this representation of a never-satisfiable schema is not supported.
 
 ### `scripts/verify` can leak its watchdog
 
@@ -112,9 +133,3 @@ id: {new}
 severity: minor
 
 When the gate group survives TERM and KILL after watchdog ownership failed, the runner exits 71 before killing the watchdog; the cleanup handler then returns early, and the surviving watchdog may signal the recorded process group up to the gate timeout later, by which time the group id can be reused. Found by reading `scripts/verify` during the 2026-11-22 documentation pass; not reproduced.
-
-## In Progress
-id: zrx9bug0col0inprogress01
-
-## Done
-id: zrx9bug0col0done00000001
