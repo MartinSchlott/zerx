@@ -262,10 +262,14 @@ fn export_node(schema: &Schema, ctx: &mut ExportContext) -> serde_json::Value {
                 id.clone(),
                 serde_json::Value::Object(serde_json::Map::new()),
             );
-            if let Ok(inner) = lzy.resolve() {
-                let exported = export_node(&inner, ctx);
-                ctx.defs.insert(id.clone(), exported);
-            }
+            // A lazy that cannot resolve rejects every value at runtime, so
+            // its definition fails closed instead of keeping the accepting
+            // placeholder.
+            let exported = match lzy.resolve() {
+                Ok(inner) => export_node(&inner, ctx),
+                Err(_) => serde_json::Value::Bool(false),
+            };
+            ctx.defs.insert(id.clone(), exported);
         }
         let mut core = serde_json::Map::new();
         core.insert(
@@ -6092,5 +6096,33 @@ mod tests {
                 err.message
             );
         });
+    }
+
+    // --- bug sweep 3.2.3 ---
+
+    #[test]
+    fn unresolvable_lazy_exports_fail_closed() {
+        // A thunk that exports its own lazy runs the nested export while the
+        // lazy is still resolving, so that export cannot resolve it.
+        let cell: Rc<RefCell<Option<Schema>>> = Rc::new(RefCell::new(None));
+        let nested: Rc<RefCell<Option<serde_json::Value>>> = Rc::new(RefCell::new(None));
+        let (c, n) = (cell.clone(), nested.clone());
+        let lz: Schema = lazy(move || {
+            if let Some(me) = c.borrow().as_ref() {
+                *n.borrow_mut() = Some(me.to_json_schema());
+            }
+            string().into()
+        })
+        .into();
+        *cell.borrow_mut() = Some(lz.clone());
+        let _ = lz.to_json_schema();
+        let inner = nested.borrow().clone().expect("nested export ran");
+        let defs = inner["$defs"].as_object().expect("$defs present");
+        assert_eq!(defs.len(), 1);
+        assert_eq!(
+            defs.values().next().unwrap(),
+            &serde_json::Value::Bool(false)
+        );
+        cell.borrow_mut().take();
     }
 }

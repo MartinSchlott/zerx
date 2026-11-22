@@ -108,6 +108,7 @@
 - Every `Lazy` schema that does not take the fail-closed export MUST be exported as `{"$ref":"#/$defs/<id>"}` at its usage site and as a top-level `$defs` entry.
 - `$defs` ids MUST be assigned in encounter order; all clones of the same `lazy` share one id.
 - The placeholder-first registration protocol MUST be used: insert an empty object `{}` into `$defs` before resolving the thunk, so cyclic schemas terminate rather than recurse infinitely.
+- A `lazy` whose resolution fails MUST export its `$defs` entry as `false`, because it rejects every value at runtime and the `{}` placeholder would accept everything.
 - Modifier annotations and the nullable wrap MUST still be applied to the outer `$ref` node (a `lazy` may carry its own modifiers).
 
 ### Infallibility
