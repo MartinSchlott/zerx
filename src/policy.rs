@@ -393,49 +393,63 @@ const NULL_CONSTRAINING: &[&str] = &[
 ];
 
 fn sql_nullable_normalise(value: &Value) -> Result<Value, ZerxError> {
-    deep_map_schema(value, &|node: &Value| {
-        let obj = match node.as_object() {
-            Some(o) => o,
-            None => return Ok(node.clone()),
-        };
+    // The root is rewritten on its own so only it may lift `$id`; children
+    // go through the ordinary deep map.
+    let root = sql_nullable_rewrite(value, true)?;
+    map_child_schemas(root, &mut |child| {
+        deep_map_schema(child, &|node| sql_nullable_rewrite(node, false))
+    })
+}
 
-        // type: ["T", "null"] (exactly two strings, one null) → anyOf, but only
-        // when the rewrite is exact: no keyword in the node constrains null.
-        if let Some(Value::Array(types)) = obj.get("type") {
-            if types.len() == 2 {
-                let strs: Option<Vec<&str>> = types.iter().map(|v| v.as_str()).collect();
-                if let Some(strs) = strs {
-                    let null_count = strs.iter().filter(|&&t| t == "null").count();
-                    if null_count == 1 && !NULL_CONSTRAINING.iter().any(|k| obj.contains_key(*k)) {
-                        let other = *strs.iter().find(|&&t| t != "null").unwrap();
-                        let mut core = obj.clone();
-                        core.insert("type".to_owned(), Value::String(other.to_owned()));
-                        let mut outer = serde_json::Map::new();
-                        if let Some(defs) = core.remove("$defs") {
-                            outer.insert("$defs".to_owned(), defs);
+// type: ["T", "null"] (exactly two strings, one null) → anyOf, but only when
+// the rewrite is exact: no keyword in the node constrains null. Document
+// metadata stays on the outer node: `$defs` and `$schema` always, and `$id`
+// at the root, where the importer accepts it and `$ref`s resolve against it.
+// A nested `$id` stays in the core member and is refused as before.
+fn sql_nullable_rewrite(node: &Value, is_root: bool) -> Result<Value, ZerxError> {
+    let obj = match node.as_object() {
+        Some(o) => o,
+        None => return Ok(node.clone()),
+    };
+
+    if let Some(Value::Array(types)) = obj.get("type") {
+        if types.len() == 2 {
+            let strs: Option<Vec<&str>> = types.iter().map(|v| v.as_str()).collect();
+            if let Some(strs) = strs {
+                let null_count = strs.iter().filter(|&&t| t == "null").count();
+                if null_count == 1 && !NULL_CONSTRAINING.iter().any(|k| obj.contains_key(*k)) {
+                    let other = *strs.iter().find(|&&t| t != "null").unwrap();
+                    let mut core = obj.clone();
+                    core.insert("type".to_owned(), Value::String(other.to_owned()));
+                    let mut outer = serde_json::Map::new();
+                    let lifted: &[&str] = if is_root {
+                        &["$id", "$schema", "$defs"]
+                    } else {
+                        &["$schema", "$defs"]
+                    };
+                    for key in lifted {
+                        if let Some(v) = core.remove(*key) {
+                            outer.insert((*key).to_owned(), v);
                         }
-                        if let Some(schema) = core.remove("$schema") {
-                            outer.insert("$schema".to_owned(), schema);
-                        }
-                        outer.insert(
-                            "anyOf".to_owned(),
-                            Value::Array(vec![
-                                Value::Object(core),
-                                serde_json::json!({"type": "null"}),
-                            ]),
-                        );
-                        return Ok(Value::Object(outer));
                     }
+                    outer.insert(
+                        "anyOf".to_owned(),
+                        Value::Array(vec![
+                            Value::Object(core),
+                            serde_json::json!({"type": "null"}),
+                        ]),
+                    );
+                    return Ok(Value::Object(outer));
                 }
             }
         }
+    }
 
-        // `oneOf` is left to the core importer: with real exactly-one semantics
-        // the old `anyOf` rewrite is not exact (it accepts `null` even when the
-        // non-null member also admits it).
+    // `oneOf` is left to the core importer: with real exactly-one semantics
+    // the old `anyOf` rewrite is not exact (it accepts `null` even when the
+    // non-null member also admits it).
 
-        Ok(node.clone())
-    })
+    Ok(node.clone())
 }
 
 fn sql_array_items_fallback(value: &Value) -> Result<Value, ZerxError> {
@@ -862,6 +876,52 @@ mod tests {
         let exported = re_export(&result.unwrap());
         // Collapsed to nullable anyOf
         assert!(exported.get("anyOf").is_some());
+    }
+
+    #[test]
+    fn test_sql_nullable_root_keeps_root_id() {
+        let schema = import_sql(json!({"$id": "x", "type": ["string", "null"]})).unwrap();
+        assert!(schema.validate(&"a").is_ok());
+        assert!(schema.validate(&serde_json::Value::Null).is_ok());
+        assert!(schema.validate(&1).is_err());
+    }
+
+    #[test]
+    fn test_sql_nullable_root_metadata_resolves_like_plain_import() {
+        let doc = json!({
+            "$id": "https://example.test/s",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$defs": {"Name": {"type": "string", "minLength": 2}},
+            "type": ["object", "null"],
+            "properties": {"n": {"$ref": "#/$defs/Name"}},
+            "required": ["n"]
+        });
+        let sql = import_sql(doc.clone()).unwrap();
+        let plain = crate::from_json_schema(&doc).unwrap();
+        for v in [
+            json!({"n": "ab"}),
+            json!({"n": "a"}),
+            json!({"n": 1}),
+            json!({}),
+            serde_json::Value::Null,
+            json!("x"),
+        ] {
+            assert_eq!(
+                sql.validate(&v).is_ok(),
+                plain.validate(&v).is_ok(),
+                "sql and plain import disagree on {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_sql_nullable_nested_id_still_refused() {
+        let err = import_sql(json!({
+            "type": "object",
+            "properties": {"a": {"$id": "y", "type": ["string", "null"]}}
+        }))
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::IMPORT_UNSUPPORTED);
     }
 
     #[test]

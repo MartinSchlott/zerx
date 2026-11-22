@@ -86,6 +86,7 @@
 
 - Nullable normalisation, type array: a node whose `type` is an array of exactly two strings, one `"null"` and one other name, and that carries none of `enum`, `const`, `anyOf`, `oneOf`, `allOf`, `not`, `$ref`, `$dynamicRef`, `if`, `then`, `else`, MUST be rewritten to `anyOf:[{…node…, type:T}, {type:"null"}]`; the split is exact only when no keyword constrains `null` itself.
 - The nullable rewrite MUST keep `$defs` and `$schema` on the outer node and MUST drop no keyword.
+- At the root, the nullable rewrite MUST also keep `$id` on the outer node, because the importer accepts `$id` only at the root and resolves the document's refs against it; a nested `$id` stays in the core member.
 - A type-array node that does not meet that condition MUST be left unchanged, so the core import honours or refuses its `type`.
 - The built-in `sql` policy MUST NOT rewrite `oneOf` to `anyOf`; under exactly-one `oneOf` semantics the rewrite is wider whenever a member admits `null`.
 - Array `items` fallback: a `{"type":"array"}` node without `items` MUST have `"items": {}` added (imports as `array(any())`).
