@@ -403,18 +403,24 @@ run_gate() {
   wdiscovered=$(ps -o pgid= -p "$watchdog_pid" 2>/dev/null | tr -d ' ')
 
   if [ -z "$wdiscovered" ] || [ "$wdiscovered" != "$watchdog_pid" ]; then
+    # Reap the watchdog coordinator before anything can exit: terminal_exit
+    # disables the cleanup handler, and a surviving watchdog would signal
+    # -$child_pgid after the timeout, when that id may belong to someone else.
+    if term_then_kill_pid "$watchdog_pid" 5 2; then
+      wait "$watchdog_pid" 2>/dev/null
+      w_status=70
+      w_reason="watchdog process-group ownership could not be established"
+    else
+      w_status=71
+      w_reason="watchdog coordinator survived TERM+KILL"
+    fi
     if term_then_kill_group "$child_pgid" 5 2; then
       rm -f "${CARGO_OUTPUT_DIR}/verify/.lock/pgid"
       child_pgid=
     else
-      terminal_exit 71 group "$child_pgid" "process group survived TERM+KILL"
+      terminal_exit 71 group "$child_pgid" "process group survived TERM+KILL (also: $w_reason)"
     fi
-    if term_then_kill_pid "$watchdog_pid" 5 2; then
-      wait "$watchdog_pid" 2>/dev/null
-      terminal_exit 70 process "$watchdog_pid" "watchdog process-group ownership could not be established"
-    else
-      terminal_exit 71 process "$watchdog_pid" "watchdog coordinator survived TERM+KILL"
-    fi
+    terminal_exit "$w_status" process "$watchdog_pid" "$w_reason"
   fi
   watchdog_pgid="$wdiscovered"
   echo "$watchdog_pgid" >"$wpgidfile"
