@@ -79,10 +79,20 @@ fn parse_index(seg: &str, consumed: &[std::string::String]) -> Result<usize, Zer
 // Unwrap Lazy layers until a non-Lazy kind is reached. A lazy that resolves
 // to itself (`{"$ref":"#/$defs/S"}` with `S` = that same `$ref`) or to an
 // endless chain of lazies never reaches one, so the walk is bounded by the
-// same limit the parse flow uses for nested frames.
+// same limit the parse flow uses for nested frames. A node carrying a
+// builder-value defect rejects every non-null value under root validation,
+// so navigation through it, or through a lazy layer resolving to it, is
+// refused: the delta must never be wider than the root schema.
 fn resolve_lazy(schema: Schema, consumed: &[std::string::String]) -> Result<Schema, ZerxError> {
     let mut current = schema;
     for _ in 0..=MAX_PARSE_DEPTH {
+        if current.modifiers.defective {
+            return Err(ZerxError::new(
+                ErrorCode::PARSE_DEPTH_EXCEEDED,
+                format!("schema value nesting exceeds maximum depth of {MAX_PARSE_DEPTH}"),
+            )
+            .at(consumed.to_vec()));
+        }
         let inner_rc = match &current.kind {
             SchemaKind::Lazy(lzy) => lzy.resolve()?,
             _ => return Ok(current),
@@ -353,6 +363,37 @@ mod tests {
 
     fn make_arr(items: Vec<ZerxValue>) -> ZerxValue {
         ZerxValue::Array(items)
+    }
+
+    fn deep_array(depth: usize) -> ZerxValue {
+        let mut v = ZerxValue::Null;
+        for _ in 0..depth {
+            v = ZerxValue::Array(vec![v]);
+        }
+        v
+    }
+
+    // A node whose builder value was refused rejects every non-null value
+    // under root validation, so the delta must not step past it.
+    #[test]
+    fn parse_delta_refuses_navigation_through_defective_node() {
+        let defective = object([("b", string().into())]).default(deep_array(MAX_PARSE_DEPTH + 1));
+        let s: Schema = object([
+            ("a", defective.into()),
+            ("c", object([("d", string().into())]).into()),
+        ])
+        .into();
+        let err = s.parse_delta("/a/b", "x").unwrap_err();
+        assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
+        assert_eq!(err.path, vec!["a".to_string()]);
+        assert!(s.parse_delta("/c/d", "x").is_ok());
+
+        // The same through a lazy that resolves to a defective node.
+        let inner = object([("b", string().into())]).default(deep_array(MAX_PARSE_DEPTH + 1));
+        let inner: Schema = inner.into();
+        let via_lazy: Schema = object([("a", lazy(move || inner.clone()).into())]).into();
+        let err = via_lazy.parse_delta("/a/b", "x").unwrap_err();
+        assert_eq!(err.code, ErrorCode::PARSE_DEPTH_EXCEEDED);
     }
 
     // ==========================================================================
