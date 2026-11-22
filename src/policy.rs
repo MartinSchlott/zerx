@@ -60,8 +60,9 @@ pub struct ImportOptions {
     /// time. `true`: it is silently dropped instead.
     ///
     /// Applies to every reconstructed object node, not only the root. Nodes with
-    /// `additionalProperties: true` or a schema-object value import as passthrough and are NOT
-    /// affected — the flag reinterprets only the strict outcome.
+    /// `additionalProperties: true` or `{}` import as passthrough and are NOT affected — the flag
+    /// reinterprets only the strict outcome (`false` or absent). A non-empty schema-object
+    /// `additionalProperties` on a plain object is refused with `import_unsupported` either way.
     ///
     /// This is caller policy and is not carried by the JSON Schema document: a schema imported
     /// with `strip_unknown: true` still exports `additionalProperties: false`, so the flag must be
@@ -101,7 +102,7 @@ fn lookup_policy(name: &str) -> Option<Policy> {
 // deep_map_schema
 // ---------------------------------------------------------------------------
 
-// Applies mapper to every schema node, recursing into all positions that J2's
+// Applies mapper to every schema node, recursing into all positions that the core
 // core importer reads as child schemas.
 fn deep_map_schema(
     value: &Value,
@@ -111,7 +112,7 @@ fn deep_map_schema(
     map_child_schemas(mapped, &mut |child| deep_map_schema(child, mapper))
 }
 
-// Applies `f` to every direct child schema of `value` (the positions J2's core
+// Applies `f` to every direct child schema of `value` (the positions the core
 // importer reads as child schemas); a non-object value is returned unchanged.
 fn map_child_schemas(
     value: Value,
@@ -204,7 +205,7 @@ fn deref_walk(
         None => return Ok(node.clone()),
     };
     let ref_str = match obj.get("$ref").and_then(|v| v.as_str()) {
-        // Local #/$defs/… refs are left untouched for J2's core importer.
+        // Local #/$defs/… refs are left untouched for the core importer.
         Some(s) if !s.starts_with("#/") => s,
         _ => return deref_children(obj, resolver, active, depth),
     };
@@ -630,7 +631,7 @@ pub fn from_json_schema_with(value: &Value, opts: &ImportOptions) -> Result<Sche
         guard_owned_document(&mut effective)?;
     }
 
-    // Step 3: J2 core import.
+    // Step 3: core import.
     let schema = crate::json_schema::from_json_schema_inner(&effective, opts.strip_unknown)?;
 
     // Step 4: Apply ordered type transforms: [policy.type_transforms…, opts.type_transforms…].
@@ -721,7 +722,7 @@ mod tests {
     // 3. apply_type_transforms fold + ordering
     #[test]
     fn test_apply_type_transforms_ordering() {
-        // T1 converts any schema to string; T2 verifies it sees a string schema.
+        // The first transform converts any schema to string; the second verifies it sees a string schema.
         let t1: TypeTransform = Arc::new(|_s: Schema| Ok(crate::string().into()));
         let t2: TypeTransform = Arc::new(|s: Schema| {
             let exported = s.to_json_schema();
@@ -982,7 +983,7 @@ mod tests {
     // 12. sql leaves discriminated union intact
     #[test]
     fn test_sql_discriminated_union_with_int64() {
-        // Discriminator field must be {"const":"..."} so J2 imports it as literal and
+        // Discriminator field must be {"const":"..."} so the core import reads it as a literal and
         // the discriminated-union check passes.
         let result = import_sql(json!({
             "oneOf": [

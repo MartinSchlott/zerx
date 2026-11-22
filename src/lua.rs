@@ -16,7 +16,7 @@ impl ErrorCode {
 }
 
 // ---------------------------------------------------------------------------
-// Public input types (mirrors endymion src/value.rs, A1)
+// Public input types (mirror the sibling Lua runtime's boundary value shape)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,7 +45,7 @@ impl Schema {
         self.parse_present(&zv, &mut ParseContext::new())
     }
 
-    // Resolve Lazy layers, then depth-guard the transform body (R3).
+    // Resolve Lazy layers, then depth-guard the transform body.
     fn lua_transform(
         &self,
         lua: &LuaValue,
@@ -202,7 +202,7 @@ impl Schema {
             },
 
             // Object: no array part; decode all keys; then mode-specific handling.
-            // Key decoding precedes the mode branch (11b precedence rule).
+            // Key decoding precedes the mode branch, so an undecodable key wins over a mode error.
             SchemaKind::Object(body) => match lua {
                 LuaValue::Table(t) => {
                     if !t.array.is_empty() {
@@ -404,7 +404,7 @@ impl Schema {
 }
 
 // ---------------------------------------------------------------------------
-// Step 11a: discriminator mapping (Boolean/Integer/UTF-8 Bytes → keyable)
+// Discriminator mapping (Boolean/Integer/UTF-8 Bytes → keyable)
 // ---------------------------------------------------------------------------
 
 fn lua_discriminant_map(lua: &LuaValue) -> (Option<DiscriminantKey>, ZerxValue) {
@@ -426,7 +426,7 @@ fn lua_discriminant_map(lua: &LuaValue) -> (Option<DiscriminantKey>, ZerxValue) 
 }
 
 // ---------------------------------------------------------------------------
-// Step 11b: key decoding — Bytes with valid UTF-8 only
+// Key decoding — Bytes with valid UTF-8 only
 // ---------------------------------------------------------------------------
 
 fn decode_key(key: &LuaValue) -> Result<String, ZerxError> {
@@ -459,7 +459,7 @@ fn lua_type_name(v: &LuaValue) -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
-// Step 12: base_convert — schema-independent leaf mapping
+// base_convert — schema-independent leaf mapping
 // ---------------------------------------------------------------------------
 
 fn base_convert(lua: &LuaValue) -> ZerxValue {
@@ -474,7 +474,7 @@ fn base_convert(lua: &LuaValue) -> ZerxValue {
 }
 
 // ---------------------------------------------------------------------------
-// Step 13: free_convert — schema-independent recursive mapping
+// free_convert — schema-independent recursive mapping
 // ---------------------------------------------------------------------------
 
 // Every table level counts against the same depth limit as the schema-directed
@@ -501,7 +501,7 @@ fn free_convert_inner(lua: &LuaValue, ctx: &mut ParseContext) -> Result<ZerxValu
             let has_array = !t.array.is_empty();
             let has_hash = !t.hash.is_empty();
             if has_array && has_hash {
-                // Mixed table cannot be represented as a single JSON-shaped value (Finding 1).
+                // Mixed table cannot be represented as a single JSON-shaped value.
                 return Err(ZerxError::new(
                     ErrorCode::LUA_SHAPE_MISMATCH,
                     "mixed table (non-empty array and hash parts) cannot be represented as a single value",
@@ -758,7 +758,7 @@ mod tests {
         assert_eq!(result, ZerxValue::Object(expected));
     }
 
-    // --- precedence: unknown key beats nested value error (Finding 3-i) ---
+    // --- precedence: unknown key beats nested value error ---
 
     #[test]
     fn precedence_unknown_key_beats_nested_value_error() {
@@ -788,7 +788,7 @@ mod tests {
         assert_eq!(err.path, vec!["x"]);
     }
 
-    // --- precedence: tuple length beats element error (Finding 3-ii) ---
+    // --- precedence: tuple length beats element error ---
 
     #[test]
     fn precedence_tuple_length_beats_element_error() {
@@ -815,7 +815,7 @@ mod tests {
         );
     }
 
-    // --- precedence: discriminator beats body error (Finding 3-iii) ---
+    // --- precedence: discriminator beats body error ---
 
     #[test]
     fn precedence_discriminator_beats_body_error() {
@@ -968,7 +968,7 @@ mod tests {
         );
     }
 
-    // --- discriminated_union with all key kinds (Finding 2) ---
+    // --- discriminated_union with all key kinds ---
 
     #[test]
     fn discriminated_union_bytes_string_discriminator() {
@@ -1130,7 +1130,7 @@ mod tests {
         assert_eq!(err.code, ErrorCode::INVALID_DISCRIMINANT);
     }
 
-    // --- discriminator Miss path cannot fail with representability error (Finding 3 follow-up) ---
+    // --- discriminator Miss path cannot fail with representability error ---
 
     #[test]
     fn discriminator_mixed_table_value_yields_invalid_discriminant_not_shape_mismatch() {

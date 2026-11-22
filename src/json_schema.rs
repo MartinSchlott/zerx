@@ -26,7 +26,7 @@ pub struct ExportOptions {
 }
 
 impl Schema {
-    /// Export this schema to JSON Schema (Draft 2020-12). Infallible (C7).
+    /// Export this schema to JSON Schema (Draft 2020-12). Infallible.
     pub fn to_json_schema(&self) -> serde_json::Value {
         self.to_json_schema_with(&ExportOptions::default())
     }
@@ -733,7 +733,7 @@ pub(crate) fn import_document_depth_error() -> ZerxError {
 // Public import surface
 // ---------------------------------------------------------------------------
 
-/// Import a JSON Schema (Draft 2020-12) document back into a `Schema`. Fallible (C7).
+/// Import a JSON Schema (Draft 2020-12) document back into a `Schema`. Fallible.
 pub fn from_json_schema(value: &serde_json::Value) -> Result<Schema, ZerxError> {
     from_json_schema_inner(value, false)
 }
@@ -1604,7 +1604,7 @@ fn ensure_member_within(
 }
 
 // ---------------------------------------------------------------------------
-// Import walk — pub(crate) so P1 policy pipeline can wrap it
+// Import walk — pub(crate) so the policy pipeline can wrap it
 // ---------------------------------------------------------------------------
 
 pub(crate) fn import_value(
@@ -1699,7 +1699,7 @@ fn true_schema() -> Schema {
     crate::any().into()
 }
 
-// Steps 1–2.5: boolean schema, non-object guard, keyword grammar, nested `$id`
+// Steps 1–2: boolean schema, non-object guard, keyword grammar, nested `$id`
 // and `type` parsing. `None` stands for the `true` schema.
 fn import_node_prelude<'a>(
     node: &'a serde_json::Value,
@@ -1730,7 +1730,7 @@ fn import_node_prelude<'a>(
         }
     };
 
-    // Step 2.25: grammar of structurally consumed keyword values. A malformed
+    // Step 2 (grammar): grammar of structurally consumed keyword values. A malformed
     // value is refused here rather than silently skipped by a later branch.
     validate_node_grammar(obj, path)?;
 
@@ -1744,7 +1744,7 @@ fn import_node_prelude<'a>(
         .at(path.to_vec()));
     }
 
-    // Step 2.5: parse `type`. Runs on every object node, `$ref` included, so a
+    // Step 2 (type): parse `type`. Runs on every object node, `$ref` included, so a
     // malformed `type` is never skipped.
     let spec = parse_type(obj, path)?;
     Ok(Some((obj, spec)))
@@ -1839,7 +1839,7 @@ fn import_nullable_collapse_step(
                 if spec.is_some() {
                     consumed.insert("type".to_string());
                 }
-                // Continue to step 12.
+                // Continue to step 10.
             }
         }
     }
@@ -1917,12 +1917,12 @@ fn import_union_step(
 
         consumed.insert(kw.to_string());
         *base = Some(schema);
-        // Continue to step 12.
+        // Continue to step 10.
     }
     Ok(())
 }
 
-// Step 7/8: `enum`/`const`. Sibling assertion keywords are evaluated
+// Step 7: `enum`/`const`. Sibling assertion keywords are evaluated
 // statically against the member set: satisfied ones are redundant and
 // consumed, violated or non-evaluable ones are refused.
 fn import_enum_const_step(
@@ -1947,7 +1947,7 @@ fn import_enum_const_step(
         None
     };
 
-    // The PLAN_J4 type-membership rule applies first.
+    // The `type`-membership rule for enum/const members applies first.
     if let Some(t) = spec {
         if let Some(arr) = enum_arr {
             if let Some((i, _)) = arr.iter().enumerate().find(|(_, v)| !admits_value(&t, v)) {
@@ -2030,11 +2030,11 @@ fn import_enum_const_step(
             *base = Some(crate::union(lit_variants).into());
         }
     }
-    // Continue to step 12.
+    // Continue to step 10.
     Ok(())
 }
 
-// Step 9: format-marker kinds (checked before generic type dispatch).
+// Step 8: format-marker kinds (checked before generic type dispatch).
 fn import_format_marker_step(
     obj: &serde_json::Map<String, serde_json::Value>,
     spec: Option<TypeSpec>,
@@ -2054,7 +2054,7 @@ fn import_format_marker_step(
     }
 }
 
-// Step 9 for the markers without a child schema.
+// Step 8 for the markers without a child schema.
 fn import_leaf_marker(
     obj: &serde_json::Map<String, serde_json::Value>,
     spec: Option<TypeSpec>,
@@ -2104,7 +2104,7 @@ fn import_leaf_marker(
     Ok(())
 }
 
-// Step 9, `type: "object"` + `format: "record"`.
+// Step 8, `type: "object"` + `format: "record"`.
 fn import_record_marker(
     obj: &serde_json::Map<String, serde_json::Value>,
     ctx: &ImportContext,
@@ -2164,8 +2164,8 @@ fn import_child(
     import_value(node, ctx, &child_path)
 }
 
-// Step 10: type dispatch. Exhaustive over `TypeName`: every `Some(spec)`
-// produces a base here (or in step 9) or has already errored.
+// Step 9: type dispatch. Exhaustive over `TypeName`: every `Some(spec)`
+// produces a base here (or in step 8) or has already errored.
 fn import_type_step(
     obj: &serde_json::Map<String, serde_json::Value>,
     spec: Option<TypeSpec>,
@@ -2189,7 +2189,7 @@ fn import_type_step(
     Ok(())
 }
 
-// Step 10, `type: "boolean"` / `type: "null"`.
+// Step 9, `type: "boolean"` / `type: "null"`.
 fn import_scalar_type(name: TypeName, base: &mut Option<Schema>) {
     *base = Some(match name {
         TypeName::Boolean => crate::boolean().into(),
@@ -2197,7 +2197,7 @@ fn import_scalar_type(name: TypeName, base: &mut Option<Schema>) {
     });
 }
 
-// Step 10, `type: "string"`.
+// Step 9, `type: "string"`.
 fn import_string_type(
     obj: &serde_json::Map<String, serde_json::Value>,
     path: &[String],
@@ -2217,7 +2217,7 @@ fn import_string_type(
     Ok(())
 }
 
-// Step 10, `type: "number"`.
+// Step 9, `type: "number"`.
 // 2^53: from here on neighbouring integers share one `f64`. Number nodes keep
 // this refusal for every bound; integer nodes apply it only to float literals
 // (`import_integer_bound`).
@@ -2295,7 +2295,7 @@ fn import_number_type(
     Ok(())
 }
 
-// Step 10, `type: "integer"`.
+// Step 9, `type: "integer"`.
 fn import_integer_type(
     obj: &serde_json::Map<String, serde_json::Value>,
     path: &[String],
@@ -2319,7 +2319,7 @@ fn import_integer_type(
     Ok(())
 }
 
-// Step 10, `type: "array"`: a closed tuple or an array.
+// Step 9, `type: "array"`: a closed tuple or an array.
 fn import_array_type(
     obj: &serde_json::Map<String, serde_json::Value>,
     ctx: &ImportContext,
@@ -2532,7 +2532,7 @@ fn apply_array_bounds(
     Ok(ab.into())
 }
 
-// Step 10, `type: "object"`.
+// Step 9, `type: "object"`.
 fn import_object_type(
     obj: &serde_json::Map<String, serde_json::Value>,
     ctx: &ImportContext,
@@ -2549,7 +2549,7 @@ fn import_object_type(
     Ok(())
 }
 
-// Steps 12–14: annotation/modifier reconstruction, the assertion coverage
+// Steps 10–11 and meta routing: annotation/modifier reconstruction, the assertion coverage
 // check, and `meta` routing of the remaining keys.
 fn finish_import_node(
     mut base: Option<Schema>,
@@ -2563,7 +2563,7 @@ fn finish_import_node(
     use crate::any;
 
     // A `[T, "null"]` type array adds `.nullable()` only to a base built by
-    // steps 9/10; a base from steps 3/5/6/7/8 already decides null itself.
+    // steps 8/9; a base from steps 3/5/6/7 already decides null itself.
     if !had_base_before_markers {
         if let Some(s) = spec {
             if s.nullable {
@@ -2575,7 +2575,7 @@ fn finish_import_node(
     }
     let mut schema = base.unwrap_or_else(|| any().into());
 
-    // Step 12: Annotation / modifier reconstruction (inverse of apply_annotations).
+    // Step 10: Annotation / modifier reconstruction (inverse of apply_annotations).
     if let Some(desc) = obj.get("description").and_then(|v| v.as_str()) {
         schema = schema.describe(desc);
     }
@@ -2621,7 +2621,7 @@ fn finish_import_node(
         }
     }
 
-    // Step 13a: consumed-or-vacuous-or-refused coverage. No assertion keyword
+    // Step 11: consumed-or-vacuous-or-refused coverage. No assertion keyword
     // may reach the `meta` step below.
     for key in obj.keys() {
         let app = match assertion_applicability(key) {
@@ -2651,7 +2651,7 @@ fn finish_import_node(
         .at(path.to_vec()));
     }
 
-    // Step 13: Remaining non-assertion extension keys → meta.
+    // Final step: Remaining non-assertion extension keys → meta.
     for (key, val) in obj.iter() {
         if IMPORT_HANDLED.contains(&key.as_str()) || assertion_applicability(key).is_some() {
             continue;
@@ -3178,7 +3178,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // Import tests (J2)
+    // Import tests
     // ---------------------------------------------------------------------------
 
     fn from(v: serde_json::Value) -> Result<Schema, ZerxError> {
@@ -3207,7 +3207,7 @@ mod tests {
         ZerxValue::Object(map)
     }
 
-    // J2-1. Scalars and empty schema.
+    // Scalars and empty schema.
     #[test]
     fn import_scalars() {
         assert!(from(serde_json::json!({"type":"string"})).is_ok());
@@ -3228,7 +3228,7 @@ mod tests {
         assert_eq!(v1, v2);
     }
 
-    // J2-2. Integer.
+    // Integer.
     #[test]
     fn import_integer() {
         let (v1, v2) = roundtrip_str(&number().int().into());
@@ -3241,7 +3241,7 @@ mod tests {
         assert_eq!(v1, v2);
     }
 
-    // J2-3. String validators.
+    // String validators.
     #[test]
     fn import_string_validators() {
         let (v1, v2) = roundtrip_str(&string().min(2).max(8).regex("^x").email().into());
@@ -3258,7 +3258,7 @@ mod tests {
         assert_eq!(exported["format"], serde_json::json!("email"));
     }
 
-    // J2-4. UUID and user format.
+    // UUID and user format.
     #[test]
     fn import_uuid_and_user_format() {
         let (v1, v2) = roundtrip_str(&string().uuid().into());
@@ -3269,7 +3269,7 @@ mod tests {
         assert_eq!(exported["format"], serde_json::json!("date-time"));
     }
 
-    // J2-5. Enum.
+    // Enum.
     #[test]
     fn import_enum() {
         let (v1, v2) = roundtrip_str(&enumerate(["a", "b"]).into());
@@ -3286,7 +3286,7 @@ mod tests {
         assert!(exported2.get("anyOf").is_some());
     }
 
-    // J2-6. Const / literal.
+    // Const / literal.
     #[test]
     fn import_const() {
         let (v1, v2) = roundtrip_str(&literal("x").into());
@@ -3297,7 +3297,7 @@ mod tests {
         assert_eq!(v1, v2);
     }
 
-    // J2-7. Array and tuple.
+    // Array and tuple.
     #[test]
     fn import_array_tuple() {
         let (v1, v2) = roundtrip_str(&array(string()).min(1).max(3).into());
@@ -3330,7 +3330,7 @@ mod tests {
         );
     }
 
-    // J2-8. Record.
+    // Record.
     #[test]
     fn import_record() {
         let (v1, v2) = roundtrip_str(&record(json()).into());
@@ -3352,7 +3352,7 @@ mod tests {
         assert_eq!(from(bad).unwrap_err().code, ErrorCode::IMPORT_MALFORMED);
     }
 
-    // J2-9. Object required / additionalProperties / default.
+    // Object required / additionalProperties / default.
     #[test]
     fn import_object_required_additional() {
         let input = serde_json::json!({
@@ -3429,7 +3429,7 @@ mod tests {
         );
     }
 
-    // J2-10. Buffer + MIME / special markers.
+    // Buffer + MIME / special markers.
     #[test]
     fn import_special_markers() {
         let (v1, v2) = roundtrip_str(&buffer().mime_format("image/png").into());
@@ -3448,7 +3448,7 @@ mod tests {
         assert_eq!(v1, v2);
     }
 
-    // J2-11. Nullable collapse.
+    // Nullable collapse.
     #[test]
     fn import_nullable_collapse() {
         let (v1, v2) = roundtrip_str(&string().nullable().into());
@@ -3465,7 +3465,7 @@ mod tests {
         assert_eq!(any_of.len(), 2);
     }
 
-    // J2-12. Union vs discriminated union.
+    // Union vs discriminated union.
     #[test]
     fn import_union_discriminated() {
         // anyOf → plain union
@@ -3522,7 +3522,7 @@ mod tests {
         assert!(exported3.get("x-oneOf").is_none());
     }
 
-    // J2-12a. Literal value equality across numeric variants.
+    // Literal value equality across numeric variants.
     #[test]
     fn import_literal_accepts_equal_numeric_values() {
         let const_one = from(serde_json::json!({"const": 1})).unwrap();
@@ -3774,7 +3774,7 @@ mod tests {
         .is_ok());
     }
 
-    // J2-13. Modifiers round-trip.
+    // Modifiers round-trip.
     #[test]
     fn import_modifiers_roundtrip() {
         let s: Schema = string()
@@ -3801,7 +3801,7 @@ mod tests {
         assert_eq!(v1_val["x-ui-multiline"], serde_json::json!(3u64));
     }
 
-    // J2-14. allOf / not / false / unsupported applicators.
+    // allOf / not / false / unsupported applicators.
     #[test]
     fn import_unsupported() {
         assert_eq!(
@@ -3835,7 +3835,7 @@ mod tests {
         );
     }
 
-    // J2-15. $ref / $defs.
+    // $ref / $defs.
     #[test]
     fn import_ref_defs() {
         let input = serde_json::json!({
@@ -3866,7 +3866,7 @@ mod tests {
         );
     }
 
-    // J2-16. Cyclic $ref terminates and re-exports to one $defs entry.
+    // Cyclic $ref terminates and re-exports to one $defs entry.
     #[test]
     fn import_cyclic_ref() {
         // Build a self-referential schema and export it first.
@@ -3892,7 +3892,7 @@ mod tests {
         assert!(def_body.get("properties").is_some());
     }
 
-    // J2-17. Full roundtrip — the vision `message` schema (mlua call field omitted).
+    // Full roundtrip — the vision `message` schema (mlua call field omitted).
     #[test]
     fn import_message_schema_roundtrip() {
         let address: Schema = object([
@@ -3970,7 +3970,7 @@ mod tests {
         assert_eq!(v1, v2, "message schema roundtrip not byte-identical");
     }
 
-    // J2-18. Error path determinism.
+    // Error path determinism.
     #[test]
     fn import_error_path() {
         let input = serde_json::json!({
@@ -3990,10 +3990,10 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // Strip-unknown import tests (J3)
+    // Strip-unknown import tests
     // ---------------------------------------------------------------------------
 
-    // J3-1. Strip applies at the root.
+    // Strip applies at the root.
     #[test]
     fn j3_strip_root_object() {
         let input = serde_json::json!({
@@ -4016,7 +4016,7 @@ mod tests {
         assert_eq!(err.code, ErrorCode::UNKNOWN_PROPERTY);
     }
 
-    // J3-2. Strip applies to nested objects (regression guard for the recursive decision).
+    // Strip applies to nested objects (regression guard for the recursive decision).
     #[test]
     fn j3_strip_nested_object() {
         let input = serde_json::json!({
@@ -4047,7 +4047,7 @@ mod tests {
         assert!(inner.get("stale").is_none());
     }
 
-    // J3-3. Absent additionalProperties also strips.
+    // Absent additionalProperties also strips.
     #[test]
     fn j3_strip_absent_additional_properties() {
         let input = serde_json::json!({
@@ -4062,7 +4062,7 @@ mod tests {
         assert!(ok.as_object().unwrap().get("stale").is_none());
     }
 
-    // J3-4. additionalProperties:true and {} stay passthrough under strip; a
+    // additionalProperties:true and {} stay passthrough under strip; a
     // non-empty schema object is refused by the core import.
     #[test]
     fn j3_strip_passthrough_untouched() {
@@ -4099,7 +4099,7 @@ mod tests {
         );
     }
 
-    // J3-5. Union first-match-wins under strip — pins the accepted consequence.
+    // Union first-match-wins under strip — pins the accepted consequence.
     #[test]
     fn j3_strip_union_first_match_wins() {
         let input = serde_json::json!({
@@ -4130,7 +4130,7 @@ mod tests {
         );
     }
 
-    // J3-6. Discriminated union still builds under strip; dispatch still works.
+    // Discriminated union still builds under strip; dispatch still works.
     #[test]
     fn j3_strip_discriminated_union_builds() {
         let du: Schema = discriminated_union(
@@ -4154,7 +4154,7 @@ mod tests {
         assert_eq!(obj.get("x").and_then(|v| v.as_str()), Some("hi"));
     }
 
-    // J3-7. `record` is unaffected by strip_unknown.
+    // `record` is unaffected by strip_unknown.
     #[test]
     fn j3_strip_record_unaffected() {
         let input = serde_json::json!({
@@ -4174,7 +4174,7 @@ mod tests {
         assert_eq!(err.code, ErrorCode::IMPORT_MALFORMED);
     }
 
-    // J3-8. $ref/$defs reached through a lazy node strip too (regression guard for decision 5).
+    // $ref/$defs reached through a lazy node strip too (regression guard for decision 5).
     #[test]
     fn j3_strip_reaches_through_ref() {
         let input = serde_json::json!({
@@ -4195,7 +4195,7 @@ mod tests {
         assert!(ok.as_object().unwrap().get("stale").is_none());
     }
 
-    // J3-9. Export is unchanged — the option does not leak into the document.
+    // Export is unchanged — the option does not leak into the document.
     #[test]
     fn j3_strip_export_unchanged() {
         let input = serde_json::json!({
@@ -4239,7 +4239,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // `type` import and nullable lazy (J4)
+    // `type` import and nullable lazy
     // ---------------------------------------------------------------------------
 
     fn s_defs() -> serde_json::Value {

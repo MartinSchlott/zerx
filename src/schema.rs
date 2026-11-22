@@ -26,7 +26,7 @@ impl ErrorCode {
 pub const MAX_PARSE_DEPTH: usize = 100;
 
 // ---------------------------------------------------------------------------
-// Validator — storage contract (all concretes owned by types, PLAN_T1)
+// Validator — storage contract (all concretes owned by types)
 // ---------------------------------------------------------------------------
 
 pub trait Validator {
@@ -148,7 +148,7 @@ impl Lazy {
 }
 
 // ---------------------------------------------------------------------------
-// SchemaKind — the closed enum container (C1)
+// SchemaKind — the closed enum container
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
@@ -273,7 +273,7 @@ impl ParseContext {
 }
 
 // ---------------------------------------------------------------------------
-// Schema — the erased, cloneable value (C1)
+// Schema — the erased, cloneable value
 // ---------------------------------------------------------------------------
 
 pub struct Schema {
@@ -342,7 +342,7 @@ impl Schema {
         self.parse_present(&v, &mut ParseContext::new())
     }
 
-    /// Parse a present value. Called recursively by container types (PLAN_T2).
+    /// Parse a present value. Called recursively by container types.
     pub(crate) fn parse_present(
         &self,
         value: &ZerxValue,
@@ -402,7 +402,7 @@ impl Schema {
         Ok(value)
     }
 
-    /// Missing/present field wrapper for container property iteration (PLAN_T2).
+    /// Missing/present field wrapper for container property iteration.
     /// Returns `None` = omit from output.
     #[allow(dead_code)]
     pub(crate) fn parse_field(
@@ -452,7 +452,7 @@ impl BuilderInner for Schema {
 }
 
 // ---------------------------------------------------------------------------
-// Modify — the blanket universal-modifier trait (C1)
+// Modify — the blanket universal-modifier trait
 // ---------------------------------------------------------------------------
 
 pub trait Modify: Sized {
@@ -555,7 +555,7 @@ impl<T: BuilderInner> Modify for T {
 }
 
 // ---------------------------------------------------------------------------
-// Typed builders + constructors (C1)
+// Typed builders + constructors
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]

@@ -304,7 +304,7 @@ impl Schema {
     /// root revalidation (incl. `refine` and `default`) via `parse_present`.
     ///
     /// An empty `path` replaces the whole root. Does not mutate the supplied
-    /// instance (clone-and-return, C1). Does not insert absent object keys.
+    /// instance (clone-and-return). Does not insert absent object keys.
     pub fn replace<I, T>(&self, instance: &I, path: &str, value: &T) -> Result<ZerxValue, ZerxError>
     where
         I: serde::Serialize + ?Sized,

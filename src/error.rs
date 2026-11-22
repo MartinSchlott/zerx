@@ -4,7 +4,7 @@ use serde::Serialize;
 
 /// Stable machine-readable error code.
 ///
-/// The catalogue is open: each plan declares its own codes as associated constants
+/// The catalogue is open: each module declares the codes it introduces as associated constants
 /// in an `impl ErrorCode` block next to the code that raises them, e.g.:
 /// ```rust,ignore
 /// impl ErrorCode {
@@ -60,7 +60,7 @@ impl std::fmt::Display for ErrorCode {
 /// operation.
 ///
 /// `received` and `expected` are plain descriptor strings, not raw values, so
-/// `ZerxError` is always serialisable regardless of the host value type (C8).
+/// `ZerxError` is always serialisable regardless of the host value type.
 #[derive(Debug, Clone, Serialize)]
 pub struct ZerxError {
     pub path: Vec<String>,
@@ -113,7 +113,7 @@ impl ZerxError {
     }
 
     /// Serialise to a [`serde_json::Value`].  Infallible because every field
-    /// is a plain serialisable type (C8 guarantee).
+    /// is a plain serialisable type.
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).expect(
             "ZerxError serialization is infallible: all fields are plain serialisable types",
@@ -123,7 +123,7 @@ impl ZerxError {
     /// Aggregate multiple per-variant errors into a single `UNION_MISMATCH`
     /// error.  The mechanism (attach inner errors, produce combined message)
     /// lives here; the variant-selection strategy belongs to the union type
-    /// (`PLAN_T2_complex_types`).
+    /// (`types`).
     pub fn union(path: Vec<String>, inner: Vec<ZerxError>) -> ZerxError {
         let n = inner.len();
         ZerxError {

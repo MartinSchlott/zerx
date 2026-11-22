@@ -112,7 +112,7 @@ pub enum ZerxValue {
     U128(u128),
     F64(f64),
     String(std::string::String),
-    /// First-class buffer variant. Only produced by `serialize_bytes` (C2).
+    /// First-class buffer variant. The serde-in bridge produces it only from `serialize_bytes`.
     Bytes(Vec<u8>),
     Array(Vec<ZerxValue>),
     Object(Map),
@@ -209,7 +209,7 @@ impl ZerxValue {
 }
 
 // ---------------------------------------------------------------------------
-// From impls (ergonomic construction, no From<Vec<u8>> per C2)
+// From impls (ergonomic construction; no From<Vec<u8>>, so bytes are never ambiguous with a number array)
 // ---------------------------------------------------------------------------
 
 impl From<bool> for ZerxValue {
@@ -317,7 +317,7 @@ impl Serialize for ZerxValue {
             ZerxValue::U128(n) => ser.serialize_u128(*n),
             ZerxValue::F64(n) => ser.serialize_f64(*n),
             ZerxValue::String(s) => ser.serialize_str(s),
-            // Preserves bytes on byte-aware formats; degrades to number array on JSON (C2).
+            // Preserves bytes on byte-aware formats; degrades to number array on JSON.
             ZerxValue::Bytes(b) => ser.serialize_bytes(b),
             ZerxValue::Array(arr) => {
                 let mut seq = ser.serialize_seq(Some(arr.len()))?;
@@ -615,7 +615,7 @@ impl Serializer for ValueSerializer {
     fn serialize_str(self, v: &str) -> Result<ZerxValue, ZerxError> {
         Ok(ZerxValue::String(v.to_owned()))
     }
-    // C2: native serialize_bytes → first-class Bytes variant.
+    // Native serialize_bytes → first-class Bytes variant.
     fn serialize_bytes(self, v: &[u8]) -> Result<ZerxValue, ZerxError> {
         Ok(ZerxValue::Bytes(v.to_vec()))
     }
@@ -940,7 +940,7 @@ mod tests {
         );
     }
 
-    // 1b. 128-bit integers (C5)
+    // 1b. 128-bit integers
     #[test]
     fn ints_128bit() {
         let i = i128::MAX;
@@ -964,14 +964,14 @@ mod tests {
         );
     }
 
-    // 2. Bytes fidelity — buffer side (C2)
+    // 2. Bytes fidelity — buffer side
     #[test]
     fn bytes_fidelity_buffer() {
         let v = ZerxValue::from_serialize(&Blob(vec![1, 2, 3])).unwrap();
         assert_eq!(v, ZerxValue::Bytes(vec![1, 2, 3]));
     }
 
-    // 3. Bytes footgun — array side (C2)
+    // 3. Bytes footgun — array side
     #[test]
     fn bytes_footgun_array() {
         let v = ZerxValue::from_serialize(&vec![1u8, 2, 3]).unwrap();
@@ -1034,7 +1034,7 @@ mod tests {
             serde_json::to_value(ZerxValue::Array(vec![ZerxValue::U64(1)])).unwrap(),
             serde_json::json!([1])
         );
-        // Bytes degrade to number array on JSON (C2 documented degradation)
+        // Bytes degrade to number array on JSON (documented degradation)
         assert_eq!(
             serde_json::to_value(ZerxValue::Bytes(vec![1, 2, 3])).unwrap(),
             serde_json::json!([1, 2, 3])

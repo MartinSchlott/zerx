@@ -781,7 +781,7 @@ impl NumberSchema {
 }
 
 // ---------------------------------------------------------------------------
-// T2 error-code catalogue (no edit to error.rs)
+// Complex-type error-code catalogue
 // ---------------------------------------------------------------------------
 
 impl ErrorCode {
@@ -1053,7 +1053,7 @@ fn prefix_path(mut e: ZerxError, segment: impl Into<String>) -> ZerxError {
 }
 
 // ---------------------------------------------------------------------------
-// T2 type-check delegates
+// Complex-type type-check delegates
 // ---------------------------------------------------------------------------
 
 pub(crate) fn check_object(value: &ZerxValue) -> Result<(), ZerxError> {
@@ -1128,7 +1128,7 @@ pub(crate) fn check_literal(value: &ZerxValue, constant: &ZerxValue) -> Result<(
 }
 
 // ---------------------------------------------------------------------------
-// T2 structural parse delegates
+// Complex-type structural parse delegates
 // ---------------------------------------------------------------------------
 
 pub(crate) fn effective_prestrip(body: &ObjectBody) -> Vec<String> {
@@ -1474,7 +1474,7 @@ impl Validator for UniqueItems {
 }
 
 // ---------------------------------------------------------------------------
-// T2 builder newtypes
+// Complex-type builder newtypes
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
@@ -1571,7 +1571,7 @@ impl From<LiteralSchema> for Schema {
 }
 
 // ---------------------------------------------------------------------------
-// T2 inherent methods
+// Complex-type inherent methods
 // ---------------------------------------------------------------------------
 
 impl ObjectSchema {
@@ -1703,7 +1703,7 @@ impl ArraySchema {
 }
 
 // ---------------------------------------------------------------------------
-// T2 constructors
+// Complex-type constructors
 // ---------------------------------------------------------------------------
 
 pub fn object<I, K>(fields: I) -> ObjectSchema
@@ -1903,7 +1903,7 @@ pub fn null() -> NullSchema {
 }
 
 // ---------------------------------------------------------------------------
-// T4 error-code catalogue (no edit to error.rs)
+// Special-type error-code catalogue
 // ---------------------------------------------------------------------------
 
 impl ErrorCode {
@@ -1912,7 +1912,7 @@ impl ErrorCode {
 }
 
 // ---------------------------------------------------------------------------
-// T4 structural validators
+// Special-type structural validators
 // ---------------------------------------------------------------------------
 
 fn is_valid_uri(s: &str) -> bool {
@@ -1985,7 +1985,7 @@ fn is_valid_url(s: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// T4 type-check delegates
+// Special-type type-check delegates
 // ---------------------------------------------------------------------------
 
 pub(crate) fn check_buffer(value: &ZerxValue) -> Result<(), ZerxError> {
@@ -2047,10 +2047,10 @@ pub(crate) fn check_jsonschema(value: &ZerxValue) -> Result<(), ZerxError> {
 }
 
 // ---------------------------------------------------------------------------
-// T4 builder newtypes
+// Special-type builder newtypes
 // ---------------------------------------------------------------------------
 
-/// Builder for `buffer` schemas. Accepts only `ZerxValue::Bytes` (no coercion, C2).
+/// Builder for `buffer` schemas. Accepts only `ZerxValue::Bytes` (no coercion).
 ///
 /// ```compile_fail
 /// use zerx::buffer;
@@ -2149,12 +2149,12 @@ impl From<JsonschemaSchema> for Schema {
 }
 
 // ---------------------------------------------------------------------------
-// T4 inherent methods
+// Special-type inherent methods
 // ---------------------------------------------------------------------------
 
 impl BufferSchema {
     /// Set the MIME type for this buffer. Writes `modifiers.mime` (same field as
-    /// `mime_format`); read by J1 to emit `contentMediaType`.
+    /// `mime_format`); read by JSON Schema export to emit `contentMediaType`.
     pub fn mime(mut self, mime_type: impl Into<String>) -> Self {
         self.0.modifiers.mime = Some(mime_type.into());
         self
@@ -2162,7 +2162,7 @@ impl BufferSchema {
 }
 
 // ---------------------------------------------------------------------------
-// T4 constructors
+// Special-type constructors
 // ---------------------------------------------------------------------------
 
 pub fn buffer() -> BufferSchema {
@@ -2620,10 +2620,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // T2 tests
+    // Complex-type tests
     // -----------------------------------------------------------------------
 
-    // T2-1: object type check
+    // object type check
     #[test]
     fn object_type_check() {
         let o = object([("a", number().into())]);
@@ -2638,7 +2638,7 @@ mod tests {
         assert_eq!(val(o, &true).unwrap_err().code, ErrorCode::TYPE_MISMATCH);
     }
 
-    // T2-2a: object constructor duplicate-key semantics (last-write-wins, first-occurrence order)
+    // object constructor duplicate-key semantics (last-write-wins, first-occurrence order)
     #[test]
     fn object_duplicate_key_semantics() {
         // Duplicate key: second entry's schema replaces first, but key stays at first position.
@@ -2669,7 +2669,7 @@ mod tests {
         }
     }
 
-    // T2-2: object strict (default)
+    // object strict (default)
     #[test]
     fn object_strict_default() {
         #[derive(serde::Serialize)]
@@ -2693,7 +2693,7 @@ mod tests {
         assert_eq!(map.len(), 1);
     }
 
-    // T2-3: object passthrough
+    // object passthrough
     #[test]
     fn object_passthrough() {
         use serde_json::json;
@@ -2719,7 +2719,7 @@ mod tests {
         );
     }
 
-    // T2-4: object strip
+    // object strip
     #[test]
     fn object_strip() {
         #[derive(serde::Serialize)]
@@ -2735,7 +2735,7 @@ mod tests {
         assert!(map.get("extra").is_none());
     }
 
-    // T2-5: object field errors carry path
+    // object field errors carry path
     #[test]
     fn object_field_error_path() {
         #[derive(serde::Serialize)]
@@ -2764,7 +2764,7 @@ mod tests {
         assert_eq!(err2.path, vec!["user", "age"]);
     }
 
-    // T2-6: object optional / default / required
+    // object optional / default / required
     #[test]
     fn object_optional_default_required() {
         use serde_json::json;
@@ -2801,7 +2801,7 @@ mod tests {
         assert_eq!(err.path, vec!["c"]);
     }
 
-    // T2-7: array
+    // array
     #[test]
     fn array_type_and_element() {
         let a = array(number());
@@ -2822,7 +2822,7 @@ mod tests {
         assert_eq!(err2.path, vec!["1"]);
     }
 
-    // T2-8: array min/max and json_schema fragments
+    // array min/max and json_schema fragments
     #[test]
     fn array_min_max() {
         assert!(val(array(number()).min(2), &vec![1i64, 2]).is_ok());
@@ -2843,7 +2843,7 @@ mod tests {
         );
     }
 
-    // T2-9: record
+    // record
     #[test]
     fn record_type_and_values() {
         use serde_json::json;
@@ -2864,7 +2864,7 @@ mod tests {
         assert_eq!(err2.path, vec!["y"]);
     }
 
-    // T2-10: tuple
+    // tuple
     #[test]
     fn tuple_validation() {
         let t = tuple([string().into(), number().into()]);
@@ -2891,7 +2891,7 @@ mod tests {
         assert_eq!(err3.expected.as_deref(), Some("array"));
     }
 
-    // T2-11: union
+    // union
     #[test]
     fn union_matching() {
         let u = union([number().into(), string().into()]);
@@ -2903,7 +2903,7 @@ mod tests {
         assert_eq!(err.inner_errors.len(), 2);
     }
 
-    // T2-12: literal
+    // literal
     #[test]
     fn literal_matching() {
         assert!(val(literal("human"), "human").is_ok());
@@ -3008,7 +3008,7 @@ mod tests {
         assert!(float_discriminant_key(1.5).is_none());
     }
 
-    // T2-13: discriminated_union happy path
+    // discriminated_union happy path
     #[test]
     fn discriminated_union_happy_path() {
         let du = discriminated_union(
@@ -3042,7 +3042,7 @@ mod tests {
         assert_eq!(err4.path, vec!["session"]);
     }
 
-    // T2-14: discriminated_union config error (deferred, C7)
+    // discriminated_union config error (deferred to validation)
     #[test]
     fn discriminated_union_config_errors() {
         // (a) variant not an object
@@ -3126,7 +3126,7 @@ mod tests {
         );
     }
 
-    // T2-15: nesting and composition with deep path
+    // nesting and composition with deep path
     #[test]
     fn nesting_and_composition() {
         use serde_json::json;
@@ -3163,7 +3163,7 @@ mod tests {
         assert_eq!(err.path, vec!["pair", "1"]);
     }
 
-    // T2-16: SchemaKind dispatch + Debug for new variants
+    // SchemaKind dispatch + Debug for new variants
     #[test]
     fn schema_kind_debug_t2() {
         let cases: &[(&str, Schema)] = &[
@@ -3184,7 +3184,7 @@ mod tests {
         }
     }
 
-    // T2-17: depth guard composes with containers
+    // depth guard composes with containers
     #[test]
     fn depth_guard_with_containers() {
         use crate::schema::{ParseContext, MAX_PARSE_DEPTH};
@@ -3211,7 +3211,7 @@ mod tests {
             .is_ok());
     }
 
-    // T2-18: clone immutability with object modes
+    // clone immutability with object modes
     #[test]
     fn clone_immutability_object_mode() {
         let base = object([("a", number().into())]);
@@ -3233,10 +3233,10 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // T3 — object utilities
+    // Object utilities
     // ---------------------------------------------------------------------------
 
-    // T3-1: partial makes required fields optional
+    // partial makes required fields optional
     #[test]
     fn partial_makes_required_optional() {
         use serde_json::json;
@@ -3251,7 +3251,7 @@ mod tests {
         assert!(m.get("b").is_none());
     }
 
-    // T3-2: partial still validates present fields
+    // partial still validates present fields
     #[test]
     fn partial_validates_present_fields() {
         use serde_json::json;
@@ -3261,7 +3261,7 @@ mod tests {
         assert_eq!(err.path, vec!["a"]);
     }
 
-    // T3-3: partial preserves default precedence (contract-aligned)
+    // partial preserves default precedence (contract-aligned)
     #[test]
     fn partial_preserves_default_precedence() {
         use serde_json::json;
@@ -3273,7 +3273,7 @@ mod tests {
         assert!(m.get("b").is_none());
     }
 
-    // T3-4: extend adds a required field
+    // extend adds a required field
     #[test]
     fn extend_adds_required_field() {
         use serde_json::json;
@@ -3287,7 +3287,7 @@ mod tests {
         assert!(m.get("b").is_some());
     }
 
-    // T3-5: extend overwrites a duplicate key in place
+    // extend overwrites a duplicate key in place
     #[test]
     fn extend_overwrites_duplicate_key() {
         use serde_json::json;
@@ -3298,7 +3298,7 @@ mod tests {
         assert_eq!(err.path, vec!["a"]);
     }
 
-    // T3-6: extend preserves mode
+    // extend preserves mode
     #[test]
     fn extend_preserves_mode() {
         use serde_json::json;
@@ -3312,7 +3312,7 @@ mod tests {
         assert!(m.get("b").is_some());
     }
 
-    // T3-7: omit removes a field; strict makes it unknown
+    // omit removes a field; strict makes it unknown
     #[test]
     fn omit_removes_field() {
         use serde_json::json;
@@ -3327,7 +3327,7 @@ mod tests {
         assert!(val(s2, &json!({"a": 1})).is_ok());
     }
 
-    // T3-8: omit_read_only / omit_write_only remove by modifier
+    // omit_read_only / omit_write_only remove by modifier
     #[test]
     fn omit_read_only_write_only() {
         use serde_json::json;
@@ -3347,7 +3347,7 @@ mod tests {
         assert_eq!(err2.path, vec!["wo"]);
     }
 
-    // T3-9: strip_only drops an unknown key silently in strict
+    // strip_only drops an unknown key silently in strict
     #[test]
     fn strip_only_drops_unknown_key() {
         use serde_json::json;
@@ -3359,7 +3359,7 @@ mod tests {
         assert_eq!(err.path, vec!["other"]);
     }
 
-    // T3-10: strip_only re-defaults a stripped defaulted field
+    // strip_only re-defaults a stripped defaulted field
     #[test]
     fn strip_only_redefaults_stripped_field() {
         use serde_json::json;
@@ -3369,7 +3369,7 @@ mod tests {
         assert_eq!(m.get("a").and_then(|v| v.as_i64()), Some(5));
     }
 
-    // T3-11: strip_only starves a stripped required field
+    // strip_only starves a stripped required field
     #[test]
     fn strip_only_starves_required_field() {
         use serde_json::json;
@@ -3379,7 +3379,7 @@ mod tests {
         assert_eq!(err.path, vec!["a"]);
     }
 
-    // T3-12: strip_read_only / strip_write_only drops modifier-tagged field from input
+    // strip_read_only / strip_write_only drops modifier-tagged field from input
     #[test]
     fn strip_read_only_write_only() {
         use serde_json::json;
@@ -3405,7 +3405,7 @@ mod tests {
         assert!(m2.get("a").is_some());
     }
 
-    // T3-13: omit_read_only then strip_read_only does NOT auto-strip (v1 contract)
+    // omit_read_only then strip_read_only does NOT auto-strip
     #[test]
     fn omit_read_only_then_strip_read_only_no_auto_strip() {
         use serde_json::json;
@@ -3425,7 +3425,7 @@ mod tests {
         assert!(ok.as_object().unwrap().get("a").is_some());
     }
 
-    // T3-14: clone immutability
+    // clone immutability
     #[test]
     fn clone_immutability_partial() {
         use serde_json::json;
@@ -3437,7 +3437,7 @@ mod tests {
         assert_eq!(err.code, ErrorCode::REQUIRED);
     }
 
-    // T3-15: composition
+    // composition
     #[test]
     fn object_utility_composition() {
         use serde_json::json;
@@ -3461,7 +3461,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // T4 — special types
+    // Special types
     // -----------------------------------------------------------------------
 
     // Local Blob helper: Serialize calls serialize_bytes (replicates value.rs test helper).
@@ -3472,14 +3472,14 @@ mod tests {
         }
     }
 
-    // T4-1: buffer accepts native bytes
+    // buffer accepts native bytes
     #[test]
     fn buffer_accepts_bytes() {
         let ok = val(buffer(), &Blob(vec![1, 2, 3])).unwrap();
         assert_eq!(ok, ZerxValue::Bytes(vec![1, 2, 3]));
     }
 
-    // T4-2: buffer rejects non-bytes (C2 no-coercion)
+    // buffer rejects non-bytes (no coercion)
     #[test]
     fn buffer_rejects_non_bytes() {
         // A plain Vec<u8> is NOT emitted via serialize_bytes → becomes Array
@@ -3497,7 +3497,7 @@ mod tests {
         assert_eq!(err3.received.as_deref(), Some("number"));
     }
 
-    // T4-3: buffer().mime(...) stores MIME on the modifier
+    // buffer().mime(...) stores MIME on the modifier
     #[test]
     fn buffer_mime_stores_modifier() {
         let b = buffer().mime("image/png");
@@ -3509,7 +3509,7 @@ mod tests {
         assert_eq!(b2.0.modifiers.mime.as_deref(), Some("image/png"));
     }
 
-    // T4-4: uri happy + sad paths
+    // uri happy + sad paths
     #[test]
     fn uri_happy_and_sad() {
         assert!(val(uri(), "https://example.com").is_ok());
@@ -3535,7 +3535,7 @@ mod tests {
         assert_eq!(err_num.expected.as_deref(), Some("uri"));
     }
 
-    // T4-5: url happy + sad paths
+    // url happy + sad paths
     #[test]
     fn url_happy_and_sad() {
         assert!(val(url(), "http://example.com").is_ok());
@@ -3565,7 +3565,7 @@ mod tests {
         assert_eq!(err_bool.expected.as_deref(), Some("url"));
     }
 
-    // T4-6: json accepts any serde-bridgeable value, identity parse
+    // json accepts any serde-bridgeable value, identity parse
     #[test]
     fn json_accepts_anything() {
         assert_eq!(
@@ -3593,7 +3593,7 @@ mod tests {
         assert_eq!(b_ok, ZerxValue::Bytes(vec![9, 8]));
     }
 
-    // T4-7: jsonschema accepts objects only; the kind's own check is the export
+    // jsonschema accepts objects only; the kind's own check is the export
     // form's meaning.
     #[test]
     fn jsonschema_accepts_only_objects() {
@@ -3645,9 +3645,9 @@ mod tests {
         assert!(out.as_object().unwrap().get("extra").is_none());
     }
 
-    // T4-8: negative compile-guarantee is covered by compile_fail doctests on the builder types
+    // negative compile-guarantee is covered by compile_fail doctests on the builder types
 
-    // T4-9: modifiers compose via blanket trait
+    // modifiers compose via blanket trait
     #[test]
     fn special_type_modifiers_compose() {
         use crate::schema::ParseContext;
@@ -3666,7 +3666,7 @@ mod tests {
         assert_eq!(j.modifiers.default, Some(default_val));
     }
 
-    // T4-10: SchemaKind dispatch + Debug renders expected strings
+    // SchemaKind dispatch + Debug renders expected strings
     #[test]
     fn schema_kind_debug_t4() {
         let cases: &[(&str, Schema)] = &[
@@ -3682,7 +3682,7 @@ mod tests {
         }
     }
 
-    // T4-11: composition — object mixing special types with complex types
+    // composition — object mixing special types with complex types
     #[test]
     fn special_type_composition() {
         use serde_json::json;
@@ -3709,7 +3709,7 @@ mod tests {
         assert_eq!(err.path, vec!["home"]);
     }
 
-    // T4-12: clone immutability for buffer
+    // clone immutability for buffer
     #[test]
     fn buffer_clone_immutability() {
         let base = buffer();
