@@ -1723,7 +1723,7 @@ fn import_node_prelude<'a>(
         serde_json::Value::Bool(false) => {
             return Err(ZerxError::new(
                 ErrorCode::IMPORT_UNSUPPORTED,
-                "a `false` schema rejects all values; zerx has no never type",
+                "a `false` schema rejects all values; this representation of a never-satisfiable schema is not supported",
             )
             .at(path.to_vec()));
         }
@@ -1879,7 +1879,7 @@ fn import_union_step(
         if arr.is_empty() {
             return Err(ZerxError::new(
                 ErrorCode::IMPORT_UNSUPPORTED,
-                "an empty `anyOf`/`oneOf` accepts nothing; zerx has no never type",
+                "an empty `anyOf`/`oneOf` accepts nothing; this representation of a never-satisfiable schema is not supported",
             )
             .at(path.to_vec()));
         }

@@ -156,7 +156,7 @@
 - An imported `pattern` MAY accept less than ECMA-262 does where the ECMA and `regex` crate dialects disagree (`\D`, `\W`, `\s`, `\S`, `\b`, `\B`): it matches only what both accept (`types`). This is a named narrowing under `D-import-fail-closed`.
 - A consumed keyword whose value violates the Draft 2020-12 grammar MUST raise `IMPORT_MALFORMED`; an integral float counts as an integer.
 - Annotation keywords the import reconstructs count as consumed: a malformed annotation value (a non-string `description`/`title`/`format`/`contentMediaType`, a non-array `examples`, a non-boolean `deprecated`/`readOnly`/`writeOnly`, a non-object `discriminator`) MUST raise `IMPORT_MALFORMED` instead of being dropped.
-- An empty `anyOf`/`oneOf` MUST raise `IMPORT_UNSUPPORTED`; it accepts nothing, and zerx has no never type.
+- An empty `anyOf`/`oneOf` MUST raise `IMPORT_UNSUPPORTED`, because this representation of a never-satisfiable schema is not supported.
 - `$id` on any node other than the root MUST raise `IMPORT_UNSUPPORTED`; a nested `$id` would re-base the `$ref`s inside it. A root `$id` imports as `meta`.
 - A `pattern` on a string, `uri` or `url` node that is invalid ECMA-262 MUST raise `IMPORT_MALFORMED`, and one that is valid but outside the translated subset MUST raise `IMPORT_UNSUPPORTED`; it would otherwise reject every string at validation time.
 - On a `type: integer` node, an integer `minimum`/`maximum` literal MUST import as an exact integer bound at any `i64`/`u64` magnitude; a float literal of magnitude 2^53 or more MUST raise `IMPORT_UNSUPPORTED`, because the parsed value may already be a rounded form of its source.
@@ -239,7 +239,7 @@
 ### Boolean schema import
 
 - `true` → `any()`.
-- `false` → `IMPORT_UNSUPPORTED` (zerx has no never type).
+- `false` → `IMPORT_UNSUPPORTED` (this representation of a never-satisfiable schema is not supported).
 
 ### `$ref` import with memoised lazy
 
