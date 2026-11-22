@@ -2,7 +2,7 @@
 
 **A Rust schema validator for data that isn't JSON-clean — buffers, Lua values, PostgreSQL JSONBs. Strict by default, serde-native, bidirectional JSON Schema. Schemas you assemble at runtime, not derive from types.**
 
-> **Status:** 3.2.2 — implemented and tested. The What/Why lives in [`docs/definition.md`](docs/definition.md), the binding design decisions in [`docs/decisions.md`](docs/decisions.md), the structure in [`docs/architecture/`](docs/architecture/).
+> **Status:** 3.2.3 — implemented and tested. The What/Why lives in [`docs/definition.md`](docs/definition.md), the binding design decisions in [`docs/decisions.md`](docs/decisions.md), the structure in [`docs/architecture/`](docs/architecture/).
 
 In Rust the type system and `serde` take *types* seriously, and that's where validation usually stops: derive a struct, parse into it, done. But plenty of real data never fits a clean struct — a binary buffer, a Lua table coming back from a sandboxed runtime, a PostgreSQL JSONB, a schema you only know at runtime. Zerx steps back: schema validation is useful even when the data isn't JSON-clean and the shape isn't known at compile time. A `zerx::buffer()` is a first-class citizen, and the schema itself is a **value** you build, clone, slice, and extend at runtime — not a type a macro derives. JSON Schema roundtrip still works, through format markers (`format: "buffer"`, `"record"`, `"json"`) that pure-JSON tools can ignore.
 
@@ -199,7 +199,7 @@ Consumers branch on `code` and `path`, never on message text.
 
 ## LLM Reference
 
-Zerx: a Rust runtime schema-validation library (3.2.2) built on `serde` + `serde_json` + `regex`, with an optional `lua` feature for schema-directed validation of Lua data. It is a conceptual port of Zex (TypeScript); the type catalogue, modifier set, JSON Schema marker conventions, Delta/Replace semantics, error model, and policy pipeline carry over. Normative docs: `docs/definition.md`, `docs/decisions.md`, `docs/architecture/`.
+Zerx: a Rust runtime schema-validation library (3.2.3) built on `serde` + `serde_json` + `regex`, with an optional `lua` feature for schema-directed validation of Lua data. It is a conceptual port of Zex (TypeScript); the type catalogue, modifier set, JSON Schema marker conventions, Delta/Replace semantics, error model, and policy pipeline carry over. Normative docs: `docs/definition.md`, `docs/decisions.md`, `docs/architecture/`.
 
 **Core model.** The schema is a runtime value (`zerx::Schema`), not a derived type — built via factory functions (`zerx::object`, `zerx::string`, …), composed, cloned, sliced (`omit`, `partial`), and extended. No type inference: validation returns a dynamic `ZerxValue`, a serde value over the full serde data model (including bytes), not the JSON projection. `ZerxValue` is `'static`, `Clone + PartialEq + Debug`, implements `Serialize`; `validate::<T: Serialize>` runs an internal serializer so any serde type validates without manual conversion. There is no host-opaque layer.
 
