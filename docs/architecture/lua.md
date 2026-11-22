@@ -50,7 +50,8 @@
 - `LUA_SHAPE_MISMATCH` MUST be raised when a table's populated parts do not match the directing schema kind: a non-empty hash part under `array`/`tuple`, a non-empty array part under `object`/`record`, or a mixed table under a free conversion.
 - Representability errors (`LUA_INVALID_KEY`, `LUA_SHAPE_MISMATCH`) MUST be raised only by the transform pass, never by the parse pass.
 - Schema-semantic errors (`TYPE_MISMATCH`, `UNKNOWN_PROPERTY`, `REQUIRED`, `TUPLE_LENGTH_MISMATCH`, `INVALID_DISCRIMINANT`, validator errors, `REFINEMENT_FAILED`) MUST be raised only by the parse pass.
-- `union` and `OneOf` variant selection validates each transformed candidate inside the transform pass and reports `UNION_MISMATCH` / `ONE_OF_AMBIGUOUS` from there.
+- `union` and `OneOf` variant selection MAY validate each transformed candidate inside the transform pass, but a failed selection (`UNION_MISMATCH` / `ONE_OF_AMBIGUOUS`) MUST be raised by the parse pass at the node's own position, so a sibling earlier in shape order keeps its native precedence.
+- When a failed selection is deferred to the parse pass, the value handed over MUST be one the node's parse rejects; where no such value exists the transform pass MUST raise the selection error itself, so the deferral never accepts an input the selection rejected.
 - Non-string hash keys and mixed tables MUST be rejected with representability errors even under free-conversion schemas (`any`, `json`, `jsonschema`) — no silent data loss.
 - An empty Lua table under a free-conversion schema MUST produce an empty `ZerxValue::Array` (the documented disambiguation bias).
 - The discriminator value in a `discriminated_union` MUST be mapped to an infallible scalar placeholder (`Bool`/`I64`/`String`/`Null`) before the Miss/non-keyable path builds its output object; a `Table`-valued discriminator MUST produce the `Null` placeholder, never a recursive table conversion.

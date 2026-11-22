@@ -75,6 +75,23 @@ impl Schema {
         result
     }
 
+    // A union/OneOf failure is a schema-semantic error: raising it here, in the
+    // transform pass, would pre-empt an earlier sibling's parse error and break
+    // the native error precedence. Hand the parse pass a representable value
+    // instead, so it raises the error at the node's own position — but only
+    // when the parse pass is certain to reject that value; otherwise keep the
+    // transform-pass error, so no input is accepted that the selection rejected.
+    fn defer_semantic_error(
+        &self,
+        candidate: Option<ZerxValue>,
+        err: ZerxError,
+    ) -> Result<ZerxValue, ZerxError> {
+        match candidate {
+            Some(v) if self.parse_present(&v, &mut ParseContext::new()).is_err() => Ok(v),
+            _ => Err(err),
+        }
+    }
+
     // Closed dispatch over the resolved SchemaKind. No catch-all arm so a future
     // variant is a compile error.
     fn lua_transform_inner(
@@ -322,7 +339,9 @@ impl Schema {
                         Err(e) => inner_errors.push(e),
                     }
                 }
-                Err(ZerxError::union(Vec::new(), inner_errors))
+                let err = ZerxError::union(Vec::new(), inner_errors);
+                let candidate = free_convert(lua, ctx).ok();
+                self.defer_semantic_error(candidate, err)
             }
 
             // OneOf: transform and parse against every variant; exactly one must match.
@@ -342,8 +361,15 @@ impl Schema {
                 }
                 match successes.len() {
                     1 => Ok(successes.pop().expect("one success collected")),
-                    0 => Err(ZerxError::union(Vec::new(), inner_errors)),
-                    n => Err(crate::types::one_of_ambiguous_error(n)),
+                    0 => {
+                        let err = ZerxError::union(Vec::new(), inner_errors);
+                        let candidate = free_convert(lua, ctx).ok();
+                        self.defer_semantic_error(candidate, err)
+                    }
+                    n => {
+                        let err = crate::types::one_of_ambiguous_error(n);
+                        self.defer_semantic_error(successes.into_iter().next(), err)
+                    }
                 }
             }
 
@@ -965,6 +991,108 @@ mod tests {
         assert_eq!(
             two.validate_lua(&LuaValue::Integer(1)).unwrap_err().code,
             ErrorCode::ONE_OF_AMBIGUOUS
+        );
+    }
+
+    // --- union / oneOf error precedence matches native validation ---
+
+    #[test]
+    fn union_failure_in_later_field_does_not_preempt_earlier_field() {
+        let schema: Schema = object([
+            ("a", number().into()),
+            ("b", union([string().into(), boolean().into()]).into()),
+        ])
+        .into();
+        let lua = table(
+            vec![],
+            vec![
+                hash_entry("a", bytes(b"x")),
+                hash_entry("b", table(vec![], vec![])),
+            ],
+        );
+        let err = schema.validate_lua(&lua).unwrap_err();
+        let native = schema
+            .validate(&serde_json::json!({"a": "x", "b": []}))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(err.path, vec!["a".to_string()]);
+        assert_eq!((err.code, err.path), (native.code, native.path));
+    }
+
+    #[test]
+    fn one_of_failure_in_later_field_does_not_preempt_earlier_field() {
+        let schema: Schema = object([
+            ("a", number().into()),
+            (
+                "b",
+                crate::types::one_of([number().into(), number().int().into()]),
+            ),
+        ])
+        .into();
+        let lua = table(
+            vec![],
+            vec![
+                hash_entry("a", bytes(b"x")),
+                hash_entry("b", LuaValue::Integer(1)),
+            ],
+        );
+        let err = schema.validate_lua(&lua).unwrap_err();
+        assert_eq!(err.code, ErrorCode::TYPE_MISMATCH);
+        assert_eq!(err.path, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn union_only_failure_still_reports_union_mismatch_with_inner_errors() {
+        let schema: Schema =
+            object([("b", union([string().into(), boolean().into()]).into())]).into();
+        let lua = table(vec![], vec![hash_entry("b", table(vec![], vec![]))]);
+        let err = schema.validate_lua(&lua).unwrap_err();
+        assert_eq!(err.code, ErrorCode::UNION_MISMATCH);
+        assert_eq!(err.path, vec!["b".to_string()]);
+        assert_eq!(err.inner_errors.len(), 2);
+    }
+
+    #[test]
+    fn one_of_ambiguity_in_field_still_reported() {
+        let schema: Schema = object([(
+            "b",
+            crate::types::one_of([number().into(), number().int().into()]),
+        )])
+        .into();
+        let lua = table(vec![], vec![hash_entry("b", LuaValue::Integer(1))]);
+        let err = schema.validate_lua(&lua).unwrap_err();
+        assert_eq!(err.code, ErrorCode::ONE_OF_AMBIGUOUS);
+        assert_eq!(err.path, vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn union_variant_selection_output_unchanged() {
+        // The directed transform still selects the variant: bytes stay raw
+        // under `buffer`, and decode under `string`.
+        let s: Schema = union([buffer().into(), string().into()]).into();
+        assert_eq!(
+            s.validate_lua(&bytes(b"ab")).unwrap(),
+            ZerxValue::Bytes(b"ab".to_vec())
+        );
+        let s: Schema = union([number().into(), string().into()]).into();
+        assert_eq!(
+            s.validate_lua(&bytes(b"ab")).unwrap(),
+            ZerxValue::String("ab".to_string())
+        );
+    }
+
+    #[test]
+    fn union_rejects_value_only_its_free_form_would_satisfy() {
+        // Fail closed: a free conversion that some variant would accept must
+        // not turn a directed-transform rejection into acceptance.
+        // `array(string())` rejects a non-UTF-8 byte element under the
+        // directed transform (it stays bytes); free conversion keeps it bytes
+        // too, so both reject — the union stays rejected.
+        let s: Schema = union([array(string()).into(), boolean().into()]).into();
+        let lua = table(vec![bytes(&[0xFF])], vec![]);
+        assert_eq!(
+            s.validate_lua(&lua).unwrap_err().code,
+            ErrorCode::UNION_MISMATCH
         );
     }
 
