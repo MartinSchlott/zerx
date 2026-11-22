@@ -889,11 +889,11 @@ mod tests {
 
     // 6. sql array items fallback
     #[test]
-    fn test_sql_array_items_fallback_bare_fails() {
+    fn test_sql_array_items_fallback() {
         let v = json!({"type": "array"});
-        // Bare importer errors on an array missing items.
-        assert!(crate::json_schema::from_json_schema(&v).is_err());
-        // sql policy adds items:{} so it succeeds.
+        // The bare importer reads a missing `items` as any element.
+        assert!(crate::json_schema::from_json_schema(&v).is_ok());
+        // The sql policy adds items:{}, with the same result.
         let result = import_sql(v);
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(

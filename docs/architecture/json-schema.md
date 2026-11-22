@@ -135,6 +135,7 @@
 
 - An absent `type` MUST impose no type restriction; a node with no other base-producing keyword and no unconsumed assertion keyword imports as `any()`.
 - A single string naming one of the seven Draft 2020-12 types MUST import as that type; `integer` imports as `number().int()`.
+- A `type: "array"` node without `items` or `prefixItems` MUST import as `array(any())`, which admits exactly the elements the source admits; its sibling array keywords are enforced or refused as on any array node.
 - An array of exactly two distinct type names, one of them `"null"`, in either order, MUST import as the non-null type with `.nullable()` applied, keeping that type's sibling constraints.
 - `.nullable()` from a type array MUST be applied only to a base built by format-marker or `type` dispatch; a base from `$ref`, `anyOf`/`oneOf` or `enum`/`const` MUST NOT receive it, so `null` passes there only where the members admit it.
 - An unknown type name, an empty array, an array holding a non-string or a duplicate, and any `type` that is neither a string nor an array MUST raise `IMPORT_MALFORMED`.
@@ -254,7 +255,7 @@
 
 - `from_json_schema` MUST return `Result<Schema, ZerxError>`; every error MUST carry the failing node's `path`.
 - `IMPORT_UNSUPPORTED` — well-formed JSON Schema feature outside zerx's model (`allOf`, `not`, `false` schema, unsupported applicators, non-canonical `type` arrays, `type` not honourable at its site, unconsumed assertion keywords, other).
-- `IMPORT_MALFORMED` — structurally invalid input (non-object/bool node, array missing `items`, record with `additionalProperties:false`, `$ref` to missing or non-local target, `type` or another consumed keyword outside the Draft 2020-12 grammar).
+- `IMPORT_MALFORMED` — structurally invalid input (non-object/bool node, record with `additionalProperties:false`, `$ref` to missing or non-local target, `type` or another consumed keyword outside the Draft 2020-12 grammar).
 - Unsupported applicators that are NOT `allOf`/`not` (`if`, `then`, `else`, `contains`, `minContains`, `maxContains`, `patternProperties`, `propertyNames`, `dependentSchemas`, `dependentRequired`, `unevaluatedProperties`, `unevaluatedItems`, `$dynamicRef`) MUST raise `IMPORT_UNSUPPORTED` rather than being silently routed to `meta`, on `$ref` nodes too.
 
 ### `x-ui-multiline`

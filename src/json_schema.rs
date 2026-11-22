@@ -643,7 +643,7 @@ impl ErrorCode {
     /// A JSON Schema feature zerx cannot represent (allOf, not, false-schema,
     /// unknown structural keywords). Well-formed JSON Schema but out of zerx's model.
     pub const IMPORT_UNSUPPORTED: ErrorCode = ErrorCode::new("import_unsupported");
-    /// A structurally invalid input (non-object/bool, array missing items,
+    /// A structurally invalid input (non-object/bool,
     /// record with additionalProperties:false, $ref to missing/non-local target).
     pub const IMPORT_MALFORMED: ErrorCode = ErrorCode::new("import_malformed");
 }
@@ -2364,15 +2364,11 @@ fn import_array_items(
     ctx: &ImportContext,
     path: &[String],
 ) -> Result<Schema, ZerxError> {
+    // Without `items` every element is admitted, which `array(any())`
+    // represents exactly.
     let items_val = match obj.get("items") {
         Some(v) => v,
-        None => {
-            return Err(ZerxError::new(
-                ErrorCode::IMPORT_MALFORMED,
-                "array schema missing `items`",
-            )
-            .at(path.to_vec()));
-        }
+        None => return Ok(crate::any().into()),
     };
     Ok(
         if matches!(items_val, serde_json::Value::Bool(true))
@@ -3327,8 +3323,8 @@ mod tests {
         let exp_empty = from(v_empty).unwrap().to_json_schema();
         assert_eq!(exp_empty["type"], serde_json::json!("array"));
 
-        // missing items → IMPORT_MALFORMED
-        let bad = serde_json::json!({"type":"array"});
+        // malformed items → IMPORT_MALFORMED
+        let bad = serde_json::json!({"type":"array","items":5});
         assert_eq!(from(bad).unwrap_err().code, ErrorCode::IMPORT_MALFORMED);
 
         // prefixItems with open tail → IMPORT_UNSUPPORTED
@@ -3988,7 +3984,7 @@ mod tests {
         let input = serde_json::json!({
             "type": "object",
             "properties": {
-                "x": {"type": "array"}
+                "x": {"type": "array", "items": 5}
             },
             "required": ["x"],
             "additionalProperties": false
@@ -6196,5 +6192,57 @@ mod tests {
             "examples": ["a@b.c"], "deprecated": true, "readOnly": false, "writeOnly": false
         });
         assert!(from(fine).is_ok());
+    }
+
+    #[test]
+    fn array_without_items_imports_as_any_array() {
+        let j = |v| from(v).unwrap();
+        let s = j(serde_json::json!({"type": "array"}));
+        assert!(s.validate(&serde_json::json!([1, "a", null])).is_ok());
+        assert_eq!(
+            s.validate(&serde_json::json!({})).unwrap_err().code,
+            ErrorCode::TYPE_MISMATCH
+        );
+        let unique = j(serde_json::json!({"type": "array", "uniqueItems": true}));
+        assert_eq!(
+            unique
+                .validate(&serde_json::json!([1, 1]))
+                .unwrap_err()
+                .code,
+            ErrorCode::ARRAY_NOT_UNIQUE
+        );
+        let min = j(serde_json::json!({"type": "array", "minItems": 1}));
+        assert_eq!(
+            min.validate(&serde_json::json!([])).unwrap_err().code,
+            ErrorCode::ARRAY_TOO_SHORT
+        );
+        let max = j(serde_json::json!({"type": "array", "maxItems": 1}));
+        assert_eq!(
+            max.validate(&serde_json::json!([1, 2])).unwrap_err().code,
+            ErrorCode::ARRAY_TOO_LONG
+        );
+        for kw in ["contains", "unevaluatedItems"] {
+            let mut node = serde_json::json!({"type": "array"});
+            node[kw] = serde_json::json!({});
+            assert_eq!(
+                from(node).unwrap_err().code,
+                ErrorCode::IMPORT_UNSUPPORTED,
+                "{kw}"
+            );
+        }
+        let tuple = j(serde_json::json!({
+            "type": "array", "prefixItems": [{"type": "string"}], "items": false
+        }));
+        assert!(tuple.validate(&serde_json::json!(["a"])).is_ok());
+        assert_eq!(
+            tuple
+                .validate(&serde_json::json!(["a", "b"]))
+                .unwrap_err()
+                .code,
+            ErrorCode::TUPLE_LENGTH_MISMATCH
+        );
+        let native: Schema = array(any()).into();
+        let exported = native.to_json_schema();
+        assert_eq!(j(exported.clone()).to_json_schema(), exported);
     }
 }
