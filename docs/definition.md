@@ -29,6 +29,7 @@
 - `Bidirectional JSON Schema` — schemas export to and import from JSON Schema, with format markers preserving non-JSON types.
 - `Delta / Replace` — validate a value against a sub-schema, or replace a value at a path with full root revalidation.
 - `Policy-driven import` — heterogeneous JSON Schema sources import through a composable transform pipeline.
+- `Bounded input` — deep or cyclic input, values and JSON Schema documents are refused with a structured error, never by a stack overflow.
 
 ## Entities
 
@@ -42,7 +43,7 @@
 ## Success Criteria
 
 - The product is successful when non-JSON data is first-class: buffers (with MIME) validate and roundtrip through format markers, and Lua data values validate via schema-directed disambiguation, without first being made `serde_json`-clean.
-- The product is successful when `schema → to_json_schema → from_json_schema` yields a semantically equivalent schema, with `$defs`/`$ref`, cycles, and format markers surviving.
+- The product is successful when `schema → to_json_schema → from_json_schema` yields a semantically equivalent schema for every exportable construct, with `$defs`/`$ref`, cycles, and format markers surviving; refinements and the strip mode are caller-side and are not carried, and a node that accepts nothing exports as `false`.
 - The product is successful when strict mode catches typos and rejects unexpected fields at runtime by default.
 - The product is successful when any `T: Serialize` validates directly and any `ZerxValue` serialises to any serde format.
 - The product is successful when schemas are built, cloned, sliced (`omit`/`partial`), and extended at runtime.

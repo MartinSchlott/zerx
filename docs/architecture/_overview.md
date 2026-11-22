@@ -1,6 +1,6 @@
 # Architecture Overview
 
-This file defines the topology of `docs/architecture/`. Every concern file in this directory MUST be listed below; every entry below MUST point to an existing concern file.
+This file defines the topology of `docs/architecture/`. Every concern file in this directory MUST be listed below; every entry below MUST point to an existing concern file. Concern-to-concern edges live in the concern files' `Consumes from` / `Provides to` sections, not here.
 
 ## Concerns
 
@@ -12,18 +12,9 @@ This file defines the topology of `docs/architecture/`. Every concern file in th
 - [`errors.md`](errors.md) — the structured, machine-readable `ZerxError` model.
 - [`lua.md`](lua.md) — the optional `lua` feature: zerx-owned Lua input types and schema-directed validation.
 
-## Key Relationships
-
-- `schema-core` → `value-model`: validation produces a `ZerxValue`.
-- `schema-core` → `errors`: validation failures are `ZerxError`.
-- `types` → `schema-core`: every type is a `Schema` variant built on the core representation.
-- `json-schema` → `schema-core`: export reads, and import reconstructs, `Schema` values.
-- `policy` → `json-schema`: policies transform input before, and types after, the import walk.
-- `lua` → `schema-core`: `validate_lua` feeds the parse flow (`parse_present`).
-- `lua` → `value-model`: `validate_lua` produces a `ZerxValue`.
-
 ## System Seams
 
 - Serde boundary — owned by `value-model` (any `T: Serialize` in, any serde format out).
 - JSON Schema boundary — owned by `json-schema`.
+- External `$ref` resolution through the caller's resolver — owned by `policy`.
 - Lua data boundary (`lua` feature) — owned by `lua`.

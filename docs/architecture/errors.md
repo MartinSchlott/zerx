@@ -22,6 +22,8 @@
 - `json-schema`: `ZerxError` (structured import failure)
 - `policy`: `ZerxError` (structured pipeline failure)
 - `lua`: `ZerxError` (structured validation failure returned by `validate_lua`)
+- `types`: `ZerxError` (validator and union failures)
+- `schema-core`: `ErrorCode` (open catalogue extended by this concern)
 
 ## External Contracts
 
@@ -39,15 +41,17 @@
 ## Constraints
 
 - `ZerxError` MUST carry exactly these fields: `path` (list of path segments), `code` (`ErrorCode`), `message` (English string), `received` (optional descriptor), `expected` (optional descriptor), `inner_errors` (list of nested errors).
-- `received` and `expected` MUST be plain serialisable descriptor strings, not embedded `ZerxValue`; `received` is a compact type tag of what arrived; `expected` describes the schema's requirement.
+- `received` and `expected` MUST be plain serialisable descriptor strings, not embedded `ZerxValue`.
+- `received` describes what arrived — a compact type tag, or the offending key or length where the type alone does not explain the failure; `expected` describes the schema's requirement.
+- `message` MUST be English and informative only; consumers MUST branch on `code` and `path`, which are the stable contract.
 - `to_json` MUST be infallible and MUST return `serde_json::Value` directly, not `Result`.
 - `received`, `expected`, and `inner_errors` MUST be omitted from serialised output when `None` or empty.
 - `ZerxError` MUST implement `Serialize` and MUST NOT implement `Deserialize`; errors flow outward only.
 - `ZerxError` MUST implement `std::error::Error`.
-- The `ErrorCode` catalogue is open: each module MUST declare its own codes as associated constants in a separate `impl ErrorCode` block next to the code that raises them; no central exhaustive enum of all codes exists.
+- The `ErrorCode` catalogue is open: each module MUST declare the codes it introduces in its own `impl ErrorCode` block, and no central exhaustive enum of all codes exists.
+- Any module MAY raise any declared code; this concern declares only the seed codes `UNKNOWN_ERROR`, `TYPE_MISMATCH` and `UNION_MISMATCH`.
 - The union-failure aggregation constructor is owned by this concern; which errors to pass and any variant-selection heuristic belong to the union type in `types`.
 
 ## Related Decisions
 
 - `D-result-only-api`
-- `D-english-only-errors`

@@ -13,12 +13,6 @@ id: zrx9backlog0col0backlog1
   > `register_policy` already support out-of-tree policies; only the `sql` policy
   > ships built-in for v1. An OpenAPI policy would join `sql` as a second built-in.
 
-- [ ] `rustfmt` gate
-  > `cargo fmt --check` currently fails with a 3216-line diff — the codebase has never
-  > been rustfmt-formatted. A `fmt` gate requires a one-time whole-repo reformat, which
-  > is a separate, Product-Owner-approved change. Deliberately excluded from V1
-  > (PLAN_V1_verification_gates).
-
 - [ ] Migrate `backlog.kanban.md`/`bug.kanban.md` to the current three-heading format
   > Surfaced during V1 plan review (PLAN_V1_verification_gates): the boards predate the
   > `markdown-kanban` template (no `###` cards, no `template:`/`priority` fields, no
@@ -27,7 +21,6 @@ id: zrx9backlog0col0backlog1
 
 - [ ] Enforce `exclusiveMinimum`/`exclusiveMaximum`/`multipleOf`/`minProperties`/`maxProperties`
   > PLAN_J5_import_assertions_fail_closed refuses these keywords at import (`D-import-fail-closed`).
-  > `uniqueItems` is done (PLAN_T7_unique_items, zerx 3.2.0); the others stay open.
   > Real validators on the builders, exported as their keywords, would let such schemas import
   > instead. Common in generated schemas (e.g. `exclusiveMinimum` for "greater than").
 
@@ -63,11 +56,6 @@ id: zrx9backlog0col0inprog01
 
 ## Done
 id: zrx9backlog0col0done0001
-
-- [x] Enforce `uniqueItems`
-  > `ArraySchema::unique_items()` enforces JSON Schema `uniqueItems` with literal equality,
-  > exports `uniqueItems: true` and imports it on array nodes (PLAN_T7_unique_items, zerx 3.2.0).
-  > Split off the "Enforce `exclusiveMinimum`/…" card, whose other keywords stay open.
 
 ## Someday
 id: zrx9backlog0col0someday1

@@ -1,10 +1,8 @@
 # Verification
 
-Local Cargo artifacts and runner output on this machine live under
-`/Users/martinschlott/Documents/MyProjects/RustBuildTargets/zerx`. Resolve output
-through Cargo metadata; older `target/` examples below refer to that output root.
-See [the machine build-storage guide](../../RUST_BUILD_STORAGE.md).
-
+`scripts/verify` resolves its output root through `cargo metadata` (the Cargo target directory; a
+local Cargo configuration may redirect it). Below, `<target>` stands for that directory. The runner
+needs `cargo` and `python3` on `PATH`.
 
 `scripts/verify` is zerx's canonical verification entrypoint. `scripts/verify all` is the
 pre-commit / final-validation gate — run it before considering any change done.
@@ -27,32 +25,34 @@ scripts/verify --help
 
 | Status | Meaning |
 |---|---|
-| `0` | every requested gate passed |
+| `0` | every requested gate passed, or `--help` was printed |
+| `1` | the Cargo target directory could not be resolved (`cargo metadata` or `python3` failed); nothing was executed |
 | `2` | `BUSY` — another verification run holds the lock; nothing was executed |
 | `64` | usage error; nothing was executed |
 | `70` | the runner could not establish process-group ownership of one of its owned subprocess groups; the lock is retained |
 | `71` | the owned process group survived `TERM` **and** `KILL`; the lock is deliberately retained |
 | `124` | a gate exceeded its timeout (300s) |
+| `129` / `130` / `143` | the runner was interrupted by `HUP` / `INT` / `TERM` and cleaned up its owned process groups |
 | other | the failing gate's child exit status, passed through verbatim (cargo typically `101`) |
 
 ## If a lock was left behind
 
-`scripts/verify` serialises runs through `target/verify/.lock`. Four distinct situations can
+`scripts/verify` serialises runs through `<target>/verify/.lock`. Four distinct situations can
 leave that lock in place, and they are **not** interchangeable — each needs a different check
 before removal.
 
 - **`BUSY — stale lock from dead pid <n>`** — the recorded owner is provably dead, so nothing
-  is holding the build directory. Safe to clear directly: `rm -rf target/verify/.lock`.
+  is holding the build directory. Safe to clear directly: `rm -rf <target>/verify/.lock`.
 - **`BUSY — verification lock present with incomplete metadata`** — the runner cannot tell an
   abandoned lock from a healthy runner two instructions into its own startup. Check first
   whether a `scripts/verify` is actually running; clear the lock only if none is.
 - **exit `71`** — retained deliberately, because something this run started survived `TERM`
   and `KILL`. **Not** a bare `rm -rf` case. The `FATAL` line names which target survived, and
   they carry different urgency:
-  - *gate process group* — identifier also in `target/verify/logs/<gate>.pgid`. These are
+  - *gate process group* — identifier also in `<target>/verify/logs/<gate>.pgid`. These are
     cargo/rustc processes that **do** hold this run's `CARGO_TARGET_DIR`. Clearing the lock
     while they live lets the next run share the build directory with them.
-  - *watchdog process group* — identifier in `target/verify/logs/<gate>.wpgid`, a different
+  - *watchdog process group* — identifier in `<target>/verify/logs/<gate>.wpgid`, a different
     file. Its members are a shell and a `sleep`; they do **not** hold `CARGO_TARGET_DIR`. The
     lock is still retained because the runner cannot prove what it cannot kill, but the
     remediation is a stuck `sleep`, not a build hazard.
@@ -70,8 +70,8 @@ before removal.
     be reached. Harmless to the build directory, but still unproven.
 
   This is the least safe case to clear casually: unlike exit `71` there is no group identifier
-  to re-check. Recovery: verify nothing is still writing under `target/verify/` — inspect
-  candidates by hand (`ps`/`lsof +D target/verify`) rather than trusting a bare
+  to re-check. Recovery: verify nothing is still writing under `<target>/verify/` — inspect
+  candidates by hand (`ps`/`lsof +D <target>/verify`) rather than trusting a bare
   `pgrep -f 'rustc|cargo'`, which also matches unrelated developer and agent processes —
   terminate what belongs to the aborted run, and only then remove the lock. Exit `70` also
   signals a host-environment problem worth reporting, not just a lock to clear.
@@ -87,8 +87,8 @@ before removal.
 | `api` | `scripts/verify api` | the `compile_fail` doctests — public builder types reject foreign methods | run-time behaviour | ~1 s / <1 s | `all`, and any plan changing the public API surface |
 | *(all)* | `scripts/verify all` | the five rows above, once each | — | ~15 s / ~2 s | pre-commit, final validation |
 
-`fmt` builds nothing and needs no target directory; on failure it lists the files rustfmt would
-change. Apply formatting with `cargo fmt --all` as its own change, not mixed into a functional
+`fmt` builds nothing, but like every gate it resolves the target directory, takes the lock and
+writes its log; on failure it lists the files rustfmt would change. Apply formatting with `cargo fmt --all` as its own change, not mixed into a functional
 diff.
 
 `lint` runs in the all-features configuration only; the feature-off configuration is covered
@@ -102,13 +102,13 @@ zerx keeps tests in-module (`#[cfg(test)] mod tests`) inside the file they test;
 
 | Area | Boundary | Concern | Perspectives |
 |---|---|---|---|
-| `value` | unit | `value-model` | serde bridge round-trip, type mapping, serialization failure modes |
+| `value` | unit | `value-model` | serde bridge round-trip, type mapping, serialization failure modes, nesting and serializer-call bounds |
 | `schema` | unit | `schema-core` | modifier composition, parse flow, lazy & cyclic schemas, `MAX_PARSE_DEPTH` boundary |
 | `delta` | unit | `schema-core` | `parse_delta` and `replace` happy path, partial-update semantics, failure modes |
-| `types` | unit | `types` | per-type happy & sad paths, validator boundaries, special-type composition |
+| `types` | unit | `types` | per-type happy & sad paths, validator boundaries (incl. `unique_items`), special-type composition, builder-value depth bound |
 | `ecma_regex` | unit | `types` | ECMA-262 dialect conformance, intersection semantics, refusal classification, nesting bound |
-| `json_schema` | unit | `json-schema` | export/import round-trip, draft 2020-12 conformance, `$defs`/`$ref`, `strip_unknown`, error paths |
-| `policy` | unit | `policy` | pipeline composition, transform ordering, error propagation |
+| `json_schema` | unit | `json-schema` | export/import round-trip, draft 2020-12 conformance, `$defs`/`$ref`, `strip_unknown`, `uniqueItems`, document depth bound, error paths |
+| `policy` | unit | `policy` | pipeline composition, transform ordering, `sql` rewrites, deref, document depth bound, error propagation |
 | `error` | unit | `errors` | code taxonomy, path aggregation, JSON shape, `std::error::Error` propagation |
 | `lua` (feature-gated) | unit | `lua` | schema-directed validation, error precedence, feature contract |
 | doctests | compile-time | public API surface | negative type-safety of the builder types |
@@ -125,7 +125,7 @@ that wants one justifies it.
 ## Targeted runs and logs
 
 `scripts/verify test <filter>` (and the `test core`/`api` equivalents) runs a libtest name
-filter for diagnosis. Each gate's full output lands in `target/verify/logs/<gate>.log`,
+filter for diagnosis. Each gate's full output lands in `<target>/verify/logs/<gate>.log`,
 truncated and overwritten on the next run of that gate. A filtered run, or a raw `cargo`
 invocation run by hand, is a diagnostic aid — it does not satisfy a required gate; the
 unfiltered gate still has to run.

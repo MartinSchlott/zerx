@@ -15,7 +15,9 @@
 ## Consumes from
 
 - `json-schema`: `from_json_schema_inner` (core import walk the pipeline wraps, carrying the caller's unknown-property disposition)
+- `json-schema`: `import document depth bound` (raw-document bound applied to transform inputs and outputs)
 - `schema-core`: `Schema` (the value the pipeline produces and type transforms receive)
+- `schema-core`: `MAX_PARSE_DEPTH` (bound on external ref nesting)
 - `errors`: `ZerxError` (structured pipeline failure)
 
 ## Provides to
@@ -40,7 +42,7 @@
 
 ### Pipeline order
 
-- `from_json_schema_with` MUST apply transforms in this fixed order: (1) deref transform (if a resolver is provided), (2) policy schema transforms, (3) caller schema transforms, (4) `from_json_schema` core import walk, (5) policy type transforms, (6) caller type transforms.
+- `from_json_schema_with` MUST apply transforms in this fixed order: (1) deref transform (if a resolver is provided), (2) policy schema transforms, (3) caller schema transforms, (4) core import walk (`from_json_schema_inner`, carrying the unknown-property disposition), (5) policy type transforms, (6) caller type transforms.
 - The deref transform MUST be applied before policy and caller schema transforms.
 
 ### Schema transform ordering
@@ -67,20 +69,22 @@
 ### `deep_map_schema` recursion
 
 - `deep_map_schema` MUST apply the mapper to each node before recursing into the mapped result.
-- `deep_map_schema` MUST recurse into every position J2's core importer reads as a child schema: `properties` (object values), `$defs` (object values), `items` (schema or array of schemas), `prefixItems` (array of schemas), `additionalProperties` (when it is a schema object, not a boolean), and `anyOf`/`oneOf`/`allOf` arrays.
+- `deep_map_schema` MUST recurse into every position the core importer reads as a child schema: `properties` (object values), `$defs` (object values), `items` (schema or array of schemas), `prefixItems` (array of schemas), `additionalProperties` (when it is a schema object, not a boolean), and `anyOf`/`oneOf`/`allOf` arrays.
 
 ### Deref hook
 
-- The deref transform MUST act only on nodes whose `$ref` string does NOT start with `#/`; local `#/$defs/…` refs MUST be left untouched for J2's core importer.
+- The deref transform MUST act only on nodes whose `$ref` string does NOT start with `#/`; local `#/$defs/…` refs MUST be left untouched for the core importer.
 - On a non-local `$ref` node the deref transform MUST replace the node with the resolver's result, merging every sibling keyword (every key except `$ref`) onto the resolved object, with the sibling keys taking precedence over the resolved object's keys.
-- An external ref met again while its own resolved content is walked MUST raise `IMPORT_UNSUPPORTED`; inlining cannot represent a recursive external schema. External ref nesting beyond the parse-depth limit MUST raise `IMPORT_UNSUPPORTED`.
+- An external ref met again while its own resolved content is walked MUST raise `IMPORT_UNSUPPORTED`; inlining cannot represent a recursive external schema.
+- External ref nesting beyond the parse-depth limit MUST raise `IMPORT_UNSUPPORTED`.
 - `from_json_schema_with` MUST hold the caller's document, every schema-transform output and every deref resolver result to the import document depth bound of `json-schema`, refusing beyond it with `IMPORT_UNSUPPORTED` before cloning or walking the value.
 - The deref walk MUST count its JSON position depth against the same bound, because inlining resolver results can make the document deeper than the caller's input.
 - Resolved content that carries `$defs` or a `$ref` starting with `#` MUST raise `IMPORT_UNSUPPORTED`; such refs are relative to the external document and would bind to the importing document's `$defs` (`D-import-fail-closed`).
 
 ### Built-in `sql` policy schema transforms (pre-parse, in order)
 
-- Nullable normalisation, type array: a node whose `type` is an array of exactly two strings, one `"null"` and one other name, and that carries none of `enum`, `const`, `anyOf`, `oneOf`, `allOf`, `not`, `$ref`, `$dynamicRef`, `if`, `then`, `else`, MUST be rewritten to `anyOf:[{…node…, type:T}, {type:"null"}]`, with `$defs` and `$schema` kept on the outer node and no keyword dropped. The split is exact only when no keyword constrains `null` itself.
+- Nullable normalisation, type array: a node whose `type` is an array of exactly two strings, one `"null"` and one other name, and that carries none of `enum`, `const`, `anyOf`, `oneOf`, `allOf`, `not`, `$ref`, `$dynamicRef`, `if`, `then`, `else`, MUST be rewritten to `anyOf:[{…node…, type:T}, {type:"null"}]`; the split is exact only when no keyword constrains `null` itself.
+- The nullable rewrite MUST keep `$defs` and `$schema` on the outer node and MUST drop no keyword.
 - A type-array node that does not meet that condition MUST be left unchanged, so the core import honours or refuses its `type`.
 - The built-in `sql` policy MUST NOT rewrite `oneOf` to `anyOf`; under exactly-one `oneOf` semantics the rewrite is wider whenever a member admits `null`.
 - Array `items` fallback: a `{"type":"array"}` node without `items` MUST have `"items": {}` added (imports as `array(any())`).
@@ -96,9 +100,9 @@
 
 - The built-in `sql` policy MUST carry an empty `type_transforms` vector; it performs all substitutions as pre-parse schema transforms.
 
-### Accepted limitation
+### Type transform reach
 
-- Caller-supplied type transforms receive only the root `Schema` and MAY rebuild it using the public constructor/builder surface; in v1 there is no public `Schema` introspection API for reading kind or children, so caller-supplied type transforms are limited to whole-`Schema` rewrites.
+- Caller-supplied type transforms receive only the root `Schema` and MAY rebuild it using the public constructor/builder surface; zerx exposes no public `Schema` introspection for reading kind or children, so such transforms are limited to whole-`Schema` rewrites.
 
 ### Unknown-property disposition on import
 
