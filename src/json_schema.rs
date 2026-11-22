@@ -950,6 +950,12 @@ fn validate_node_grammar(
             "required" => required_names(val).is_some(),
             "enum" | "anyOf" | "oneOf" | "prefixItems" => val.is_array(),
             "additionalProperties" | "items" => val.is_boolean() || val.is_object(),
+            // Annotations are consumed too, so a malformed value is refused
+            // rather than silently dropped.
+            "description" | "title" | "format" | "contentMediaType" => val.is_string(),
+            "examples" => val.is_array(),
+            "deprecated" | "readOnly" | "writeOnly" => val.is_boolean(),
+            "discriminator" => val.is_object(),
             _ => true,
         };
         if !ok {
@@ -6151,5 +6157,44 @@ mod tests {
                 "{kw}"
             );
         }
+    }
+
+    #[test]
+    fn malformed_annotation_values_are_refused() {
+        let cases = [
+            ("description", serde_json::json!(1)),
+            ("title", serde_json::json!(true)),
+            ("format", serde_json::json!(["email"])),
+            ("contentMediaType", serde_json::json!({})),
+            ("examples", serde_json::json!("x")),
+            ("deprecated", serde_json::json!("yes")),
+            ("readOnly", serde_json::json!(1)),
+            ("writeOnly", serde_json::json!(null)),
+        ];
+        for (kw, val) in cases {
+            let mut node = serde_json::json!({"type": "string"});
+            node[kw] = val;
+            let doc = serde_json::json!({"type": "object", "properties": {"p": node}});
+            let err = from(doc).unwrap_err();
+            assert_eq!(err.code, ErrorCode::IMPORT_MALFORMED, "{kw}");
+            assert_eq!(
+                err.path,
+                vec!["properties".to_string(), "p".to_string()],
+                "{kw}"
+            );
+        }
+        let disc = serde_json::json!({
+            "oneOf": [
+                {"type": "object", "properties": {"k": {"const": "a"}}, "required": ["k"]},
+                {"type": "object", "properties": {"k": {"const": "b"}}, "required": ["k"]}
+            ],
+            "discriminator": "k"
+        });
+        assert_eq!(from(disc).unwrap_err().code, ErrorCode::IMPORT_MALFORMED);
+        let fine = serde_json::json!({
+            "type": "string", "description": "d", "title": "t", "format": "email",
+            "examples": ["a@b.c"], "deprecated": true, "readOnly": false, "writeOnly": false
+        });
+        assert!(from(fine).is_ok());
     }
 }

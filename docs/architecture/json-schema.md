@@ -155,6 +155,7 @@
 - A tuple MAY import narrower than its source: `prefixItems` with `items:false` reconstructs a fixed-length tuple, although the source also accepts shorter arrays. This is a named narrowing under `D-import-fail-closed`.
 - An imported `pattern` MAY accept less than ECMA-262 does where the ECMA and `regex` crate dialects disagree (`\D`, `\W`, `\s`, `\S`, `\b`, `\B`): it matches only what both accept (`types`). This is a named narrowing under `D-import-fail-closed`.
 - A consumed keyword whose value violates the Draft 2020-12 grammar MUST raise `IMPORT_MALFORMED`; an integral float counts as an integer.
+- Annotation keywords the import reconstructs count as consumed: a malformed annotation value (a non-string `description`/`title`/`format`/`contentMediaType`, a non-array `examples`, a non-boolean `deprecated`/`readOnly`/`writeOnly`, a non-object `discriminator`) MUST raise `IMPORT_MALFORMED` instead of being dropped.
 - An empty `anyOf`/`oneOf` MUST raise `IMPORT_UNSUPPORTED`; it accepts nothing, and zerx has no never type.
 - `$id` on any node other than the root MUST raise `IMPORT_UNSUPPORTED`; a nested `$id` would re-base the `$ref`s inside it. A root `$id` imports as `meta`.
 - A `pattern` on a string, `uri` or `url` node that is invalid ECMA-262 MUST raise `IMPORT_MALFORMED`, and one that is valid but outside the translated subset MUST raise `IMPORT_UNSUPPORTED`; it would otherwise reject every string at validation time.
