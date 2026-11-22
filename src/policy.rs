@@ -205,8 +205,11 @@ fn deref_walk(
         None => return Ok(node.clone()),
     };
     let ref_str = match obj.get("$ref").and_then(|v| v.as_str()) {
-        // Local #/$defs/… refs are left untouched for the core importer.
-        Some(s) if !s.starts_with("#/") => s,
+        // Every `#…` ref is document-local: `#/$defs/…` is resolved by the
+        // core importer, and any other local form (`#`, `#anchor`,
+        // `#/properties/…`) is left for it to refuse. Handing one to the
+        // caller's resolver could import content the document never names.
+        Some(s) if !s.starts_with('#') => s,
         _ => return deref_children(obj, resolver, active, depth),
     };
     // The resolved document runs before `has_document_local_refs`, which
@@ -800,6 +803,42 @@ mod tests {
             },
         );
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_deref_never_sends_document_local_refs_to_resolver() {
+        // Every `#…` ref is document-local; the resolver must never see it,
+        // and the result must equal the plain core import of the document.
+        let calls = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen = calls.clone();
+        let resolver: RefResolver = Arc::new(move |r: &str| {
+            seen.lock().unwrap().push(r.to_owned());
+            Ok(json!({"type": "string"}))
+        });
+        for doc in [
+            json!({"$ref": "#"}),
+            json!({"$ref": "#a"}),
+            json!({"type": "object", "properties": {"x": {"$ref": "#/properties/y"}}}),
+        ] {
+            let with = from_json_schema_with(
+                &doc,
+                &ImportOptions {
+                    deref: Some(resolver.clone()),
+                    ..Default::default()
+                },
+            );
+            let plain = crate::from_json_schema(&doc);
+            assert_eq!(
+                with.as_ref().err().map(|e| e.code.clone()),
+                plain.as_ref().err().map(|e| e.code.clone()),
+                "deref result differs from core import for {doc}"
+            );
+        }
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "resolver called: {:?}",
+            calls.lock().unwrap()
+        );
     }
 
     #[test]

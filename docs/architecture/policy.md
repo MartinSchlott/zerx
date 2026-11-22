@@ -73,7 +73,8 @@
 
 ### Deref hook
 
-- The deref transform MUST act only on nodes whose `$ref` string does NOT start with `#/`; local `#/$defs/…` refs MUST be left untouched for the core importer.
+- The deref transform MUST act only on nodes whose `$ref` string does not start with `#`; it MUST NOT pass a document-local ref to the resolver.
+- Every document-local ref (`#/$defs/…`, `#`, `#anchor` and other `#` forms) MUST be left untouched for the core importer, which resolves `#/$defs/…` and refuses the rest.
 - On a non-local `$ref` node the deref transform MUST replace the node with the resolver's result, merging every sibling keyword (every key except `$ref`) onto the resolved object, with the sibling keys taking precedence over the resolved object's keys.
 - An external ref met again while its own resolved content is walked MUST raise `IMPORT_UNSUPPORTED`; inlining cannot represent a recursive external schema.
 - External ref nesting beyond the parse-depth limit MUST raise `IMPORT_UNSUPPORTED`.
