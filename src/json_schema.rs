@@ -1659,11 +1659,13 @@ fn import_node(
     let mut consumed: HashSet<String> = HashSet::new();
     let mut base: Option<Schema> = None;
 
+    // `allOf`/`not` are refused with their hint on every node, a `$ref`
+    // node included, before any base is built.
+    refuse_all_of_not(obj, path)?;
     if obj.contains_key("$ref") {
         import_ref_step(obj, spec, ctx, path, &mut consumed, &mut base)?;
     }
     if base.is_none() {
-        refuse_all_of_not(obj, path)?;
         import_nullable_collapse_step(obj, spec, ctx, path, &mut consumed, &mut base)?;
     }
     if base.is_none() {
@@ -6124,5 +6126,30 @@ mod tests {
             &serde_json::Value::Bool(false)
         );
         cell.borrow_mut().take();
+    }
+
+    #[test]
+    fn all_of_not_next_to_ref_keep_the_hint() {
+        for (kw, hint) in [("allOf", "extend()"), ("not", "union()")] {
+            let mut node = serde_json::json!({"$ref": "#/$defs/A"});
+            node[kw] = if kw == "allOf" {
+                serde_json::json!([{"type": "string"}])
+            } else {
+                serde_json::json!({"type": "string"})
+            };
+            let doc = serde_json::json!({
+                "type": "object",
+                "properties": {"a": node},
+                "$defs": {"A": {"type": "string"}}
+            });
+            let err = from(doc).unwrap_err();
+            assert_eq!(err.code, ErrorCode::IMPORT_UNSUPPORTED, "{kw}");
+            assert!(err.message.contains(hint), "{kw}: {}", err.message);
+            assert_eq!(
+                err.path,
+                vec!["properties".to_string(), "a".to_string()],
+                "{kw}"
+            );
+        }
     }
 }

@@ -125,10 +125,10 @@
 
 ### Import pipeline order
 
-- Every node MUST first pass, in this order: (1) boolean schema, (2) non-object guard, keyword-value grammar check, nested-`$id` refusal and `type` parsing.
-- The base MUST then come from the first matching step: (3) `$ref`, (4) `allOf`/`not` refusal, (5) nullable `anyOf` collapse, (6) union or discriminated union, (7) `enum`/`const`, (8) format-marker kinds, (9) `type` dispatch, object reconstruction included.
+- Every node MUST first pass, in this order: (1) boolean schema, (2) non-object guard, keyword-value grammar check, nested-`$id` refusal and `type` parsing, then (4) the `allOf`/`not` refusal, which also applies to a `$ref` node.
+- The base MUST then come from the first matching step: (3) `$ref`, (5) nullable `anyOf` collapse, (6) union or discriminated union, (7) `enum`/`const`, (8) format-marker kinds, (9) `type` dispatch, object reconstruction included.
 - Every node MUST finish with the `[T, "null"]` `.nullable()`, (10) annotation/modifier reconstruction, (11) the assertion coverage check, then `meta` routing of the remaining keys.
-- A node with `$ref` MUST skip steps 4–9 and proceed to step 10.
+- A node with `$ref` MUST skip steps 5–9 and proceed to step 10.
 - `type` parsing MUST run on every object node, `$ref` nodes included, so a malformed `type` is never skipped.
 
 ### `type` import
